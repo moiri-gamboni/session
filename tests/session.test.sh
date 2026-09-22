@@ -1679,7 +1679,7 @@ ASCEOF
     PSTREE=$(mktemp -d "$TMP/pstree.XXXXXX")
     mkdir -p "$PSTREE/lib"
     cp "$BIN" "$PSTREE/session"
-    cp "$SDIR/lib/common.sh" "$PSTREE/lib/common.sh"
+    cp "$SDIR"/lib/*.sh "$PSTREE/lib/"
     printf '\nsession_have_proc() { return 1; }\n' >> "$PSTREE/lib/common.sh"
 
     # fake ps: pid -> parent, pid -> command. The claude ancestor's `-p` sits in
@@ -1928,7 +1928,7 @@ else
     # ── a `time --json` that breaks the contract a task logger reads ─────────
     BAD19=$(mktemp -d "$TMP/bad19.XXXXXX"); mkdir -p "$BAD19/lib"
     sed 's/"attended_s":%d/"attended_s":"%d"/' "$BIN" > "$BAD19/session"; chmod +x "$BAD19/session"
-    cp "$SDIR/lib/common.sh" "$BAD19/lib/common.sh"
+    cp "$SDIR"/lib/*.sh "$BAD19/lib/"
     out=$( cd "$CW" && env -i PATH="$B19:$PATH" HOME="$FH" TZ=UTC \
             CLAUDE_CONFIG_DIR="$W19/cfg" SESSION_DATA_DIR="$W19/data" \
             CLAUDE_CODE_SESSION_ID="$UUID" timeout 60 bash "$BAD19/session" doctor 2>&1 )
@@ -2757,6 +2757,148 @@ else
         "cov: ... and the account tag, since this config dir is not the primary one"
     report 1 "$(printf '%s' "$out" | grep -c . )" "cov: ... on exactly one line"
 fi
+
+echo "--- case 20: the pure selector ---"
+
+# Pure functions: no files, no clock, no network, nothing read from a global.
+# So the case sources lib/account.sh directly and drives every predicate from
+# literals — no world, no vault, no curl stub, no subprocess `session`.
+# shellcheck source=/dev/null
+. "$SDIR/lib/account.sh"
+
+# ── acct_num: the cell vocabulary, asserted by value ────────────────────────
+# `~0%` is the one that must be checked by value rather than "an integer or
+# -1": it is what a window whose reset has already passed renders as, which
+# makes that login the BEST candidate, and reading it as the unknown sentinel
+# would make the best candidate inadmissible while every other criterion
+# stayed green. The subshell's exit status is asserted on every spelling
+# because under `set -u` an arithmetic expansion of a non-numeric cell
+# re-expands it as a variable name and kills the process silently.
+while IFS='|' read -r n20in n20want; do
+    n20got=$(acct_num "$n20in"); rc=$?
+    report "$n20want" "$n20got" "case 20: acct_num [$n20in]"
+    report 0 "$rc" "case 20: ... and returns 0, so the spelling does not kill the shell"
+done <<'NUM20EOF'
+12%|12
+~0%|0
+n/a|-1
+-|-1
+?|-1
+102|102
+~0|0
+100%|100
+|-1
+abc|-1
+5h|-1
+12.5%|-1
+-1|-1
+NUM20EOF
+
+# ── acct_blocked: which windows are spent, in canonical order ───────────────
+report fable  "$(acct_blocked 90 2 65 100 0)"   "case 20: acct_blocked names the Fable window alone"
+report -      "$(acct_blocked 90 2 65 40 0)"    "case 20: ... and a dash when nothing is spent"
+report 5h     "$(acct_blocked 90 103 31 54 0)"  "case 20: ... a five-hour window over 100%"
+report 5h,week,fable "$(acct_blocked 90 95 95 95 0)" "case 20: ... all three in canonical order"
+report 5h     "$(acct_blocked 90 90 10 10 0)"   "case 20: ... at the threshold, not merely above it"
+report fable  "$(acct_blocked 90 '~0%' '65%' '100%' 0)" "case 20: ... over raw table cells as well as integers"
+report 5h     "$(acct_blocked 90 -1 10 10 1)"   "case 20: an unknown window blocks when UNKNOWN_BLOCKS=1"
+report -      "$(acct_blocked 90 -1 10 10 0)"   "case 20: ... and does not when it is 0"
+report fable  "$(acct_blocked 90 10 10 -1 1)"   "case 20: ... which is what caps an unknown-Fable candidate at tier 1"
+report -      "$(acct_blocked 101 100 100 100 0)" "case 20: a threshold above every figure blocks nothing"
+
+# ── acct_tier: the capability ladder ────────────────────────────────────────
+report 2 "$(acct_tier -)"             "case 20: acct_tier 2 — nothing blocked, every model served"
+report 1 "$(acct_tier fable)"         "case 20: acct_tier 1 — only Fable blocked, still good for Opus"
+report 0 "$(acct_tier 5h)"            "case 20: acct_tier 0 — a spent five-hour window serves nothing"
+report 0 "$(acct_tier week)"          "case 20: ... same for the weekly"
+report 0 "$(acct_tier 5h,fable)"      "case 20: ... and a general window drags a Fable block down with it"
+report 0 "$(acct_tier week,fable)"    "case 20: ... in either combination"
+report 0 "$(acct_tier 5h,week,fable)" "case 20: ... and when all three are spent"
+report 2 "$(acct_tier '')" "case 20: an empty list is the same empty list a dash spells"
+
+# ── acct_admissible: a switch has to climb the ladder ───────────────────────
+adm() { acct_admissible "$1" "$2" && echo yes || echo no; }
+report yes "$(adm - fable)"     "case 20: tier 2 over a Fable-spent live login is admissible"
+report yes "$(adm fable 5h)"    "case 20: a Fable-spent candidate over a tier-0 live login is admissible"
+report yes "$(adm - 5h)"        "case 20: ... as is a clean one"
+report no  "$(adm fable fable)" "case 20: an equal tier is refused"
+report no  "$(adm - -)"         "case 20: ... at the top of the ladder too"
+report no  "$(adm fable -)"     "case 20: and a lower tier is refused outright"
+report no  "$(adm 5h fable)"    "case 20: ... including a candidate that serves nothing"
+
+# ── acct_rank and the whole policy, over a real account table ──────────────
+# The four figures per row are a real vault's, captured 2026-09-22 while the
+# live login stood at 5h 2% / week 65% / Fable 100%; only the names are
+# anonymised. Three of the four logins had spent their Fable weekly while
+# their general windows read healthy, and the one login with Fable headroom
+# was over its own five-hour cap — "no candidate is clean on every window" is
+# the ordinary state of this box, not an edge case, which is the whole reason
+# the policy is a ladder rather than a set. Row 2 keeps the organisation-seat
+# name shape, where the bare email is a prefix of the seat's name.
+TBL20=$(printf '%s\t%s\t%s\t%s\t%s\n' \
+    'one@example.com'     'probe' 21  52 100 \
+    'one@example.com+org' 'probe' 103 31 54  \
+    'two@example.com'     'probe' 52  54 100)
+
+# What the decision verb does with these five functions: rank the candidates,
+# then admit the winner — the winner carries the highest tier, so it is
+# admissible iff any candidate is. UNKNOWN_BLOCKS=1 because these are
+# candidates: an unknown general window fails them closed, and an unknown Fable
+# window caps them at tier 1.
+pick20() {  # LIVE_BLOCKS  (rows on stdin) -> the login the switcher would move to
+    local liveb="$1" tbl win row f5 wk fb
+    tbl=$(cat)
+    win=$(printf '%s\n' "$tbl" | acct_rank 90)
+    [ -n "$win" ] || return 0
+    row=$(printf '%s\n' "$tbl" | awk -F'\t' -v l="$win" '$1 == l { print; exit }')
+    IFS=$'\t' read -r _ _ f5 wk fb <<<"$row"
+    acct_admissible "$(acct_blocked 90 "$f5" "$wk" "$fb" 1)" "$liveb" && printf '%s\n' "$win"
+    return 0
+}
+
+# The same table with the first login's Fable at 40%: the one thing that has
+# to change for the switcher to move at all.
+TBL20B=$(printf '%s\t%s\t%s\t%s\t%s\n' \
+    'one@example.com'     'probe' 21  52 40  \
+    'one@example.com+org' 'probe' 103 31 54  \
+    'two@example.com'     'probe' 52  54 100)
+
+report "" "$(printf '%s\n' "$TBL20" | pick20 fable)" \
+    "case 20: the captured table yields no candidate — every login is tier 1 or 0"
+report 'one@example.com' "$(printf '%s\n' "$TBL20B" | pick20 fable)" \
+    "case 20: ... until one login's Fable drops to 40%, and tier 2 beats tier 1"
+report 'one@example.com' "$(printf '%s\n' "$TBL20" | pick20 5h)" \
+    "case 20: a tier-0 live login moves to a Fable-spent candidate — it serves every other model"
+report "" "$(printf 'a\tprobe\t100\t100\t100\n' | pick20 5h)" \
+    "case 20: ... but never to another tier-0 login"
+report bbb "$(printf 'aaa\tprobe\t100\t0\t0\nbbb\tprobe\t80\t80\t100\n' | pick20 5h)" \
+    "case 20: a tier-0 candidate is never chosen, whatever its headroom"
+report "" "$(printf 'aaa\tprobe\t0\t0\t0\n' | pick20 -)" \
+    "case 20: equal tiers never switch, even when the candidate has far more headroom"
+report bbb "$(printf 'aaa\tprobe\t-\tn/a\t?\nbbb\tprobe\t50\t50\t50\n' | pick20 fable)" \
+    "case 20: a row of sentinels never wins"
+report "" "$(printf 'aaa\tprobe\t-\tn/a\t?\n' | pick20 fable)" \
+    "case 20: ... and on its own it is no candidate at all"
+
+report bbb "$(printf 'aaa\tprobe\t10\t10\t95\nbbb\tfrozen\t10\t10\t10\n' | acct_rank 90)" \
+    "case 20: acct_rank puts the highest tier first, ahead of probe freshness"
+report bbb "$(printf 'aaa\tfrozen\t10\t10\t10\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+    "case 20: ... then probe-verified ahead of frozen, whatever the headroom"
+report aaa "$(printf 'aaa\tprobe\t10\t10\t100\nbbb\tprobe\t50\t50\t95\n' | acct_rank 90)" \
+    "case 20: ... then the worst window among the ones the tier depends on — Fable is spent on both, so it does not rank them"
+report bbb "$(printf 'aaa\tprobe\t10\t10\t80\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+    "case 20: ... while at tier 2 Fable does rank them, so the row with 80% there loses to one at 50% everywhere"
+report aaa "$(printf 'bbb\tprobe\t10\t10\t10\naaa\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+    "case 20: ... and a tie breaks on the name"
+report 'B@example.com' "$(printf 'B@example.com\tprobe\t10\t10\t10\na@example.com\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+    "case 20: ... collated as bytes, so the answer does not move with the machine's locale"
+report aaa "$(printf 'aaa\tprobe\t9\t9\t9\nbbb\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+    "case 20: ... and the windows compare as numbers, so 10% does not outrank 9% on its first digit"
+report "" "$(printf '' | acct_rank 90)" "case 20: no rows, no winner"
+report aaa "$(printf 'aaa\tprobe\t10\t10\t10\n' | acct_rank 90)" "case 20: one row wins on its own"
+report aaa "$(printf '\naaa\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+    "case 20: a blank row cannot suppress a real candidate — it is tier 0 and frozen by construction"
+report "" "$(printf '\n' | acct_rank 90)" "case 20: ... and on its own it wins nothing"
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
