@@ -1039,9 +1039,15 @@ acct_fetch_fable() {
 #      The identity file is already written at that point, so it names the
 #      login whose credential did not land: a caller that reports the failure
 #      must not read the live login name back as the truth of what happened.
+#   3  the entry cannot authenticate; nothing was read, written or vaulted
 acct_swap() {  # VAULTFILE
   local vf="$1" cfg tmp
   cfg=$(acct_cfg)
+  # Refused before the outgoing login is vaulted and before any write. An entry
+  # with no usable token is the 2026-09-15 shape, and this is the path a human
+  # takes while that outage is happening — reaching for another login and
+  # installing a second dead credential over the one thing still working.
+  acct_token_ok "$vf" || return 3
   acct_save 2>/dev/null || true   # never lose the login being replaced
   # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
   # DoneThat, …), which is not account-scoped and must survive the switch.
@@ -1060,11 +1066,7 @@ acct_swap() {  # VAULTFILE
   # and not the login name it carries: that file is the one a concurrent session
   # rewrites from memory, so a name read from it can say "switched" over
   # credentials that never moved. A boolean comparison, so no token is rendered.
-  # The type test is what keeps the comparison from being vacuous: an entry with
-  # no claudeAiOauth installs null, and null equals null, which is exactly the
-  # blank credential that must never go live unnoticed.
-  jq -e --slurpfile v "$vf" \
-     '(.claudeAiOauth | type) == "object" and .claudeAiOauth == $v[0].claudeAiOauth' \
+  jq -e --slurpfile v "$vf" '.claudeAiOauth == $v[0].claudeAiOauth' \
      "$cfg/.credentials.json" >/dev/null 2>&1 || return 2
 }
 
@@ -1105,6 +1107,7 @@ acct_main() {
       case $? in
         1) echo "session account: failed to write credentials" >&2; return 1 ;;
         2) echo "session account: the credential swap did not land — the live credential is not $email's; check $cfg/.credentials.json" >&2; return 1 ;;
+        3) echo "session account use: $email's vaulted accessToken is empty — installing it would leave nothing on this machine able to authenticate; run /login instead" >&2; return 1 ;;
       esac
       # After the swap, never before: a slow endpoint must not stand between a
       # capped session and the login that frees it. The outgoing login's Fable
