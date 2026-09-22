@@ -4739,6 +4739,245 @@ ATURNEOF
     fi
 fi
 
+echo "--- doctor: the switcher, the warn threshold, and the vault's own identities ---"
+
+if ! have jq; then
+    skip "doctor: the switcher check" "needs jq"
+else
+    DCW=$(mktemp -d "$TMP/dcw.XXXXXX")            # a cwd carrying no project settings
+    DCB=$(mktemp -d "$TMP/dcb.XXXXXX"); ln -sf "$BIN" "$DCB/session"
+    # The doctor only asks whether curl EXISTS, never runs it — and the bash 3.2
+    # image has no curl at all, so the stub is what makes the two legs agree.
+    DCC=$(curlstub)
+
+    ddoc() {  # WORLD [VAR=VAL ...] -> the whole report, stderr folded in
+        local w=$1; shift
+        local e=""
+        while [ $# -gt 0 ]; do e="$e $1"; shift; done
+        ( cd "$DCW" && env -i PATH="$DCC:$DCB:$PATH" HOME="$FH" TZ=UTC \
+            CLAUDE_CONFIG_DIR="$w/cfg" SESSION_DATA_DIR="$w/data" \
+            SESSION_ACCOUNTS_DIR="$w/vault" CLAUDE_CODE_SESSION_ID="$UUID" \
+            $e timeout 60 bash "$BIN" doctor 2>&1 )
+    }
+    dcstate() {  # OUTPUT LABEL -> the state on that check's first line, empty if absent
+        printf '%s' "$1" | awk -v l="$2" '
+            { s = $1; $1 = ""; sub(/^ +/, "")
+              if (index($0, l) == 1) { print s; exit } }'
+    }
+    dcsays() {  # OUTPUT LABEL TEXT -> yes when any line with that label carries it
+        printf '%s' "$1" | awk -v l="$2" -v t="$3" '
+            { $1 = ""; sub(/^ +/, "")
+              if (index($0, l) == 1 && index($0, t) > 0) found = 1 }
+            END { if (found) print "yes"; else print "no" }'
+    }
+    dcvent() {  # WORLD LOGIN [TOKEN] — a vault entry filed under its own identity
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":9999999999000}}\n' \
+            "$2" "$2" "$2" "${3:-tok-$2}" > "$1/vault/$2.json"
+    }
+    dcarm() {  # WORLD both|prompt|unarmed|none — the rewake entries in settings.json
+        local rw="bash $SDIR/session --rewake-waiter"
+        case "$2" in
+            both)    jq -n --arg rw "$rw" '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}],
+                                                    StopFailure:      [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}]}}' ;;
+            prompt)  jq -n --arg rw "$rw" '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}]}}' ;;
+            unarmed) jq -n --arg rw "$rw" '{hooks: {StopFailure:      [{hooks: [{type:"command", command:$rw, timeout:700000}]}]}}' ;;
+            none)    printf '{}\n' ;;
+        esac > "$1/cfg/settings.json"
+    }
+    dcworld() {  # -> a world in which every state the switcher reads is healthy
+        local w n
+        w=$(world); mkdir -p "$w/vault"; chmod 700 "$w/data"; n=$(date +%s)
+        mklogin "$w" a@example.com
+        printf '{"claudeAiOauth":{"accessToken":"live-a","expiresAt":9999999999000}}\n' > "$w/cfg/.credentials.json"
+        dcvent "$w" a@example.com; dcvent "$w" b@example.com
+        dcarm "$w" both
+        mkcache "$w" a@example.com 10 10 $(( n + 600 )) $(( n + 6000 ))
+        # 601 and 301 seconds: acct_age floors at the minute, so the rendered
+        # "10m" and "5m" survive any delay under 59s between here and the run.
+        printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\tf\tp1\trate_limit\t-\n' \
+            $(( n - 400 )) "$UUID" $(( n - 301 )) "$UUID" > "$w/data/turn-log.tsv"
+        printf '%s\tswitch\ta@example.com\tb@example.com\tcap\tclimbed\t-\tsid=x;tier=2\n' \
+            $(( n - 601 )) > "$w/data/switch-log.tsv"
+        printf '%s\n' "$w"
+    }
+
+    # ── everything wired: the ok line carries the five facts a reader needs ──
+    WDC=$(dcworld)
+    DCOK=$(ddoc "$WDC"); rc=$?
+    report 0 "$rc" "doctor: a switcher with everything it needs is not a failure"
+    report ok "$(dcstate "$DCOK" switcher)" "doctor: ... and the switcher check reads ok"
+    report yes "$(dcsays "$DCOK" switcher 'on ·')" "doctor: ... naming the mode it is in"
+    report yes "$(dcsays "$DCOK" switcher 'notify none')" "doctor: ... the notify target"
+    report yes "$(dcsays "$DCOK" switcher '2 logins, 2 with a token')" \
+        "doctor: ... the vault's size beside how many of its entries carry a token at all"
+    report yes "$(dcsays "$DCOK" switcher 'newest decision: switch (10m)')" \
+        "doctor: ... and the newest decision with its age"
+    report yes "$(dcsays "$DCOK" switcher 'newest cap death (5m)')" \
+        "doctor: the newest cap death is printed beside it, so a switcher that runs and records nothing reads as a gap"
+
+    # ── the notify seam ──────────────────────────────────────────────────────
+    DCNOT="$TMP/dc-notify.sh"; printf '#!/bin/sh\nexit 0\n' > "$DCNOT"; chmod 755 "$DCNOT"
+    out=$(ddoc "$WDC" SESSION_SWITCH_NOTIFY="$DCNOT")
+    report yes "$(dcsays "$out" switcher "notify $DCNOT")" "doctor: an executable notify seam is named on the line"
+    chmod 644 "$DCNOT"
+    out=$(ddoc "$WDC" SESSION_SWITCH_NOTIFY="$DCNOT"); rc=$?
+    report 1 "$rc" "doctor: a notify path that cannot be run is a failure"
+    report FAIL "$(dcstate "$out" switcher)" \
+        "doctor: ... because the switch would be taken and never announced"
+    chmod 755 "$DCNOT"
+
+    # ── the kill switch, and a value it cannot read ──────────────────────────
+    out=$(ddoc "$WDC" SESSION_AUTO_SWITCH=off); rc=$?
+    report 0 "$rc" "doctor: a switcher deliberately turned off is not a failure"
+    report pending "$(dcstate "$out" switcher)" "doctor: ... it is pending"
+    report yes "$(dcsays "$out" switcher SESSION_AUTO_SWITCH)" "doctor: ... naming the knob that turned it off"
+
+    out=$(ddoc "$WDC" SESSION_AUTO_SWITCH=yes); rc=$?
+    report 1 "$rc" "doctor: a mode the verb cannot read is a failure, not an absence"
+    report FAIL "$(dcstate "$out" switcher)" "doctor: ... every decision would refuse on it"
+
+    # ── the trigger's wiring, probed structurally rather than by grep ────────
+    WDC2=$(dcworld); dcarm "$WDC2" prompt
+    out=$(ddoc "$WDC2"); rc=$?
+    report 1 "$rc" "doctor: an armed waiter on UserPromptSubmit alone carries no cap death to a decision"
+    report FAIL "$(dcstate "$out" switcher)" "doctor: ... so the switcher check fails"
+    report ok "$(dcstate "$out" auto-resume)" \
+        "doctor: ... while auto-resume, which counts every event, still reads ok — the two ask different questions"
+
+    WDC3=$(dcworld); dcarm "$WDC3" unarmed
+    out=$(ddoc "$WDC3"); rc=$?
+    report 1 "$rc" "doctor: a StopFailure entry without asyncRewake runs synchronously and wakes nobody"
+    report FAIL "$(dcstate "$out" switcher)" \
+        "doctor: ... and a grep for the command would have passed it, which is why the probe is structural"
+
+    # ── the states that are pending rather than wrong ────────────────────────
+    WDC4=$(dcworld); rm -f "$WDC4/cfg/.credentials.json"
+    out=$(ddoc "$WDC4"); rc=$?
+    report 0 "$rc" "doctor: a config dir with no credentials file is pending, not a failure"
+    report pending "$(dcstate "$out" switcher)" "doctor: ... the shape a macOS Keychain install has, which this build cannot swap"
+    report yes "$(dcsays "$out" switcher '.credentials.json')" "doctor: ... naming the file it looked for"
+
+    WDC5=$(dcworld); rm -f "$WDC5/vault/b@example.com.json"
+    out=$(ddoc "$WDC5"); rc=$?
+    report 0 "$rc" "doctor: one vaulted login is pending — there is nowhere to switch to yet"
+    report pending "$(dcstate "$out" switcher)" "doctor: ... rather than a failure"
+    report yes "$(dcsays "$out" switcher '1 vaulted login')" "doctor: ... counting what the vault holds"
+
+    WDC6=$(dcworld); rm -f "$WDC6/data/last-status.a@example.com.json"
+    out=$(ddoc "$WDC6"); rc=$?
+    report 0 "$rc" "doctor: a live login with no statusline cache is pending"
+    report pending "$(dcstate "$out" switcher)" \
+        "doctor: ... because the rewake path exits without one, before it reaches a decision"
+
+    WDC7=$(dcworld)
+    out=$(ddoc "$WDC7" PATH="$(minipath curl):$DCB"); rc=$?
+    report 0 "$rc" "doctor: a host without curl still reaches a decision, on frozen figures"
+    report pending "$(dcstate "$out" switcher)" "doctor: ... so it is pending, not a failure"
+    report yes "$(dcsays "$out" switcher curl)" "doctor: ... naming what is missing"
+
+    # ── a decision in flight ─────────────────────────────────────────────────
+    WDC8=$(dcworld)
+    ( lock_run "$WDC8/data/switch.lock" sleep 5 >/dev/null 2>&1 ) &
+    dcpid=$!
+    sleep 0.3 2>/dev/null || sleep 1
+    out=$(ddoc "$WDC8")
+    report yes "$(dcsays "$out" switcher 'lock not free')" "doctor: a decision in flight is visible on the lock"
+    wait "$dcpid" 2>/dev/null
+    out=$(ddoc "$WDC8")
+    report no "$(dcsays "$out" switcher 'lock not free')" "doctor: ... and once it has finished the lock is free again"
+
+    # ── the deferred guard, made visible ─────────────────────────────────────
+    WDC9=$(dcworld); dcn=$(date +%s)
+    { printf '%s\tswitch\ta@example.com\tb@example.com\tcap\tclimbed\t-\tsid=x;scoped=2\n' $(( dcn - 615 ))
+      printf '%s\trefuse\tb@example.com\t-\tmanual\tblank-credential\t-\tnotify=off\n' $(( dcn - 60 ))
+    } > "$WDC9/data/switch-log.tsv"
+    out=$(ddoc "$WDC9"); rc=$?
+    report 0 "$rc" "doctor: a second model-scoped weekly window is information, not a failure"
+    report yes "$(dcsays "$out" switcher '2 model-scoped')" \
+        "doctor: ... read from the newest row that CARRIES scoped=, which the refusal above it does not"
+    report no "$(dcsays "$DCOK" switcher 'model-scoped')" \
+        "doctor: a log whose newest row counted one window says nothing about it"
+
+    WDC10=$(dcworld)
+    printf '{"error":{"type":"rate_limit_error"}}\n' > "$WDC10/data/probe-body.b@example.com.json"
+    out=$(ddoc "$WDC10"); rc=$?
+    report 0 "$rc" "doctor: a usage response no window could be read from is reported, not failed on"
+    report yes "$(dcsays "$out" switcher 'probe-body.b@example.com.json')" \
+        "doctor: ... naming the file, because a good probe deletes it and its presence describes the LAST response"
+    report no "$(dcsays "$DCOK" switcher 'probe-body')" "doctor: ... and says nothing when no such body is on disk"
+
+    # ── how many of the vault's entries could authenticate ───────────────────
+    WDC11=$(dcworld)
+    printf '{"email":"c@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"c@example.com"},"claudeAiOauth":{"accessToken":"","expiresAt":9999999999000}}\n' \
+        > "$WDC11/vault/c@example.com.json"
+    out=$(ddoc "$WDC11")
+    report yes "$(dcsays "$out" switcher '3 logins, 2 with a token')" \
+        "doctor: an entry whose access token is empty is in the vault and is not a login anything could authenticate as"
+
+    # The figure is about what the vault CARRIES. A token that has since lapsed
+    # is still a token; the probe is what calls it lapsed, and the decision then
+    # runs on that login's frozen figures rather than skipping it.
+    WDC11b=$(dcworld)
+    printf '{"email":"c@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"c@example.com"},"claudeAiOauth":{"accessToken":"t","expiresAt":1000000000000}}\n' \
+        > "$WDC11b/vault/c@example.com.json"
+    out=$(ddoc "$WDC11b"); rc=$?
+    report 0 "$rc" "doctor: a vault entry whose token has lapsed is not a failure"
+    report yes "$(dcsays "$out" switcher '3 logins, 3 with a token')" \
+        "doctor: ... and it still counts, because the figure names what the entry carries, not what the endpoint would say"
+
+    # ── the gap, with nothing on the switcher's side of it ───────────────────
+    WDC12=$(dcworld); rm -f "$WDC12/data/switch-log.tsv"
+    out=$(ddoc "$WDC12")
+    report yes "$(dcsays "$out" switcher 'no decision recorded yet')" \
+        "doctor: a switcher that has decided nothing says so"
+    report yes "$(dcsays "$out" switcher 'newest cap death (5m)')" \
+        "doctor: ... beside the cap death it did not act on, which is the gap worth seeing"
+
+    # ── a vault entry filed under a name its own identity does not derive ────
+    # The swap writes two files and the statusline's autosave reads both; land
+    # between them and a credential is vaulted under another login's name. The
+    # window is not guarded, and this is the detector that would turn that
+    # judgement into a case to design against.
+    WDC13=$(dcworld)
+    printf '{"email":"d@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"d@example.com"},"claudeAiOauth":{"accessToken":"t","expiresAt":9999999999000}}\n' \
+        > "$WDC13/vault/c@example.com.json"
+    out=$(ddoc "$WDC13"); rc=$?
+    report 1 "$rc" "doctor: a vault entry whose own identity is not the name it is filed under is a failure"
+    report FAIL "$(dcstate "$out" vault)" "doctor: ... on a line of its own"
+    report yes "$(dcsays "$out" vault 'c@example.com.json')" "doctor: ... naming the file"
+    report yes "$(dcsays "$out" vault 'd@example.com')" "doctor: ... and the identity the entry itself carries"
+    report "" "$(dcstate "$DCOK" vault)" "doctor: a vault whose entries all derive their own names says nothing"
+
+    # An entry nothing can read an identity out of is a different fault with a
+    # different remedy, and the name-collision wording would send its reader to
+    # .history for a restore that is not the answer.
+    WDC13b=$(dcworld)
+    printf '{"email":"e@example.com","login":"e@exa\n' > "$WDC13b/vault/e@example.com.json"
+    out=$(ddoc "$WDC13b"); rc=$?
+    report 1 "$rc" "doctor: a vault entry carrying no identity of its own is a failure too"
+    report FAIL "$(dcstate "$out" vault)" "doctor: ... on the same line"
+    report yes "$(dcsays "$out" vault 'no identity of its own')" "doctor: ... named as what it is"
+    report no "$(dcsays "$out" vault 'another login')" \
+        "doctor: ... and never as a credential filed under another login's name, which it is not"
+
+    # ── the warn threshold, which `doctor` dispatches before the CLI validates
+    out=$(ddoc "$WDC" USAGE_WARN_PCT=ninety); rc=$?
+    report 1 "$rc" "doctor: a warn threshold that is not a whole number is a failure"
+    report FAIL "$(dcstate "$out" 'warn pct')" \
+        "doctor: ... named on its own line — until it is fixed every prompt is blocked with exit 2"
+    report yes "$(dcsays "$out" 'warn pct' ninety)" "doctor: ... quoting the value it read"
+    out=$(ddoc "$WDC" USAGE_WARN_PCT=95)
+    report "" "$(dcstate "$out" 'warn pct')" "doctor: a threshold that is a whole number says nothing"
+
+    WDC14=$(dcworld)
+    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-ninety}"\n' > "$WDC14/cfg/session.conf"
+    chmod 600 "$WDC14/cfg/session.conf"
+    out=$(ddoc "$WDC14"); rc=$?
+    report 1 "$rc" "doctor: the same value out of session.conf is caught, which is the case that used to report everything fine"
+    report FAIL "$(dcstate "$out" 'warn pct')" "doctor: ... as a failure"
+    report yes "$(dcsays "$out" 'warn pct' 'session.conf')" "doctor: ... naming the file that sets it"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
