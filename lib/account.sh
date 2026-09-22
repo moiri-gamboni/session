@@ -60,11 +60,14 @@
 # one per login. (The blank-credential refusal is the one caller that applies
 # it per login, because its subject is a login rather than the box.) Probation
 # is the narrower window in which a switch that has just happened is still
-# being judged — the one job it has is letting a FAILED switch bypass the
-# cooldown and re-decide. Collapsing both into a single 300-second value would
-# put that interval BELOW this box's measured retry cadence of 326-343 s, so
-# the bypass would never engage and a failed switch would sit until the next
-# cap death fifteen minutes later.
+# being judged: while its target is the login now live, another death on that
+# login re-decides instead of waiting the cooldown out. Which switches that
+# covers is narrower than "the failed ones" — one of acct_swap's failures
+# never makes its target live at all — and the decision's own gate in section
+# 6 is where the cases are spelled out. Collapsing both intervals into a
+# single 300-second value would put that one BELOW this box's measured retry
+# cadence of 326-343 s, so the bypass would never engage and a switch that
+# needed re-deciding would sit until the next cap death fifteen minutes later.
 #
 # Neither is a knob. No caller wants a different value, and the "a switch is
 # expensive, so make the cooldown tunable" argument was measured and does not
