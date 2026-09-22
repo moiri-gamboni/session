@@ -78,6 +78,8 @@
 #                     name is still the app's cwd slug. `claude --name` and
 #                     `/rename` set the same field themselves and are never
 #                     overwritten; rename is how you change it afterwards.
+#                     Side effect every turn, gated or not: appends this turn's
+#                     START event to the turn log.
 #   session --rewake-waiter  asyncRewake hook plumbing (second UserPromptSubmit
 #                     entry AND second StopFailure entry): the harness
 #                     backgrounds it and treats exit 2 as "wake the model with
@@ -99,8 +101,6 @@
 #                     parent: the harness only backgrounds asyncRewake for
 #                     interactive/streaming sessions, so there the hook would
 #                     run synchronously and block the print run.
-#                     Side effect every turn, gated or not: appends this turn's
-#                     START event to the turn log.
 #   session --turn-end  Stop-hook plumbing: appends the turn's END event to the
 #                     turn log; always exits 0 silently (a Stop hook's exit 2
 #                     would force the agent to keep going).
