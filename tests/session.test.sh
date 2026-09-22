@@ -736,6 +736,46 @@ minipath() {  # EXCLUDED -> bin dir
     printf '%s\n' "$d"
 }
 
+# A curl that answers the usage endpoint from files instead of the network:
+# body.<token> is the response body and status.<token> its HTTP status (200
+# when there is no status file, 000 for a transport failure — what real curl
+# reports when no response arrived). It notes every token it was asked with in
+# asked.<token> and logs its argv, which is what makes "the token never rides
+# argv" checkable. %{http_code} is written only when -w asks for that exact
+# field, so a changed format reads as a missing status rather than as one the
+# stub invented, and a call with no -o is refused rather than answered on
+# stdout: every caller in this tree reads the status, which needs the body in a
+# file.
+curlstub() {  # -> a bin directory holding the stub
+    local d
+    d=$(mktemp -d "$TMP/curlstub.XXXXXX")
+    cat > "$d/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+d=$(dirname "$0"); out=""; wfmt=""
+printf '%s\n' "$*" >> "$d/argv"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift ;;
+        -w) wfmt="$2"; shift ;;
+    esac
+    shift
+done
+tok=$(sed -n 's/^header = "Authorization: Bearer \(.*\)"$/\1/p')
+[ -n "$tok" ] || exit 2
+: > "$d/asked.$tok"
+[ -n "$out" ] || { echo "curl stub: called with no -o FILE" >&2; exit 2; }
+code=200
+[ -f "$d/status.$tok" ] && code=$(cat "$d/status.$tok")
+emit_code() { case "$wfmt" in *'%{http_code}'*) printf '%s' "$code" ;; esac; }
+if [ "$code" = 000 ]; then emit_code; exit 7; fi
+if [ -f "$d/body.$tok" ]; then cat "$d/body.$tok" > "$out"; else : > "$out"; fi
+emit_code
+exit 0
+CURLEOF
+    chmod +x "$d/curl"
+    printf '%s\n' "$d"
+}
+
 echo "--- case 2: the seven lifecycle modes append one row each ---"
 
 if ! have jq; then
@@ -1023,22 +1063,9 @@ if ! have jq || ! have perl; then
     skip "case 14 [fable]" "needs jq and perl"
 else
     # The statusline payload never carries Fable's cap, so `list` fetches it with
-    # each vaulted login's own token. curl is a stub: it answers per token from
-    # body.<token>, notes every token it was asked with, and logs its argv, which
-    # is what makes "the token never rides argv" checkable.
+    # each vaulted login's own token, through the stub above.
     W14f=$(world); VF="$W14f/vault"; mkdir -p "$VF"
-    FB=$(mktemp -d "$TMP/curlstub.XXXXXX")
-    cat > "$FB/curl" <<'CURLEOF'
-#!/usr/bin/env bash
-d=$(dirname "$0")
-printf '%s\n' "$*" >> "$d/argv"
-tok=$(sed -n 's/^header = "Authorization: Bearer \(.*\)"$/\1/p')
-[ -n "$tok" ] || exit 2
-: > "$d/asked.$tok"
-[ -f "$d/body.$tok" ] || exit 22
-cat "$d/body.$tok"
-CURLEOF
-    chmod +x "$FB/curl"
+    FB=$(curlstub)
     NOWI=$(date +%s)
     vent() {  # LOGIN TOKEN EXPIRES_AT — a vault entry in the shape `account save` writes
         printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
@@ -3586,6 +3613,170 @@ else
     alsave 3000
     report 3 "$(grep -c . "$ALOG")" \
         "switch-log [refusal]: ... and does not reopen the first login's cooldown"
+fi
+
+echo "--- case 14 [probe]: the status-aware usage probe ---"
+
+if ! have jq; then
+    skip "case 14 [probe]" "no jq"
+else
+    # acct_probe is driven in process: the two libs are sourced under `env -i`
+    # with a fixture data root, so the probe's cache writes land in the fixture
+    # and never in the real store. `session` itself cannot be sourced (sourcing
+    # it runs it), which is why the probe lives in the lib at all.
+    cat > "$TMP/aprobe" <<'APEOF'
+. "$SESSION_LIB_UNDER_TEST"      || { echo "cannot source lib/common.sh" >&2; exit 9; }
+. "$SESSION_ACCT_LIB_UNDER_TEST" || { echo "cannot source lib/account.sh" >&2; exit 9; }
+eval "$PROBE"
+APEOF
+    aprobe() {  # aprobe 'snippet' [VAR=VAL ...]
+        local snippet="$1"; shift
+        env -i PATH="$PATH" HOME="$FH" TZ="${TZ:-UTC}" \
+            SESSION_LIB_UNDER_TEST="$LIB" SESSION_ACCT_LIB_UNDER_TEST="$SDIR/lib/account.sh" \
+            PROBE="$snippet" ${1+"$@"} bash "$TMP/aprobe"
+    }
+
+    PB=$(curlstub)
+    PD="$TMP/probe-data"; VFP="$TMP/probe-vault"; mkdir -p "$PD" "$VFP"
+    NOWP=$(date +%s)
+    pvent() {  # LOGIN TOKEN EXPIRES_AT [FILE_STEM] — the shape `account save` writes
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
+            "$1" "$1" "$1" "$2" "$3" > "$VFP/${4:-$1}.json"
+    }
+    pnone() { printf '%s\t-1\t-1\t-1\t0\t0\t0\t%s' "$1" "${2:-0}"; }
+    pp() {  # LOGIN -> the probe's row for that login, under the stub
+        aprobe "acct_probe '$1' '$VFP/$1.json'" SESSION_DATA_DIR="$PD" PATH="$PB:$PATH"
+    }
+
+    # The 200 body is the 2026-09-22 capture, trimmed to the fields the filter
+    # reads: the flat five_hour/seven_day pair the endpoint carried before it
+    # grew limits[], and the three limits rows it carries now.
+    CAP5=1790076600   # 2026-09-22T11:30:00Z, the capture's five-hour reset
+    CAPW=1790240400   # 2026-09-24T09:00:00Z, its weekly reset, shared with Fable
+    pvent ok@example.com tk-ok $(( NOWP + 3600 ))
+    printf '%s\n' '{"five_hour":{"utilization":24.0,"resets_at":"2026-09-22T11:30:00.301329+00:00"},"seven_day":{"utilization":48.0,"resets_at":"2026-09-24T09:00:00.301351+00:00"},"limits":[{"kind":"session","group":"session","percent":24,"severity":"normal","resets_at":"2026-09-22T11:30:00.301329+00:00","scope":null,"is_active":false},{"kind":"weekly_all","group":"weekly","percent":48,"severity":"normal","resets_at":"2026-09-24T09:00:00.301351+00:00","scope":null,"is_active":false},{"kind":"weekly_scoped","group":"weekly","percent":89,"severity":"warning","resets_at":"2026-09-24T09:00:00.301571+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null},"is_active":true}]}' \
+        > "$PB/body.tk-ok"
+
+    r=$(pp ok@example.com)
+    report "$(printf 'good\t24\t48\t89\t%s\t%s\t%s\t1' "$CAP5" "$CAPW" "$CAPW")" "$r" \
+        "case 14 [probe]: the captured 200 is good, carrying both general windows, Fable, and each reset as an epoch"
+    report 8 "$(printf '%s\n' "$r" | awk -F'\t' '{print NF}')" \
+        "case 14 [probe]: ... in eight fields, none of them empty"
+    report '{"fable":{"used_percentage":89,"resets_at":1790240400}}' "$(cat "$PD/fable.ok@example.com.json" 2>&1)" \
+        "case 14 [probe]: ... and the same body refreshes the Fable cache through the pinned filter"
+    report no "$([ -e "$PD/probe-body.ok@example.com.json" ] && echo yes || echo no)" \
+        "case 14 [probe]: ... while a body that parsed is not kept on disk"
+
+    # The flat shape alone — what the endpoint answered before it grew limits[].
+    pvent flat@example.com tk-flat $(( NOWP + 3600 ))
+    printf '%s\n' '{"five_hour":{"utilization":24.0,"resets_at":"2026-09-22T11:30:00.301329+00:00"},"seven_day":{"utilization":48.0,"resets_at":"2026-09-24T09:00:00.301351+00:00"}}' \
+        > "$PB/body.tk-flat"
+    report "$(printf 'good\t24\t48\t-1\t%s\t%s\t0\t0' "$CAP5" "$CAPW")" "$(pp flat@example.com)" \
+        "case 14 [probe]: a body with no limits[] falls back to the flat five_hour/seven_day pair"
+
+    # The deferred guard: the selector still looks only at Fable, but a second
+    # model-scoped window is counted, so a shape change is visible the week it
+    # happens instead of after a bad switch.
+    pvent two@example.com tk-two $(( NOWP + 3600 ))
+    printf '%s\n' '{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":89,"resets_at":"2026-09-24T09:00:00.301571+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}},{"kind":"weekly_scoped","group":"weekly","percent":12,"resets_at":"2026-09-24T09:00:00.301571+00:00","scope":{"model":{"id":null,"display_name":"Opus"},"surface":null}}]}' \
+        > "$PB/body.tk-two"
+    report "$(printf 'good\t-1\t-1\t89\t0\t0\t%s\t2' "$CAPW")" "$(pp two@example.com)" \
+        "case 14 [probe]: a second model-scoped window is counted, and Fable's row is still the one read"
+
+    # ── the status classification, which never reads the body ────────────────
+    # A 429 is a 4xx, and this endpoint's rate bucket is selected by User-Agent:
+    # an "any 4xx is dead" rule would mark healthy logins dead and, worse, mark
+    # the live login blocked on everything and switch because we were throttled.
+    printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"OAuth access token is invalid."},"request_id":null}' > "$PB/body.tk-bad"
+    printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"OAuth access token has expired. Re-authenticate to continue."},"request_id":null}' > "$PB/body.tk-exp"
+    while IFS='|' read -r pnm pcode pstate plabel; do
+        [ -n "$pnm" ] || continue
+        pvent "$pnm@example.com" "tk-$pnm" $(( NOWP + 3600 ))
+        printf '%s' "$pcode" > "$PB/status.tk-$pnm"
+        [ -f "$PB/body.tk-$pnm" ] || printf '%s\n' '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}' > "$PB/body.tk-$pnm"
+        report "$(pnone "$pstate")" "$(pp "$pnm@example.com")" "case 14 [probe]: $plabel"
+    done <<'PSTATUS'
+bad|401|dead|an invalid access token is dead
+exp|401|dead|... and so is an expired one, on the same status and without reading the message that differs
+fbd|403|dead|a 403 is dead too
+lim|429|unreachable|a 429 is unreachable, never dead — the endpoint throttled us, the login is fine
+slw|408|unreachable|a 408 is unreachable
+ise|500|unreachable|a 500 is unreachable
+ovl|503|unreachable|a 503 is unreachable
+gne|000|unreachable|a curl that never got a response is unreachable
+PSTATUS
+    report "" "$(cd "$PD" && ls | grep '^probe-body\.')" \
+        "case 14 [probe]: not one of those states keeps a response body — only a 200 nothing can be read from does"
+
+    # ── a 200 that parses to nothing: the shape change this has already seen ──
+    pvent inband@example.com tk-inband $(( NOWP + 3600 ))
+    printf '%s\n' '{"error":{"type":"rate_limit_error"}}' > "$PB/body.tk-inband"
+    printf '{"fable":{"used_percentage":61,"resets_at":4070908800}}\n' > "$PD/fable.inband@example.com.json"
+    cp "$PD/fable.inband@example.com.json" "$TMP/probe-fable-inband.before"
+    report "$(pnone noshape)" "$(pp inband@example.com)" \
+        "case 14 [probe]: a 200 whose body parses to no usable window at all is noshape"
+    report '{"error":{"type":"rate_limit_error"}}' "$(cat "$PD/probe-body.inband@example.com.json" 2>&1)" \
+        "case 14 [probe]: ... and that raw body is kept, because a shape change is the case it is evidence for"
+    report yes "$(cmp -s "$TMP/probe-fable-inband.before" "$PD/fable.inband@example.com.json" && echo yes || echo no)" \
+        "case 14 [probe]: ... while the previous Fable figure is left byte-identical"
+
+    cp "$PB/body.tk-ok" "$PB/body.tk-inband"
+    pp inband@example.com >/dev/null
+    report no "$([ -e "$PD/probe-body.inband@example.com.json" ] && echo yes || echo no)" \
+        "case 14 [probe]: ... and a body that parses again clears it, so its presence always means the LAST probe could not be read"
+
+    pvent junk@example.com tk-junk $(( NOWP + 3600 ))
+    printf '%s\n' 'not json at all' > "$PB/body.tk-junk"
+    report "$(pnone noshape)" "$(pp junk@example.com)" \
+        "case 14 [probe]: a 200 that is not JSON is noshape as well"
+
+    # scoped_rows survives a noshape: the one figure that says the endpoint's
+    # shape moved is worth nothing if it is dropped exactly when it moves.
+    pvent nulp@example.com tk-nulp $(( NOWP + 3600 ))
+    printf '%s\n' '{"limits":[{"kind":"weekly_scoped","group":"weekly","percent":null,"resets_at":null,"scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}' \
+        > "$PB/body.tk-nulp"
+    report "$(pnone noshape 1)" "$(pp nulp@example.com)" \
+        "case 14 [probe]: a noshape still reports how many model-scoped rows it saw"
+
+    # ── the two states that make no request at all ───────────────────────────
+    pvent laps@example.com tk-laps $(( NOWP - 60 ))
+    report "$(pnone lapsed)" "$(pp laps@example.com)" \
+        "case 14 [probe]: a lapsed access token is lapsed"
+    report no "$([ -e "$PB/asked.tk-laps" ] && echo yes || echo no)" \
+        "case 14 [probe]: ... and is never sent, so nothing rotates the credential it belongs to"
+    printf '{"email":"gap@example.com","login":"gap@example.com"}\n' > "$VFP/gap@example.com.json"
+    report "$(pnone lapsed)" "$(pp gap@example.com)" \
+        "case 14 [probe]: a vault entry with no readable token is lapsed too — nothing was asked, so nothing is known"
+    report "$(pnone nocurl)" \
+        "$(aprobe "acct_probe ok@example.com '$VFP/ok@example.com.json'" SESSION_DATA_DIR="$PD" PATH="$(minipath curl)")" \
+        "case 14 [probe]: a host without curl probes nothing and says so, so the decision falls back to frozen figures"
+
+    report "" "$(cd "$PD" && ls | grep '\.tmp\.')" \
+        "case 14 [probe]: no temp file is left behind by any of those states"
+    report 0 "$(grep -c 'tk-' "$PB/argv" || true)" \
+        "case 14 [probe]: across every one of them the token reached curl on stdin, never in its argv"
+
+    # ── the fan-out: one file per login, read after wait ─────────────────────
+    # Two logins with different answers, so a merged pipe or a shared temp file
+    # shows up as a row carrying the other login's figures rather than as a
+    # crash. The second name needs sanitising before it can key a file.
+    pvent 'par/one@example.com' tk-par1 $(( NOWP + 3600 )) par1
+    pvent par2@example.com tk-par2 $(( NOWP + 3600 ))
+    cp "$PB/body.tk-ok" "$PB/body.tk-par1"
+    printf '429' > "$PB/status.tk-par2"
+    printf '%s\n' '{"type":"error","error":{"type":"rate_limit_error"}}' > "$PB/body.tk-par2"
+    PAR=$(aprobe "printf '%s\n' '$VFP/par1.json' '$VFP/par2@example.com.json' | acct_probe_all" \
+        SESSION_DATA_DIR="$PD" PATH="$PB:$PATH")
+    report "$(printf 'par/one@example.com\tgood\t24\t48\t89\t%s\t%s\t%s\t1' "$CAP5" "$CAPW" "$CAPW")" \
+        "$(printf '%s\n' "$PAR" | awk -F'\t' '$1 == "par/one@example.com"')" \
+        "case 14 [probe]: a fan-out keeps each login's own answer, under a name that has to be sanitised before it can key a file"
+    report "$(printf 'par2@example.com\t%s' "$(pnone unreachable)")" \
+        "$(printf '%s\n' "$PAR" | awk -F'\t' '$1 == "par2@example.com"')" \
+        "case 14 [probe]: ... and the login the endpoint throttled is unreachable in the same fan-out"
+    report 2 "$(printf '%s\n' "$PAR" | grep -c .)" \
+        "case 14 [probe]: ... two logins in, two rows out"
+    report "" "$(cd "$PD" && ls -a | grep '^\.probe\.')" \
+        "case 14 [probe]: ... and the fan-out's temp directory is gone once the parent has read it"
 fi
 
 echo
