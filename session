@@ -806,13 +806,28 @@ acct_cfg() { printf '%s' "$SESSION_CFG"; }
 # memoised: `use` compares it before and after the swap in one process.
 acct_live_login() { session_login_read; }
 acct_name_of() { jq -r '.login // .email // empty' "$1"; }   # a vault entry's name
+# Whether a credentials file or a vault entry carries a token that could
+# authenticate. Absent, null and empty all answer no: `use` installs
+# `.claudeAiOauth` wholesale, so an object with no token in it is dead weight
+# whatever else it holds.
+acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/null 2>&1; }
 
 # Copy the live login into the vault. Idempotent: an unchanged entry is only
 # touched (the mtime is the autosave's "already captured" marker).
 acct_save() {
   local cfg login vf now
   cfg=$(acct_cfg); login=$(acct_live_login)
-  [ "$login" != unknown ] && [ -s "$cfg/.credentials.json" ] || return 1
+  [ "$login" != unknown ] && [ -s "$cfg/.credentials.json" ] || {
+    echo "session account: nothing to save (no live login found)" >&2; return 1; }
+  # A blank credential is not a credential. Five times in two months the live
+  # file has held a structurally perfect claudeAiOauth object — every key
+  # present, every type right — whose accessToken was the empty string, and once
+  # a null claudeAiOauth landed in the vault a second after a healthy save.
+  # Vaulting either overwrites the last working copy of the login, which is the
+  # copy the recovery needs, so the save is refused instead.
+  acct_token_ok "$cfg/.credentials.json" || {
+    echo "session account: not saving $login — its live accessToken is empty, and vaulting that would destroy the last working copy of this login" >&2
+    return 1; }
   mkdir -p "$acctdir" && chmod 700 "$acctdir"
   vf="$acctdir/$login.json"; now=$(date +%s)
   if [ -s "$vf" ]; then
@@ -1107,8 +1122,9 @@ acct_main() {
       fi
       ;;
     save)
-      acct_save && printf 'Saved %s to %s\n' "$(acct_live_login)" "$acctdir" \
-        || { echo "session account: nothing to save (no live login found)" >&2; return 1; }
+      # acct_save says on stderr why it refused; a second, guessed reason here
+      # would contradict it.
+      acct_save && printf 'Saved %s to %s\n' "$(acct_live_login)" "$acctdir" || return 1
       ;;
     rm)
       local vf; vf=$(acct_resolve "${1:?usage: session account rm <name>}") || return 1
@@ -1176,7 +1192,7 @@ doctor_main() {
     *) echo "session doctor: unknown arg '$1' (it takes none)" >&2; exit 2 ;;
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
-        newest_s have_e plat miss age
+        newest_s have_e plat miss age crdl
 
   echo "-- session doctor -------------------------------------------------"
   echo "  code     $SESSION_HOME"
@@ -1422,6 +1438,24 @@ doctor_main() {
   if [ -n "$miss" ]; then doc FAIL platform "$plat"; else doc ok platform "$plat"; fi
   if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
     doc pending platform "macOS: \`session account\` cannot swap the login (credentials are in the Keychain)"
+  fi
+
+  # A blank live credential. Not one of the numbered checks: it reports a state
+  # the machine is in rather than how it is wired, and says nothing when the
+  # machine is not in it. The condition is "proven blank" rather than "not
+  # proven good", because an unreadable or unparseable credentials file is a
+  # different fault and this line would misname it.
+  if [ -s "$SESSION_CFG/.credentials.json" ] \
+     && jq -e '(.claudeAiOauth.accessToken // "") == ""' "$SESSION_CFG/.credentials.json" >/dev/null 2>&1; then
+    crdl=$(acct_live_login)
+    # The entry has to carry a token of its own before it can be called the
+    # copy to restore. Entries blanked before this refusal existed are still in
+    # vaults, and `use` installs whatever the entry holds.
+    if acct_token_ok "$acctdir/$crdl.json"; then
+      doc FAIL credentials "the live accessToken is empty — nothing can authenticate; $acctdir/$crdl.json is kept as the last working copy, restore it with \`session account use $crdl\`"
+    else
+      doc FAIL credentials "the live accessToken is empty — nothing can authenticate, and no vaulted copy of $crdl carries a usable token; re-run /login"
+    fi
   fi
 
   echo "-------------------------------------------------------------------"
