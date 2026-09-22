@@ -54,8 +54,8 @@
 #   session --compact one line: date/time + 5h & weekly %s (token-frugal, always
 #                     exits 0 so it can never block a prompt)
 #   session --hook    UserPromptSubmit plumbing, warn-gated: silent (no output at
-#                     all) while both windows are below USAGE_WARN_PCT (default
-#                     90). At/above it, emits that line + a ⚠ advisory wrapped as
+#                     all) while both windows are below USAGE_WARN_PCT. At/above
+#                     it, emits that line + a ⚠ advisory wrapped as
 #                     hook JSON (hookSpecificOutput.additionalContext +
 #                     suppressOutput:true — injected into the model's context,
 #                     kept out of the user's transcript). ONE advisory whatever
@@ -217,6 +217,14 @@ FIVE_GUARD="${FIVE_GUARD:-linear}"
 WEEK_GUARD="${WEEK_GUARD:-linear}"
 FIVE_WINDOW="${FIVE_WINDOW:-18000}"
 WEEK_WINDOW="${WEEK_WINDOW:-604800}"
+# The used-% at or above which --hook injects its line and advisory and
+# --rewake-waiter arms. One default, here, rather than a copy at each use site:
+# the copies drift, and the consumer left holding the stale one gates at a
+# threshold nobody chose. The environment-wins form is the lib's, and is what
+# lets a session.conf line set this with no further plumbing — the conf being
+# the only channel that reaches a hook, which inherits no shell environment.
+# Above 100 disables the hook's output entirely.
+USAGE_WARN_PCT="${USAGE_WARN_PCT:-90}"
 
 # Duration formatters, shared by the overview and `session account`.
 hm()  { local s=$(( $1<0 ? 0 : $1 )); printf '%dh%02dm' $(( s/3600 ))  $(( (s%3600)/60 )); }
@@ -1683,7 +1691,7 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
 Exit codes:
   0  success (plumbing modes: unconditionally)
   1  no data yet, not inside a Claude Code session, or a failed `doctor` check
-  2  bad arguments / invalid guard spec
+  2  bad arguments / invalid guard spec or warn threshold
   3  PAUSE (from --guard)
 HELP
       exit 0 ;;
@@ -1715,6 +1723,20 @@ for pair in "FIVE_GUARD=$FIVE_GUARD" "WEEK_GUARD=$WEEK_GUARD"; do
     echo "session: invalid ${pair%%=*}='${pair#*=}' (use: linear | sqrt | pow:P | <int> | off)" >&2; exit 2
   fi
 done
+# Same reason, sharper failure: the warn threshold is used in arithmetic
+# ((fp >= thr)). A non-numeric value is re-expanded as a VARIABLE NAME, and an
+# unset one kills the shell under `set -u` — inside a hook, where the death
+# surfaces as neither output nor error; a decimal is quieter still, failing the
+# arithmetic so the gate never fires. Both refuse here, in front of the hook
+# path and the rewake path alike. No upper bound: above 100 is the documented
+# way to turn the hook's output off.
+case "$USAGE_WARN_PCT" in
+  *[!0-9]*) echo "session: invalid USAGE_WARN_PCT='$USAGE_WARN_PCT' (use a whole number of percent; above 100 disables the hook's output)" >&2; exit 2 ;;
+esac
+# Digits are not yet a number: bash reads a leading zero as octal, so 070 would
+# gate at 56 and 09 would not parse at all. Fix the base once, here, so both
+# consumers read a canonical decimal.
+USAGE_WARN_PCT=$(( 10#$USAGE_WARN_PCT ))
 
 # emit a status line either plain (compact) or wrapped in the UserPromptSubmit hook
 # JSON (hook): additionalContext is injected into the model's context; suppressOutput
@@ -2575,13 +2597,13 @@ if [ "$mode" = compact ] || [ "$mode" = hook ]; then
     "$(seg 5h "$five" "$f_stale" "$(cd5)")" \
     "$(seg wk "$week" "$w_stale" "$(cdw)")" \
     "$aline" "$stale")
-  # Hook output is gated behind the warning threshold (USAGE_WARN_PCT, default
-  # 90): below it the hook injects nothing — the every-turn line was context
-  # noise — and only the turn-start side effect below runs. A stale window's %
-  # belongs to a window that already closed, so it neither warns nor un-gates.
+  # Hook output is gated behind the warning threshold (USAGE_WARN_PCT): below it
+  # the hook injects nothing — the every-turn line was context noise — and only
+  # the turn-start side effect below runs. A stale window's % belongs to a
+  # window that already closed, so it neither warns nor un-gates.
   f_warn=0; w_warn=0; warn=0; refresh=""
   if [ "$mode" = hook ]; then
-    thr=${USAGE_WARN_PCT:-90}
+    thr=$USAGE_WARN_PCT
     [ "$f_stale" = 0 ] && (( fp >= thr )) && f_warn=1
     [ "$w_stale" = 0 ] && (( wp >= thr )) && w_warn=1
     warn=$(( f_warn || w_warn ))
@@ -2695,7 +2717,7 @@ if [ "$mode" = compact ] || [ "$mode" = hook ]; then
   # commented-out entry, an env value, an entry on another event, or the entry
   # itself with asyncRewake absent or false (which the harness then runs
   # synchronously, so it never wakes anyone). Threshold via USAGE_WARN_PCT
-  # (default 90; set >100 to disable the hook's output entirely).
+  # (set it above 100 to disable the hook's output entirely).
   if [ "$warn" = 1 ]; then
     if [ "$f_warn" = 1 ] && [ "$w_warn" = 1 ]; then
       lead="⚠ 5h rate limit at ${fp}% (resets to 0% in $(hm "$left5")) and weekly (7-day) at ${wp}% (resets to 0% in $(dh "$leftw"))."
@@ -2823,7 +2845,7 @@ if [ "$mode" = rewake ]; then
     esac
   done
   [ "$seen" = 1 ] || exit 0
-  thr=${USAGE_WARN_PCT:-90}
+  thr=$USAGE_WARN_PCT
   f_warn=0; w_warn=0
   [ "$f_stale" = 0 ] && (( fp >= thr )) && f_warn=1
   [ "$w_stale" = 0 ] && (( wp >= thr )) && w_warn=1
