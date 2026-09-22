@@ -161,6 +161,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` — the store holds sessi
 | `turn-log.tsv` | turn and lifecycle events, one row per event |
 | `session-log.tsv` | per-session cost/token samples, written by the statusline |
 | `focus-log.tsv` | focused-tab flanks and activity marks, from the tmux hooks and the cron tick |
+| `switch-log.tsv` | one row per decision about which login the box runs on, and the switcher's own control state |
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
 | `fable.<login>.json` | that login's Fable weekly cap, fetched by `session account` |
 | `sessions/<sid>.json` | `{"session_name": …}` — the session's title |
@@ -174,6 +175,8 @@ Mode 700, files 600, and a `.gitignore` containing `*` — the store holds sessi
 | `<log>.lock` | zero-byte lock files the prune takes; safe to ignore, never to delete while a prune is running |
 
 **Retention.** The three live logs keep 8 days so every reader stays fast; older rows move to `archive/` under the same file name, and history is deliberately permanent. The prune runs at most once per 86,400 s behind `.session-log-pruned`, under a lock, and is callable from **both** producers — the statusline render and `session --session-end` — so the logs stay bounded whether or not the statusline is installed. The marker name is the one the pre-port code used, which is what keeps a machine being cut over from pruning immediately on day one or orphaning the old marker. `sessions/` and `panes/` are swept of files older than 8 days in the same pass.
+
+`switch-log.tsv` is exempt, and keeps everything. Counted over the whole recorded history, decisions that survive the cooldown run at about 1,500 rows a year against a 79 MB store, so there is nothing to bound; and each row is the only account of why the box moved off a login, which is a question asked months later or not at all. It is also the switcher's control state — the cooldown, the failed-switch probation and `next_eligible_at` are all read back out of it — so a prune would be deleting state, not history.
 
 ### TSV schemas
 
@@ -194,6 +197,19 @@ Turn wall time is `e` minus `s`, which includes tool execution; gaps between an 
 **`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`.
 
 **`session-log.tsv`** — 21 columns, and readers must tolerate shorter lines from older rows: `ts`, `sid`, `cost_usd`, `five%`, `week%`, `five_reset`, `week_reset`, `duration_ms`, `api_duration_ms`, `total_output_tokens`, `total_input_tokens`, `context%`, `cache_read`, `cache_creation`, `cur_input`, `cur_output`, `lines_added`, `lines_removed`, `model_id`, `prompt_id`, `account`. Only 1-8 are read by the attribution estimator — 8, the process's cumulative wall clock, distinguishes two processes rendering under one session id (a `--resume` beside a live original), so a cost delta is taken within a process and an alternation between them is never booked as spend; the rest are logged so the history exists when a view wants it. Column 21 is what keeps two subscription logins from mixing, since rate-limit windows are per-login. A row is appended when the session's cumulative cost moves, plus a 10-minute idle heartbeat — case 21 pins one row per changed cost and none on an identical render.
+
+**`switch-log.tsv`** — 8 columns, `-` where a field does not apply and never an empty one: `ts` (epoch seconds), `ev`, `from`, `to`, `trigger`, `reason`, `figures`, `detail`.
+
+| `ev` | Event |
+|---|---|
+| `switch` | the box moved from one login to another |
+| `hold` | a decision ran and moved nothing; `reason` says why |
+| `fail` | a swap was attempted and the post-condition did not observe it |
+| `refuse` | a save or a decision was declined before anything was written |
+
+`trigger` is `cap`, `auth` or `manual`. `figures` is `login=5h/wk/fb` per login, joined by `;`, with `*` marking a figure verified against the usage endpoint rather than read from a cache. `detail` is a `k=v;` bag over `sid=`, `http=`, `tier=`, `next_eligible=`, `scoped=` and `notify=`. There is no `dead` event and no `recov=` key.
+
+A reader after one of the `detail` keys must take the newest row **that carries it**, not the newest row: a refusal and a cooldown hold carry neither `next_eligible=` nor `scoped=`. Rows must be split with `awk -F'\t'` and never with `read` — tab is IFS whitespace, so `IFS=$'\t' read` strips a leading tab and merges a run of them, and one empty field would shift every field after it, reading one login's windows as another's. That hazard is also why the writer puts `-` in every field a caller left empty.
 
 **`resume-queue.tsv`** — 3 columns: session id, launch directory, title.
 
