@@ -25,10 +25,13 @@ set -uo pipefail
 # conf) and "the lib filled in its default" (not worth recording).
 env_data_dir="${SESSION_DATA_DIR:-}"
 
-# The build the asyncRewake wake behaviour was verified against. Below it a
-# harness that does not background an async hook would run a 700-second command
-# synchronously on every over-threshold prompt, so the pair is refused rather
-# than armed blind.
+# The build the asyncRewake wake behaviour was verified against. `timeout` is
+# not enforced on an async entry at all, so the pair's value is inert there
+# and anything that can block is bounded inside the script instead. The
+# version matters for the other reason: below it an async hook is not
+# backgrounded, so the waiter would run synchronously on every over-threshold
+# prompt and sleep there until its window reset. Refused rather than armed
+# blind.
 REWAKE_MIN_VERSION=2.1.233
 # Undocumented-but-observed fields; re-verify after a Claude Code upgrade.
 REWAKE_MESSAGE="Claude usage limits (auto-resume waiter):"
@@ -390,7 +393,7 @@ else
         rewake=true
     else
         keep_armed=1
-        refuse "Claude Code ${cv:-(no version)} is older than $REWAKE_MIN_VERSION, where a 700-second asyncRewake hook is not backgrounded and would block every over-threshold prompt; entries already armed are left as they are" \
+        refuse "Claude Code ${cv:-(no version)} is older than $REWAKE_MIN_VERSION, where an asyncRewake hook is not backgrounded: the waiter would run synchronously and block every over-threshold prompt until its window reset; entries already armed are left as they are" \
                "upgrade Claude Code and re-run, or re-run with --no-rewake"
     fi
 fi
@@ -407,7 +410,10 @@ if [ "$settings_ok" = 1 ]; then
             {event:$e, matcher:$m,
              entry:{type:"command", command:"bash \($s) \($mode) || true", timeout:2}};
         # No `|| true` on the pair: exit 2 IS the wake signal, and swallowing it
-        # turns the waiter into a no-op that still costs 700 seconds.
+        # turns the waiter into a no-op that still sleeps out its whole wait.
+        # The timeout below is inert on an async entry — the harness does not
+        # enforce it there — and is kept only as a defence should that change.
+        # The Auto-resume section of README.md carries the whole of it.
         def wake($e):
             {event:$e, matcher:null,
              entry:{type:"command", command:"bash \($s) --rewake-waiter", timeout:700000,

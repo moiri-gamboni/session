@@ -384,8 +384,8 @@ for v in 2.1.232 2.0.999 1.9.9; do
 done
 FAKE_CLAUDE_VERSION=2.1.251
 
-# (i) no claude on PATH at all: the gate fails closed rather than arming a
-# 700-second hook against a harness whose behaviour it could not check.
+# (i) no claude on PATH at all: the gate fails closed rather than arming the
+# waiter against a harness whose backgrounding behaviour it could not check.
 C28i=$(mkcfg); B28i="$TMP/bin28i"
 # A symlink farm rather than a hardcoded /usr/bin:/bin, whose contents differ per
 # distribution — on Alpine bash itself is not there, and the case would fail for
