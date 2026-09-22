@@ -7,11 +7,13 @@
 # options. Section 3, the policy itself, also reads no file, makes no network
 # call, asks no clock and reads no global — every input arrives as an argument
 # or on stdin, which is what makes the policy testable in-process: the suite
-# sources this file and drives it from literals. The sections after it do reach
-# the vault, the clock and the usage endpoint, and they live here for the same
-# reason: `session` cannot be sourced at all (sourcing it runs it), so anything
-# a test has to drive in-process has to sit beside the policy rather than in
-# the CLI.
+# sources this file and drives it from literals. The sections after it reach
+# the vault, the clock and the usage endpoint, and section 6 also spawns
+# processes — a locked re-exec of `session` and whatever the notify seam points
+# at — so none of them belongs on a hot path. They live here for the same
+# reason the policy does: `session` cannot be sourced at all (sourcing it runs
+# it), so anything a test has to drive in-process has to sit beside the policy
+# rather than in the CLI.
 #
 # bash 3.2 clean, like the rest of the shipped tree: macOS ships 3.2 and the
 # suite runs a leg under `docker run bash:3.2`.
@@ -460,7 +462,10 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 #
 # This section reads globals (the two knobs, the warn threshold, SESSION_HOME)
 # and calls into `session` for the vault and the swap, so unlike section 3 it
-# is reachable only through the CLI.
+# runs only inside a `session` process. Two of them reach it: a human typing
+# the verb, and the auto-resume waiter on a cap or auth death. The second has
+# no one reading stderr — on that path stderr is the wake channel — which is
+# why every diagnostic here goes to the audit row and the k=v output instead.
 
 # The decision's mutex, resolved per call like the log's path so both follow
 # SESSION_DATA wherever a caller puts it.
