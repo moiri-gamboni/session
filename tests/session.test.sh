@@ -3779,6 +3779,555 @@ PSTATUS
         "case 14 [probe]: ... and the fan-out's temp directory is gone once the parent has read it"
 fi
 
+echo "--- decide: session account auto ---"
+
+if ! have jq || ! have perl; then
+    skip "decide: session account auto" "needs jq and perl"
+else
+    # The decision verb end to end, in a fixture world: a live login with its own
+    # credentials, a vault, and the curl stub answering the usage endpoint per
+    # token. The clock is pinned with SESSION_NOW because the cooldown and the
+    # probation window are the two things this verb decides on before it decides
+    # anything else.
+    DNOW=1790000000
+    DEXP=$(( DNOW + 3600 ))
+    DI1='2099-01-01T00:00:00+00:00'; DE1=4070908800
+    DI2='2099-01-02T00:00:00+00:00'; DE2=4070995200
+    DI3='2099-01-03T00:00:00+00:00'; DE3=4071081600
+    DCLOCK=$DNOW
+    DNOTIFY=""
+
+    dvent() {  # WORLD LOGIN TOKEN [EXPIRES_MS] — a vault entry the screening accepts
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s}}\n' \
+            "$2" "$2" "$2" "$3" "${4:-${DEXP}000}" > "$1/vault/$2.json"
+    }
+    dlive() {  # WORLD LOGIN TOKEN — the identity and the credential actually serving requests
+        mklogin "$1" "$2"
+        printf '{"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000},"mcpOAuth":{"granola":"keep-me"}}\n' \
+            "$3" "$DEXP" > "$1/cfg/.credentials.json"
+    }
+    dbody() {  # STUB TOKEN FIVE WEEK FABLE [5h_ISO] [week_ISO] [fable_ISO]
+        printf '{"limits":[{"kind":"session","percent":%s,"resets_at":"%s"},{"kind":"weekly_all","percent":%s,"resets_at":"%s"},{"kind":"weekly_scoped","percent":%s,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+            "$3" "${6:-$DI1}" "$4" "${7:-$DI1}" "$5" "${8:-$DI1}" > "$1/body.$2"
+    }
+    dworld() {  # -> a world with a vault directory beside its config dir and data root
+        local w; w=$(world); mkdir -p "$w/vault"; printf '%s\n' "$w"
+    }
+    dauto() {  # WORLD STUB [args...] — one decision, stderr folded in
+        local w="$1" c="$2"; shift 2
+        sess "$w" PATH="$c:$PATH" SESSION_ACCOUNTS_DIR="$w/vault" \
+            SESSION_NOW="$DCLOCK" SESSION_SWITCH_NOTIFY="$DNOTIFY" -- account auto "$@" 2>&1
+    }
+    dkv() {  # KEY OUTPUT -> the value of one k=v line
+        printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'
+    }
+    ddet() {  # KEY LOGFILE [ROW] -> one key out of that row's detail bag
+        awk -F'\t' -v k="$1" -v r="${3:-1}" 'NR == r {
+            n = split($8, kv, ";")
+            for (i = 1; i <= n; i++)
+                if (index(kv[i], k "=") == 1) print substr(kv[i], length(k) + 2)
+        }' "$2"
+    }
+    dasked() {  # STUB TOKEN... -> how many of those tokens reached the endpoint
+        local d="$1" t n=0; shift
+        for t in "$@"; do [ -e "$d/asked.$t" ] && n=$(( n + 1 )); done
+        printf '%s\n' "$n"
+    }
+    dwait() {  # FILE LINES — the notify seam fires in the background, so poll for it
+        local n=0
+        while [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1
+            n=$(( n + 1 ))
+        done
+    }
+
+    # ── a cap death on a login that serves nothing moves the box ──────────────
+    WD1=$(dworld); CD1=$(curlstub); DLOG1="$WD1/data/switch-log.tsv"
+    dlive "$WD1" a@example.com tok-a
+    dvent "$WD1" a@example.com tok-a
+    dvent "$WD1" b@example.com tok-b
+    dbody "$CD1" tok-a 95 10 10     # live: its five-hour window is spent, so it serves nothing
+    dbody "$CD1" tok-b 10 10 10     # a candidate clear on all three windows
+    DNOTE1="$TMP/decide-notified"
+    DNOTIFY="$TMP/decide-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$DNOTE1" > "$DNOTIFY"; chmod 755 "$DNOTIFY"
+
+    out=$(dauto "$WD1" "$CD1" --trigger cap --sid sid-1); rc=$?
+    report 0 "$rc" "decide: a cap death on a spent login switches and exits 0"
+    report switch "$(dkv ev "$out")" "decide: ... saying so on its own output channel"
+    report 'a@example.com b@example.com 2' \
+        "$(dkv from "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide: ... naming both logins and the tier the box lands on"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WD1/cfg/.credentials.json")" \
+        "decide: ... having installed the candidate's credential"
+    report keep-me "$(jq -r '.mcpOAuth.granola' "$WD1/cfg/.credentials.json")" \
+        "decide: ... leaving mcpOAuth, which is not account-scoped, alone"
+    report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$WD1/cfg/.claude.json")" \
+        "decide: ... and moved the identity with it"
+    report 1 "$(grep -c . "$DLOG1")" "decide: one decision leaves exactly one audit row"
+    report 'switch a@example.com b@example.com cap climbed' \
+        "$(awk -F'\t' 'NR==1{print $2, $3, $4, $5, $6}' "$DLOG1")" \
+        "decide: ... carrying the event, both logins, the trigger and the reason"
+    report 'a@example.com=95/10/10*;b@example.com=10/10/10*' "$(awk -F'\t' 'NR==1{print $7}' "$DLOG1")" \
+        "decide: ... every login's figures, the live one first, starred because they were probed"
+    report 'sid-1 good 2' "$(ddet sid "$DLOG1") $(ddet http "$DLOG1") $(ddet tier "$DLOG1")" \
+        "decide: ... the session that asked, the live probe's outcome and the landing tier"
+    report sent "$(ddet notify "$DLOG1")" "decide: ... and that the notify seam was fired"
+    report "" "$(ddet next_eligible "$DLOG1")" \
+        "decide: a switch carries no next_eligible — it would overwrite a hold's real one for a reader"
+    dwait "$DNOTE1" 1
+    report 1 "$(grep -c . "$DNOTE1" 2>/dev/null || true)" "decide: the notify seam is called once on a switch"
+    report yes "$(grep -q 'a@example.com' "$DNOTE1" && grep -q 'b@example.com' "$DNOTE1" && echo yes || echo no)" \
+        "decide: ... naming the login it left and the one it moved to"
+    report 0 "$(grep -c 'tok-' "$DLOG1" || true)" "decide: no token value reaches the audit log"
+    report "" "$(cd "$WD1/data" && ls -a | grep -E '^\.(probe|ident|dry)\.' || true)" \
+        "decide: ... and no scratch directory is left in the data root"
+
+    # A switch that has just happened is still being judged: while its target is
+    # the login now live, the next death re-decides instead of waiting out the
+    # cooldown. That is the only way back for a switch that did not land.
+    DCLOCK=$(( DNOW + 60 ))
+    out=$(dauto "$WD1" "$CD1" --trigger cap --sid sid-2); rc=$?
+    report 3 "$rc" "decide: a second death inside probation is not held on the cooldown"
+    report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... it re-decides, and holds because the login it moved to is verified clean"
+    report 2 "$(grep -c . "$DLOG1")" "decide: ... on its own audit row"
+    report 1 "$(grep -c . "$DNOTE1" 2>/dev/null || true)" \
+        "decide: a hold sends no notification — holds are the normal outcome"
+
+    DCLOCK=$(( DNOW + ACCT_PROBATION_S + 1 ))
+    out=$(dauto "$WD1" "$CD1" --trigger cap --sid sid-3); rc=$?
+    report 3 "$rc" "decide: one second past the probation window the cooldown applies again"
+    report 'hold cooldown' "$(dkv ev "$out") $(dkv reason "$out")" "decide: ... and says which gate held it"
+    report 3 "$(grep -c . "$DLOG1")" "decide: ... recording that hold too"
+    report "" "$(ddet tier "$DLOG1" 3)" "decide: ... with no tier and no figures, because it probed nothing"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WD1/cfg/.credentials.json")" \
+        "decide: ... and swapping nothing"
+
+    DCLOCK=$(( DNOW + ACCT_COOLDOWN_S + 61 ))
+    out=$(dauto "$WD1" "$CD1" --trigger cap --sid sid-4); rc=$?
+    report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: a cooldown hold does not itself restart the cooldown, which would hold a retrying session for ever"
+
+    # ── the three refusals, all of them before any state or any request ───────
+    WD2=$(dworld); CD2=$(curlstub)
+    dlive "$WD2" a@example.com tok-a
+    dvent "$WD2" a@example.com tok-a; dvent "$WD2" b@example.com tok-b
+    dbody "$CD2" tok-a 95 10 10; dbody "$CD2" tok-b 10 10 10
+    DCLOCK=$DNOW; DNOTIFY=""
+    dauto2() { sess "$WD2" PATH="$CD2:$PATH" SESSION_ACCOUNTS_DIR="$WD2/vault" \
+                    SESSION_NOW="$DNOW" SESSION_AUTO_SWITCH="$1" -- account auto 2>&1; }
+
+    out=$(dauto2 off); rc=$?
+    report 4 "$rc" "decide: SESSION_AUTO_SWITCH=off refuses"
+    report 'refuse off' "$(dkv ev "$out") $(dkv reason "$out")" "decide: ... naming the knob that turned it off"
+    report absent "$([ -e "$WD2/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... and writes nothing at all"
+    report 0 "$(dasked "$CD2" tok-a tok-b)" "decide: ... having asked the endpoint nothing"
+
+    out=$(dauto2 maybe); rc=$?
+    report 4 "$rc" "decide: a switch mode that is neither on nor off refuses rather than guessing"
+    report bad-mode "$(dkv reason "$out")" "decide: ... as a mode it cannot read"
+    report yes "$(printf '%s' "$out" | grep -q 'on or off' && echo yes || echo no)" \
+        "decide: ... saying which two values it takes, since this is the feature's kill switch"
+
+    WD3=$(dworld); CD3=$(curlstub)
+    mklogin "$WD3" a@example.com
+    dvent "$WD3" a@example.com tok-a; dvent "$WD3" b@example.com tok-b
+    out=$(dauto "$WD3" "$CD3"); rc=$?
+    report 4 "$rc" "decide: the macOS shape, with no .credentials.json to swap, refuses"
+    report yes "$(printf '%s' "$out" | grep -q Keychain && echo yes || echo no)" \
+        "decide: ... naming the Keychain as the reason"
+    report absent "$([ -e "$WD3/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... and writes nothing"
+
+    WD4=$(dworld); CD4=$(curlstub)
+    dlive "$WD4" a@example.com tok-a; dvent "$WD4" a@example.com tok-a
+    out=$(dauto "$WD4" "$CD4"); rc=$?
+    report 4 "$rc" "decide: one vaulted login is nothing to switch to, so it refuses"
+    report too-few-logins "$(dkv reason "$out")" "decide: ... saying so"
+    report 0 "$(dasked "$CD4" tok-a)" "decide: ... before any request to the endpoint"
+
+    # ── --dry-run: the same decision, with every write and the seam suppressed ─
+    WD5=$(dworld); CD5=$(curlstub)
+    dlive "$WD5" a@example.com tok-a
+    dvent "$WD5" a@example.com tok-a; dvent "$WD5" b@example.com tok-b
+    dbody "$CD5" tok-a 95 10 10; dbody "$CD5" tok-b 10 10 10
+    DNOTE5="$TMP/decide-dry-notified"
+    DNOTIFY="$TMP/decide-dry-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$DNOTE5" > "$DNOTIFY"; chmod 755 "$DNOTIFY"
+    DCLOCK=$DNOW
+    out=$(dauto "$WD5" "$CD5" --dry-run --trigger manual); rc=$?
+    report 3 "$rc" "decide: --dry-run exits 3, like any decision that moved nothing"
+    report 'dry-run climbed b@example.com' \
+        "$(dkv ev "$out") $(dkv reason "$out") $(dkv to "$out")" \
+        "decide: ... naming the login it would have moved to and why"
+    report yes "$(printf '%s\n' "$out" | grep -q '^cand=b@example.com/2/probe/10/10/10$' && echo yes || echo no)" \
+        "decide: ... printing the ranked candidates it read"
+    report yes "$(printf '%s\n' "$out" | grep -q '^live=a@example.com/0/probe/95/10/10$' && echo yes || echo no)" \
+        "decide: ... beside the live login it compared them against"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD5/cfg/.credentials.json")" \
+        "decide: ... and swapping nothing"
+    report absent "$([ -e "$WD5/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... writing no audit row"
+    report "" "$(cd "$WD5/data" && ls | grep -E '^(fable|probe-body)\.' || true)" \
+        "decide: ... and no cache file, although it probed both logins"
+    report "" "$(cd "$WD5/data" && ls -a | grep -E '^\.(probe|ident|dry)\.' || true)" \
+        "decide: ... nor any scratch left behind"
+    report absent "$([ -s "$DNOTE5" ] && echo present || echo absent)" \
+        "decide: ... and sends no notification"
+
+    # ── next_eligible_at: when the earliest rejected candidate climbs ─────────
+    WD6=$(dworld); CD6=$(curlstub); DLOG6="$WD6/data/switch-log.tsv"
+    dlive "$WD6" a@example.com tok-a
+    dvent "$WD6" a@example.com tok-a
+    dvent "$WD6" b@example.com tok-b
+    dvent "$WD6" c@example.com tok-c
+    dbody "$CD6" tok-a 95 10 10 "$DI3" "$DI3" "$DI3"   # live: serves nothing
+    dbody "$CD6" tok-b 10 95 10 "$DI1" "$DI2" "$DI1"   # held down by its weekly, which turns over on the 2nd
+    dbody "$CD6" tok-c 95 10 10 "$DI3" "$DI1" "$DI1"   # held down by its five-hour, on the 3rd
+    DCLOCK=$DNOW; DNOTIFY=""
+    out=$(dauto "$WD6" "$CD6" --trigger cap); rc=$?
+    report 3 "$rc" "decide: nothing standing above the live login's tier is a hold"
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" "decide: ... saying there was no candidate"
+    report "$DE2" "$(dkv next_eligible_at "$out")" \
+        "decide: next_eligible_at is the earliest reset that lifts any one rejected candidate above the live tier"
+    report "$DE2" "$(ddet next_eligible "$DLOG6")" "decide: ... persisted on the hold row for a caller that got no output"
+    report 0 "$(ddet tier "$DLOG6")" "decide: ... beside the tier the box is staying on"
+    report yes "$(awk -F'\t' 'NR==1{print $7}' "$DLOG6" | grep -q 'c@example.com=95/10/10\*' && echo yes || echo no)" \
+        "decide: ... and every candidate's figures, so the hold can be read back"
+
+    # Only a probed candidate carries reset epochs at all: the frozen path
+    # renders durations and drops Fable's reset outright.
+    WD7=$(dworld); CD7=$(curlstub)
+    dlive "$WD7" a@example.com tok-a
+    dvent "$WD7" a@example.com tok-a
+    dvent "$WD7" b@example.com tok-b $(( DNOW - 60 ))000
+    dbody "$CD7" tok-a 95 10 10
+    out=$(dauto "$WD7" "$CD7" --trigger cap); rc=$?
+    report 'hold no-candidate -' "$(dkv ev "$out") $(dkv reason "$out") $(dkv next_eligible_at "$out")" \
+        "decide: a candidate whose token lapsed contributes no reset, so next_eligible_at is unknown"
+    report 0 "$(dasked "$CD7" tok-b)" "decide: ... and its lapsed token is never sent"
+
+    # ── a switch onto a Fable-spent login is labelled, because it is partial ──
+    WD8=$(dworld); CD8=$(curlstub); DLOG8="$WD8/data/switch-log.tsv"
+    dlive "$WD8" a@example.com tok-a
+    dvent "$WD8" a@example.com tok-a; dvent "$WD8" b@example.com tok-b
+    dbody "$CD8" tok-a 95 10 10
+    dbody "$CD8" tok-b 10 10 95     # serves every model except Fable
+    out=$(dauto "$WD8" "$CD8" --trigger cap); rc=$?
+    report 0 "$rc" "decide: a tier-0 live login moves onto a Fable-spent candidate"
+    report 'switch b@example.com 1' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide: ... and the tier says the new login cannot serve Fable"
+    report 1 "$(ddet tier "$DLOG8")" \
+        "decide: ... on the audit row too, which is how the sessions woken by the config watch learn it"
+
+    # ── degraded inputs: no curl, and a live login the endpoint will not answer ─
+    WD9=$(dworld); DLOG9="$WD9/data/switch-log.tsv"
+    DREAL=$(date +%s); DFUT=$(( DREAL + 36000 ))
+    dlive "$WD9" a@example.com tok-a
+    dvent "$WD9" a@example.com tok-a; dvent "$WD9" b@example.com tok-b
+    mkcache "$WD9" a@example.com 95 10 "$DFUT" "$DFUT"
+    mkcache "$WD9" b@example.com 10 10 "$DFUT" "$DFUT"
+    printf '{"fable":{"used_percentage":10,"resets_at":%s}}\n' "$DFUT" > "$WD9/data/fable.a@example.com.json"
+    printf '{"fable":{"used_percentage":10,"resets_at":%s}}\n' "$DFUT" > "$WD9/data/fable.b@example.com.json"
+    out=$(sess "$WD9" PATH="$(minipath curl)" SESSION_ACCOUNTS_DIR="$WD9/vault" \
+            SESSION_NOW="$DNOW" SESSION_SWITCH_NOTIFY="" -- account auto --trigger cap 2>&1); rc=$?
+    report 0 "$rc" "decide: a host with no curl still reaches a decision, from the frozen figures"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" "decide: ... and takes it"
+    report 'a@example.com=95/10/10;b@example.com=10/10/10' "$(awk -F'\t' 'NR==1{print $7}' "$DLOG9")" \
+        "decide: ... with no star on any figure, because nothing was verified"
+    report nocurl "$(ddet http "$DLOG9")" "decide: ... and the row says why"
+
+    WD10=$(dworld); CD10=$(curlstub); DLOG10="$WD10/data/switch-log.tsv"
+    dlive "$WD10" a@example.com tok-a
+    dvent "$WD10" a@example.com tok-a; dvent "$WD10" b@example.com tok-b
+    printf '500' > "$CD10/status.tok-a"
+    printf '%s\n' '{"error":{"type":"overloaded_error"}}' > "$CD10/body.tok-a"
+    dbody "$CD10" tok-b 10 10 10
+    mkcache "$WD10" a@example.com 95 10 "$DFUT" "$DFUT"
+    printf '{"fable":{"used_percentage":10,"resets_at":%s}}\n' "$DFUT" > "$WD10/data/fable.a@example.com.json"
+    out=$(dauto "$WD10" "$CD10" --trigger cap); rc=$?
+    report 0 "$rc" "decide: a live login the endpoint will not answer does not stop the decision"
+    report unreachable "$(ddet http "$DLOG10")" \
+        "decide: ... it is the network-down case, which is when the box most needs the other login"
+
+    # ── a credential the endpoint rejects, on either side of the decision ────
+    # The cache is not evidence about a token that has just been refused. On the
+    # live side ignoring that is the whole authentication-failure case; on the
+    # candidate side, ranking a rejected credential on its old figures is how a
+    # dead one goes live.
+    WD18=$(dworld); CD18=$(curlstub); DLOG18="$WD18/data/switch-log.tsv"
+    dlive "$WD18" a@example.com tok-a
+    dvent "$WD18" a@example.com tok-a; dvent "$WD18" b@example.com tok-b
+    printf '401' > "$CD18/status.tok-a"
+    printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"OAuth access token is invalid."}}' > "$CD18/body.tok-a"
+    dbody "$CD18" tok-b 10 10 95
+    mkcache "$WD18" a@example.com 3 4 "$DFUT" "$DFUT"
+    printf '{"fable":{"used_percentage":5,"resets_at":%s}}\n' "$DFUT" > "$WD18/data/fable.a@example.com.json"
+    out=$(dauto "$WD18" "$CD18" --trigger auth); rc=$?
+    report 0 "$rc" "decide: a live login the endpoint rejects serves nothing, whatever its cache says"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: ... so even a Fable-spent candidate stands above it, which is the authentication outage this exists for"
+    report 'dead a@example.com=-/-/-' "$(ddet http "$DLOG18") $(awk -F'\t' 'NR==1{split($7,f,";"); print f[1]}' "$DLOG18")" \
+        "decide: ... and the row says the credential was refused rather than quoting the cache at it"
+
+    WD19=$(dworld); CD19=$(curlstub)
+    dlive "$WD19" a@example.com tok-a
+    dvent "$WD19" a@example.com tok-a; dvent "$WD19" b@example.com tok-b
+    dbody "$CD19" tok-a 95 10 10
+    printf '401' > "$CD19/status.tok-b"
+    printf '%s\n' '{"type":"error","error":{"type":"authentication_error","message":"OAuth access token is invalid."}}' > "$CD19/body.tok-b"
+    mkcache "$WD19" b@example.com 1 2 "$DFUT" "$DFUT"
+    printf '{"fable":{"used_percentage":3,"resets_at":%s}}\n' "$DFUT" > "$WD19/data/fable.b@example.com.json"
+    out=$(dauto "$WD19" "$CD19" --trigger cap); rc=$?
+    report 3 "$rc" "decide: a candidate the endpoint rejects is not promoted by its own cache"
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... it ranks as unknown, which fails it closed, and the box stays put"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD19/cfg/.credentials.json")" \
+        "decide: ... installing nothing"
+
+    WD20=$(dworld); CD20=$(curlstub)
+    dlive "$WD20" a@example.com tok-a
+    dvent "$WD20" a@example.com tok-a; dvent "$WD20" b@example.com tok-b
+    dbody "$CD20" tok-a 95 10 10; dbody "$CD20" tok-b 10 10 10
+    out=$(dauto "$WD20" "$CD20" --trigger sideways); rc=$?
+    report 5 "$rc" "decide: a trigger outside the log's closed enum is an error"
+    report bad-trigger "$(dkv reason "$out")" "decide: ... named as one"
+    report absent "$([ -e "$WD20/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... and nothing is recorded under a word no reader knows"
+
+    # ── the candidate screening, all three shapes, before any token is sent ───
+    WD11=$(dworld); CD11=$(curlstub)
+    dlive "$WD11" a@example.com tok-a
+    dvent "$WD11" a@example.com tok-a
+    dvent "$WD11" f@example.com tok-f
+    printf '{"email":"b@example.com","login":"b@example.com","oauthAccount":{"emailAddress":"c@example.com"},"claudeAiOauth":{"accessToken":"tok-b","expiresAt":%s000}}\n' \
+        "$DEXP" > "$WD11/vault/b@example.com.json"
+    printf '{"email":"d@example.com","login":"d@example.com","oauthAccount":{"emailAddress":"d@example.com"},"claudeAiOauth":{"accessToken":"","expiresAt":%s000}}\n' \
+        "$DEXP" > "$WD11/vault/d@example.com.json"
+    printf '{"email":"e@example.com","login":"e@example.com","oauthAccount":{"emailAddress":"e@example.com"},"claudeAiOauth":{"accessToken":"tok-e","expiresAt":0}}\n' \
+        > "$WD11/vault/e@example.com.json"
+    dbody "$CD11" tok-a 95 10 10
+    dbody "$CD11" tok-f 10 10 10
+    out=$(dauto "$WD11" "$CD11" --trigger cap); rc=$?
+    report 'switch f@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: the one vault entry that passes the credential predicate is the one it moves to"
+    report 0 "$(dasked "$CD11" tok-b tok-e)" \
+        "decide: ... and an entry filed under a name its own identity does not derive, or with no expiry, is never even asked"
+
+    # ── the warn threshold, validated and clamped on this path ───────────────
+    # `session account` dispatches before the CLI's own validation loop, so this
+    # path carries the other half of it. Above 100 is the documented way to
+    # silence the hook's advisory; without the clamp it would also mean "no
+    # window is ever blocked" and quietly disable the switcher for anyone who
+    # had quieted the hook.
+    WD12=$(dworld); CD12=$(curlstub)
+    dlive "$WD12" a@example.com tok-a
+    dvent "$WD12" a@example.com tok-a; dvent "$WD12" b@example.com tok-b
+    dbody "$CD12" tok-a 100 10 10; dbody "$CD12" tok-b 10 10 10
+    out=$(sess "$WD12" PATH="$CD12:$PATH" SESSION_ACCOUNTS_DIR="$WD12/vault" SESSION_NOW="$DNOW" \
+            SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=150 -- account auto --trigger cap 2>&1); rc=$?
+    report 0 "$rc" "decide: a warn threshold above 100 clamps rather than disabling the switcher"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: ... so a login at 100% still reads as spent and the box moves"
+
+    WD13=$(dworld); CD13=$(curlstub)
+    dlive "$WD13" a@example.com tok-a
+    dvent "$WD13" a@example.com tok-a; dvent "$WD13" b@example.com tok-b
+    dbody "$CD13" tok-a 95 10 10; dbody "$CD13" tok-b 10 10 10
+    out=$(sess "$WD13" PATH="$CD13:$PATH" SESSION_ACCOUNTS_DIR="$WD13/vault" SESSION_NOW="$DNOW" \
+            SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=ninety -- account auto --trigger cap 2>&1); rc=$?
+    report 5 "$rc" "decide: a warn threshold that is not a number is an error here, not a threshold of nothing"
+    report yes "$(printf '%s' "$out" | grep -q USAGE_WARN_PCT && echo yes || echo no)" \
+        "decide: ... naming the variable to fix"
+    report absent "$([ -e "$WD13/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... and deciding nothing"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD13/cfg/.credentials.json")" \
+        "decide: ... having swapped nothing"
+
+    # ── a swap that reports success and lands something else ─────────────────
+    WD14=$(dworld); CD14=$(curlstub); DLOG14="$WD14/data/switch-log.tsv"
+    dlive "$WD14" a@example.com tok-a
+    dvent "$WD14" a@example.com tok-a; dvent "$WD14" b@example.com tok-b
+    dbody "$CD14" tok-a 95 10 10; dbody "$CD14" tok-b 10 10 10
+    DTJ=$(mktemp -d "$TMP/decide-tamperjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'DTAMPEREOF'
+args=()
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && \
+        x='.claudeAiOauth = ($v[0].claudeAiOauth | .accessToken = "tok-tampered")'
+    args+=("$x")
+done
+exec "$RJQ" "${args[@]}"
+DTAMPEREOF
+    } > "$DTJ/jq"
+    chmod +x "$DTJ/jq"
+    out=$(dauto "$WD14" "$DTJ:$CD14" --trigger cap --sid sid-f); rc=$?
+    report 5 "$rc" "decide: a swap whose post-condition fails is an error, not a switch"
+    report 'fail swap-not-observed' "$(dkv ev "$out") $(dkv reason "$out")" "decide: ... recorded as what it is"
+    report 1 "$(grep -c . "$DLOG14")" "decide: ... on exactly one audit row, like any other decision"
+    report 'fail a@example.com b@example.com' "$(awk -F'\t' 'NR==1{print $2, $3, $4}' "$DLOG14")" \
+        "decide: ... whose from is the login it started on, never the identity file the failed swap already rewrote"
+    report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$WD14/cfg/.claude.json")" \
+        "decide: ... which by then names the incoming login, and is the witness that lies"
+    report "" "$(ddet notify "$DLOG14")" "decide: ... and nothing is announced, because nothing moved"
+
+    # ── one decision at a time, box-wide ─────────────────────────────────────
+    # The two locking backends report busy with their own code — 1 from flock(1),
+    # 75 from the perl fallback — so neither may collide with a decision, which
+    # is why this verb never returns 1 itself.
+    WD15=$(dworld); CD15=$(curlstub)
+    dlive "$WD15" a@example.com tok-a
+    dvent "$WD15" a@example.com tok-a; dvent "$WD15" b@example.com tok-b
+    dbody "$CD15" tok-a 95 10 10; dbody "$CD15" tok-b 10 10 10
+    lock_run "$WD15/data/switch.lock" sleep 3 &
+    dlkpid=$!
+    sleep 0.5
+    out=$(dauto "$WD15" "$CD15" --trigger cap); rc=$?
+    report yes "$( { [ "$rc" = 1 ] || [ "$rc" = 75 ]; } && echo yes || echo no)" \
+        "decide: a decision already in flight makes the next caller busy, never a second decision"
+    report absent "$([ -e "$WD15/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... which writes no row"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD15/cfg/.credentials.json")" \
+        "decide: ... and swaps nothing"
+    wait "$dlkpid" 2>/dev/null
+    out=$(dauto "$WD15" "$CD15" --trigger cap); rc=$?
+    report 0 "$rc" "decide: ... while the same call decides normally once the lock is free"
+
+    WD16=$(dworld); DLOG16="$WD16/data/switch-log.tsv"
+    CD16=$(curlstub)
+    dlive "$WD16" a@example.com tok-a
+    dvent "$WD16" a@example.com tok-a; dvent "$WD16" b@example.com tok-b
+    dbody "$CD16" tok-a 95 10 10; dbody "$CD16" tok-b 10 10 10
+    mv "$CD16/curl" "$CD16/curl.real"
+    printf '#!/bin/sh\nsleep 2\nexec "%s/curl.real" "$@"\n' "$CD16" > "$CD16/curl"
+    chmod +x "$CD16/curl"
+    for i in 1 2 3; do
+        ( dauto "$WD16" "$CD16" --trigger cap > "$TMP/decide-race.$i" 2>&1; echo $? > "$TMP/decide-race.rc.$i" ) &
+    done
+    wait
+    report 1 "$(awk -F'\t' '$2 == "switch"' "$DLOG16" | grep -c . || true)" \
+        "decide: three simultaneous decisions produce exactly one switch"
+    report 1 "$(cat "$TMP/decide-race.rc.1" "$TMP/decide-race.rc.2" "$TMP/decide-race.rc.3" | grep -c '^0$' || true)" \
+        "decide: ... exactly one of the three reports it"
+    report 'tok-b b@example.com' \
+        "$(jq -r '.claudeAiOauth.accessToken' "$WD16/cfg/.credentials.json") $(jq -r '.oauthAccount.emailAddress' "$WD16/cfg/.claude.json")" \
+        "decide: ... and the credential and the identity name the same login"
+
+    # ── the notifier is fired after the locked section, never inside it ───────
+    # lock_run EXECS its command, so the command and anything it backgrounds
+    # inherit the lock descriptor and hold the lock for as long as they live —
+    # measured on both backends, and not releasable from inside.
+    WD17=$(dworld); CD17=$(curlstub)
+    dlive "$WD17" a@example.com tok-a
+    dvent "$WD17" a@example.com tok-a; dvent "$WD17" b@example.com tok-b
+    dbody "$CD17" tok-a 95 10 10; dbody "$CD17" tok-b 10 10 10
+    DNOTIFY="$TMP/decide-hang.sh"
+    printf '#!/bin/sh\nsleep 30\n' > "$DNOTIFY"; chmod 755 "$DNOTIFY"
+    dt0=$(date +%s)
+    out=$(dauto "$WD17" "$CD17" --trigger cap); rc=$?
+    dt1=$(date +%s)
+    report 0 "$rc" "decide: a notifier that never returns does not change the decision"
+    report yes "$([ $(( dt1 - dt0 )) -lt 15 ] && echo yes || echo no)" "decide: ... nor delay it"
+    report 0 "$(lock_run "$WD17/data/switch.lock" true >/dev/null 2>&1; echo $?)" \
+        "decide: ... nor hold the decision lock, which it would inherit if it were fired inside it"
+    DNOTIFY=""
+
+    # ── a data root that cannot hold the lock ─────────────────────────────────
+    # The lock file lives under the data root, so lock_run opening it is what
+    # fails first — with 66 under flock(1) and 1 under the perl fallback, and 1
+    # is the code every caller reads as "another decision holds the lock". A
+    # read-only root would make a waiter retry for ever.
+    WD21=$(dworld); CD21=$(curlstub)
+    dlive "$WD21" a@example.com tok-a
+    dvent "$WD21" a@example.com tok-a; dvent "$WD21" b@example.com tok-b
+    dbody "$CD21" tok-a 95 10 10; dbody "$CD21" tok-b 10 10 10
+    if [ "$(id -u)" = 0 ]; then
+        skip "decide: an unwritable data root" "running as root, which writes anyway"
+    else
+        chmod 500 "$WD21/data"
+        out=$(dauto "$WD21" "$CD21" --trigger cap); rc=$?
+        chmod 700 "$WD21/data"
+        report 3 "$rc" "decide: a data root it cannot write holds, and never wears a busy code"
+        report 'hold not-writable' "$(dkv ev "$out") $(dkv reason "$out")" \
+            "decide: ... saying no state means no switch"
+        report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD21/cfg/.credentials.json")" \
+            "decide: ... and swapping nothing"
+        report "" "$(printf '%s\n' "$out" | grep -v '^[a-z_]*=' || true)" \
+            "decide: ... with nothing but k=v lines, no lock tool's error among them"
+    fi
+
+    # ── a credentials write that fails outright ──────────────────────────────
+    WD22=$(dworld); CD22=$(curlstub); DLOG22="$WD22/data/switch-log.tsv"
+    dlive "$WD22" a@example.com tok-a
+    dvent "$WD22" a@example.com tok-a; dvent "$WD22" b@example.com tok-b
+    dbody "$CD22" tok-a 95 10 10; dbody "$CD22" tok-b 10 10 10
+    DFJ=$(mktemp -d "$TMP/decide-failjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'DFAILEOF'
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && exit 5
+done
+exec "$RJQ" "$@"
+DFAILEOF
+    } > "$DFJ/jq"
+    chmod +x "$DFJ/jq"
+    cp "$WD22/cfg/.claude.json" "$TMP/decide-claude-before"
+    out=$(dauto "$WD22" "$DFJ:$CD22" --trigger cap); rc=$?
+    report 5 "$rc" "decide: a credentials write that fails is an error"
+    report 'fail swap-write-failed' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... named as the write, which is not the same failure as a swap that did not land"
+    report 1 "$(grep -c . "$DLOG22")" "decide: ... on one audit row like any other decision"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD22/cfg/.credentials.json")" \
+        "decide: ... with the live credential untouched"
+    report yes "$(cmp -s "$TMP/decide-claude-before" "$WD22/cfg/.claude.json" && echo yes || echo no)" \
+        "decide: ... and the identity file never written, which is why this failure gets no probation"
+
+    # ── next_eligible_at when the live login lacks only Fable ────────────────
+    # A candidate then has to clear all three windows to stand above it, so a
+    # Fable reset is what promotes one — the window a tier-0 live login's
+    # arithmetic ignores.
+    WD23=$(dworld); CD23=$(curlstub)
+    dlive "$WD23" a@example.com tok-a
+    dvent "$WD23" a@example.com tok-a
+    dvent "$WD23" b@example.com tok-b
+    dvent "$WD23" c@example.com tok-c
+    dbody "$CD23" tok-a 10 10 95                          # live: every model but Fable
+    dbody "$CD23" tok-b 10 10 95 "$DI1" "$DI1" "$DI2"     # same rung; its Fable turns over on the 2nd
+    dbody "$CD23" tok-c 95 10 10 "$DI3" "$DI1" "$DI1"     # a rung below; its five-hour on the 3rd
+    out=$(dauto "$WD23" "$CD23" --trigger cap); rc=$?
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: a live login blocked only on Fable is not beaten by another on the same rung"
+    report 1 "$(dkv tier "$out")" "decide: ... and the box stays on the tier it had"
+    report "$DE2" "$(dkv next_eligible_at "$out")" \
+        "decide: ... with next_eligible_at taken from the Fable reset that would promote one of them"
+
+    # ── the threshold is read as decimal, not as octal ───────────────────────
+    # A leading zero is what a human writes; `$(( 070 ))` is 56, and a switcher
+    # gating at 56% instead of 70% would move the box on windows nobody called spent.
+    WD24=$(dworld); CD24=$(curlstub)
+    dlive "$WD24" a@example.com tok-a
+    dvent "$WD24" a@example.com tok-a; dvent "$WD24" b@example.com tok-b
+    dbody "$CD24" tok-a 60 10 10; dbody "$CD24" tok-b 10 10 10
+    out=$(sess "$WD24" PATH="$CD24:$PATH" SESSION_ACCOUNTS_DIR="$WD24/vault" SESSION_NOW="$DNOW" \
+            SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=070 -- account auto --trigger cap 2>&1); rc=$?
+    report 3 "$rc" "decide: a threshold written 070 gates at 70, so a live login at 60% is not spent"
+    report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... and the box holds rather than moving on an octal reading of it"
+
+    # ── an option the verb does not have ─────────────────────────────────────
+    WD25=$(dworld); CD25=$(curlstub)
+    dlive "$WD25" a@example.com tok-a
+    dvent "$WD25" a@example.com tok-a; dvent "$WD25" b@example.com tok-b
+    out=$(dauto "$WD25" "$CD25" --sideways); rc=$?
+    report 5 "$rc" "decide: an option the verb does not have is an error, never a busy code"
+    report bad-option "$(dkv reason "$out")" "decide: ... named as one"
+    report absent "$([ -e "$WD25/data/switch-log.tsv" ] && echo present || echo absent)" \
+        "decide: ... and nothing is decided on it"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]

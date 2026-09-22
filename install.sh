@@ -53,8 +53,13 @@ usage: install.sh [options]
   --attend-tail SECS   seconds credited after the last interaction of a stretch
                        (default: the bridge)
   --primary-cfg PATH   the config dir this machine treats as its primary login
+  --auto-switch        let a cap or authentication death move the box to another
+                       vaulted login by itself (the default)
+  --no-auto-switch     record that it may not
+  --switch-notify PATH an executable called with one message when the box
+                       switches login by itself, or refuses a blank credential
 
-The last five are recorded in <config dir>/session.conf, because hooks, cron and
+The last eight are recorded in <config dir>/session.conf, because hooks, cron and
 tmux inherit no shell environment and an export in a shell profile reaches none
 of them. A re-run keeps the recorded values it does not itself carry. Paths are
 made absolute: those same callers run from a directory you do not choose.
@@ -71,6 +76,8 @@ main_guard=""
 attend_grace=""
 attend_tail=""
 primary_cfg=""
+auto_switch=""
+switch_notify=""
 
 NL='
 '
@@ -99,7 +106,7 @@ _check_conf_value() {  # FLAG VALUE
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --bindir|--name|--data-dir|--main-guard|--attend-grace|--attend-tail|--primary-cfg)
+        --bindir|--name|--data-dir|--main-guard|--attend-grace|--attend-tail|--primary-cfg|--switch-notify)
             [ $# -ge 2 ] || { echo "install.sh: $1 needs a value" >&2; exit 2; }
             case "$1" in
                 --bindir)       bindir=$(_abs "$2") ;;
@@ -107,6 +114,7 @@ while [ $# -gt 0 ]; do
                 --data-dir)     _check_conf_value "$1" "$2"; data_dir=$(_abs "$2") ;;
                 --main-guard)   _check_conf_value "$1" "$2"; main_guard=$(_abs "$2") ;;
                 --primary-cfg)  _check_conf_value "$1" "$2"; primary_cfg=$(_abs "$2") ;;
+                --switch-notify) _check_conf_value "$1" "$2"; switch_notify=$(_abs "$2") ;;
                 --attend-grace)
                     case "$2" in
                         ''|*[!0-9]*) echo "install.sh: --attend-grace takes seconds as digits: $2" >&2; exit 2 ;;
@@ -122,6 +130,8 @@ while [ $# -gt 0 ]; do
         --force-link) force_link=1; shift ;;
         --dry-run)    dry_run=1; shift ;;
         --no-rewake)  no_rewake=1; shift ;;
+        --auto-switch)    auto_switch=on;  shift ;;
+        --no-auto-switch) auto_switch=off; shift ;;
         -h|--help)    usage; exit 0 ;;
         *) echo "install.sh: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac
@@ -305,6 +315,8 @@ _conf_for SESSION_TMUX_MAIN_GUARD "$main_guard"
 _conf_for SESSION_ATTEND_GRACE    "$attend_grace"
 _conf_for SESSION_ATTEND_TAIL     "$attend_tail"
 _conf_for SESSION_PRIMARY_CFG     "$primary_cfg"
+_conf_for SESSION_AUTO_SWITCH     "$auto_switch"
+_conf_for SESSION_SWITCH_NOTIFY   "$switch_notify"
 # No flag writes this one — the warn threshold is set by hand, and the conf is
 # the only channel that reaches a hook. Kept so that a run carrying some other
 # flag rewrites the file without silently restoring the default threshold.
@@ -321,14 +333,16 @@ _conf_verify() {
     local out rc
     [ -r "$conf" ] || return 1
     _session_conf_trusted "$conf" || return 1
-    out=$( unset SESSION_DATA_DIR SESSION_TMUX_MAIN_GUARD SESSION_ATTEND_GRACE SESSION_ATTEND_TAIL SESSION_PRIMARY_CFG
+    out=$( unset SESSION_DATA_DIR SESSION_TMUX_MAIN_GUARD SESSION_ATTEND_GRACE SESSION_ATTEND_TAIL SESSION_PRIMARY_CFG SESSION_AUTO_SWITCH SESSION_SWITCH_NOTIFY
            # shellcheck disable=SC1090  # the path is the conf this run just wrote
            . "$conf" 2>/dev/null || exit 1
            printf '%s\n' "SESSION_DATA_DIR ${SESSION_DATA_DIR:-}" \
                          "SESSION_TMUX_MAIN_GUARD ${SESSION_TMUX_MAIN_GUARD:-}" \
                          "SESSION_ATTEND_GRACE ${SESSION_ATTEND_GRACE:-}" \
                          "SESSION_ATTEND_TAIL ${SESSION_ATTEND_TAIL:-}" \
-                         "SESSION_PRIMARY_CFG ${SESSION_PRIMARY_CFG:-}" )
+                         "SESSION_PRIMARY_CFG ${SESSION_PRIMARY_CFG:-}" \
+                         "SESSION_AUTO_SWITCH ${SESSION_AUTO_SWITCH:-}" \
+                         "SESSION_SWITCH_NOTIFY ${SESSION_SWITCH_NOTIFY:-}" )
     rc=$?
     [ "$rc" = 0 ] || return 1
     while IFS= read -r want; do
@@ -341,7 +355,7 @@ CHECKEOF
 }
 
 if [ -z "$conf_body" ]; then
-    skipstep "session.conf: nothing to record (no --data-dir/--main-guard/--attend-grace/--attend-tail/--primary-cfg)"
+    skipstep "session.conf: nothing to record (no --data-dir/--main-guard/--attend-grace/--attend-tail/--primary-cfg/--auto-switch/--no-auto-switch/--switch-notify)"
 elif [ "$dry_run" = 1 ]; then
     plan "session.conf: would write $conf"
     printf '%s' "$conf_body" | sed 's/^/          /'

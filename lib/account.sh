@@ -429,4 +429,397 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 }
 
 # ── 6. decision ───────────────────────────
-# The decision verb acct_auto, and the notify seam.
+# `session account auto` — the one place that decides by itself which login the
+# box runs on, and a verb a human can run, which is what makes the automatic
+# path debuggable: same code, same output, on demand.
+#
+# Exit codes: 0 switched · 3 held · 4 refused · 5 error. NEVER 1, because 1 is
+# what flock(1) reports when the lock is held (the perl fallback reports 75).
+# A caller has to be able to tell "somebody else is deciding" from "a decision
+# was taken", so no decision outcome may wear a busy code. Both busy codes mean
+# busy; neither is a decision.
+#
+# THE LOCK IS TAKEN HERE, and what it covers runs as a child process. lock_run
+# EXECS its command, so a lock cannot be held across a shell function — and
+# putting the swap under it is the point: acct_swap's temp files are keyed by
+# $$, which is the parent's pid inside a subshell, so two concurrent swaps would
+# collide on one temp name.
+#
+# THE NOTIFICATION IS FIRED AFTER THE LOCKED SECTION ENDS, NEVER INSIDE IT.
+# Because lock_run execs, the command and anything it backgrounds inherit the
+# lock descriptor and hold the lock for as long as they live; closing the
+# child's stdin does not release it, since the lock is not on stdin and the
+# descriptor number cannot be known from inside. Both measured, on both
+# backends. A notifier that hung would otherwise pin the decision lock for
+# ever — the failure `timeout` was reached for, with a tool this tree uses
+# nowhere and macOS does not ship at all. Firing it in the parent, after the
+# child has exited, neither holds the lock nor delays the decision.
+#
+# This section reads globals (the two knobs, the warn threshold, SESSION_HOME)
+# and calls into `session` for the vault and the swap, so unlike section 3 it
+# is reachable only through the CLI.
+
+# The decision's mutex, resolved per call like the log's path so both follow
+# SESSION_DATA wherever a caller puts it.
+acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
+
+# The percentage at or above which a window counts as spent. Read here and
+# passed down as an argument, so the clamp has exactly one site. Above 100 is
+# the documented way to silence the usage advisory; left unclamped it would
+# also mean "no window is ever blocked" and quietly disable the switcher for
+# anyone who had quieted the hook. `session account` dispatches before the
+# CLI's own validation loop runs, so the validation lives here as well — a
+# threshold that is not a number is a refusal, not a threshold of nothing.
+_acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
+  local t="${USAGE_WARN_PCT:-90}"
+  case "$t" in ''|*[!0-9]*) return 1 ;; esac
+  t=$(( 10#$t ))   # digits are not yet a number: a leading zero reads as octal
+  [ "$t" -gt 100 ] && t=100
+  printf '%s\n' "$t"
+}
+
+# The login name a vault entry's OWN identity derives. It has to be the name the
+# entry is filed under, or the entry is evidence of a credential having been
+# filed under another login's name — and switching to it would put the box on a
+# login nothing chose, with another login's windows ranked as its own.
+#
+# The two can disagree: acct_save reads .claude.json once for the name it files
+# the entry under and again for the identity it stores in it, and a concurrent
+# session rewriting that file between the two reads is the documented way a
+# credential lands under another login's name.
+#
+# Derived by session_login_read rather than by a second copy of the naming rule:
+# that rule has an organisation-seat branch and a sanitising step, and two
+# implementations of it would disagree the first time either moved. The entry's
+# own oauthAccount is written where that function looks for one.
+acct_entry_name() {  # VAULTFILE -> the derived login name
+  local d="$SESSION_DATA/.ident.$$"
+  mkdir -p "$d" 2>/dev/null || return 1
+  jq -c '{oauthAccount}' "$1" > "$d/.claude.json" 2>/dev/null
+  # shellcheck disable=SC2034  # session_login_read is what reads it, one frame down
+  ( SESSION_CFG="$d"; session_login_read )
+  rm -rf "$d"
+}
+
+# Whether a vault entry may be switched TO at all. Three shapes are excluded,
+# and all three are on this machine's record: no token to authenticate with, an
+# expiry of zero (the 2026-09-15 blank, where every key was present and the
+# object held nothing), and an identity that does not derive the entry's name.
+acct_entry_ok() {  # VAULTFILE NAME
+  acct_token_ok "$1" || return 1
+  jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
+  [ "$(acct_entry_name "$1")" = "$2" ]
+}
+
+# Whether a decision may be taken at all right now.
+#
+# The cooldown is measured against the newest row THIS VERB wrote, which is
+# neither a blank-credential refusal nor a cooldown hold. The refusal belongs to
+# another producer, and the outage that produces a run of them is exactly when
+# an authentication death most needs a decision; a cooldown hold is not a
+# decision either, and counting it would slide the window forward on every
+# retry, so the cooldown would never end while anything kept asking.
+_acct_past_cooldown() {  # NOW LIVE
+  local now="$1" live="$2" f last lastsw
+  f=$(acct_log_file)
+  [ -s "$f" ] || return 0
+  last=$(awk -F'\t' '$2 != "refuse" && $6 != "cooldown" { ts = $1 } END { print ts + 0 }' "$f")
+  { [ "$last" -gt 0 ] && [ $(( now - last )) -lt "$ACCT_COOLDOWN_S" ]; } || return 0
+  # Probation: a switch that has just happened is still being judged. While its
+  # target is the login now live, another death on that login re-decides rather
+  # than waiting the cooldown out. That covers a switch that landed and one
+  # whose credential did not — acct_swap writes .claude.json before it discovers
+  # the installed credential is not the entry's — but NOT one whose credentials
+  # write failed outright, which returns before .claude.json is touched, so the
+  # target never becomes live and that failure waits the cooldown out. The
+  # ladder bounds what the bypass can cost: every move climbs it.
+  lastsw=$(awk -F'\t' -v l="$live" \
+             '($2 == "switch" || $2 == "fail") && $4 == l { ts = $1 } END { print ts + 0 }' "$f")
+  [ "$lastsw" -gt 0 ] && [ $(( now - lastsw )) -lt "$ACCT_PROBATION_S" ]
+}
+
+# The six k=v lines every outcome prints, in one place so no arm can invent a
+# key or drop one: two later consumers read this output rather than the log.
+_acct_say() {  # EV FROM TO REASON TIER NEXT_ELIGIBLE
+  printf 'ev=%s\nfrom=%s\nto=%s\nreason=%s\ntier=%s\nnext_eligible_at=%s\n' \
+    "$1" "${2:--}" "${3:--}" "$4" "${5:--}" "${6:--}"
+}
+_acct_out_val() {  # KEY OUTPUT -> the value of that k=v line
+  printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'
+}
+
+# One window figure as the audit log spells it: a dash for a figure nothing
+# knows, never the -1 sentinel with a slash beside it.
+_acct_fig() { case "$1" in -1) printf -- '-' ;; *) printf '%s' "$1" ;; esac; }
+
+# What a human is told when the box moved under them. The tier is in the
+# sentence because a switch onto a Fable-spent login buys every model except
+# Fable, and a session that resumes on Fable would die on the same cap again.
+_acct_switch_msg() {  # FROM TO TIER
+  local rest="It has headroom on every rate-limit window."
+  [ "$3" = 1 ] && rest="It serves every model except Fable, whose weekly cap it has already spent."
+  printf 'session: the live login switched from %s to %s. %s' "$1" "$2" "$rest"
+}
+
+# When the earliest rejected candidate would stand ABOVE the live login — the
+# one piece of genuinely new information a hold carries, and what lets a waiter
+# sleep to a time something changes rather than to a reset that changes nothing.
+#
+# Per candidate: the windows that must clear for it to exceed the live tier
+# (both general windows when the live login serves nothing, all three when it
+# only lacks Fable), the latest of their resets, and then the earliest of those
+# across candidates. Only a probed candidate can contribute — the frozen path
+# renders durations and drops Fable's reset outright, so a candidate read from
+# a cache has no epoch to offer and a dash is the honest answer.
+_acct_next_eligible() {  # LIVETIER  (candidate rows on stdin) -> an epoch, or -
+  local livetier="$1" name blocks r5 rw rf state best='-' latest unknown w r
+  # Nothing stands above tier 2, so no reset lifts anything past it.
+  [ "$livetier" -ge 2 ] && { printf -- '-\n'; return 0; }
+  while IFS=$'\t' read -r name blocks r5 rw rf state; do
+    [ "$state" = good ] || continue
+    latest=0; unknown=0
+    for w in 5h week fable; do
+      # Clearing Fable only promotes a candidate once the live login already
+      # serves every other model; below that it changes no tier.
+      [ "$w" = fable ] && [ "$livetier" = 0 ] && continue
+      case ",$blocks," in *",$w,"*) ;; *) continue ;; esac
+      case "$w" in 5h) r=$r5 ;; week) r=$rw ;; *) r=$rf ;; esac
+      [ "$r" -gt 0 ] || { unknown=1; break; }
+      [ "$r" -gt "$latest" ] && latest=$r
+    done
+    { [ "$unknown" = 0 ] && [ "$latest" -gt 0 ]; } || continue
+    if [ "$best" = '-' ] || [ "$latest" -lt "$best" ]; then best=$latest; fi
+  done
+  printf '%s\n' "$best"
+}
+
+# The decision itself, already under the lock.
+_acct_decide() {  # TRIGGER SID DRY
+  local trigger="$1" sid="$2" dry="$3"
+  local thr cfg live now dr="" probeout n=0 vf name fresh star fg
+  local state f5 wk fb r5 rw rf sc blocks ctier
+  local livestate='-' livetier=2 liveblocks='-' scoped='-'
+  local rankrows="" cinfo="" candmap="" figures="" table=""
+  local winner="" winvf="" wblocks wintier to='-' tier ev reason nexteli='-'
+  local notify fired detail tab=$'\t' nl=$'\n'
+
+  # ── the refusals: nothing read, nothing written, nothing asked ──
+  case "${SESSION_AUTO_SWITCH:-on}" in
+    on) ;;
+    off) _acct_say refuse - - off - -; return 4 ;;
+    *)  echo "session account auto: SESSION_AUTO_SWITCH is '${SESSION_AUTO_SWITCH:-}' — it takes on or off" >&2
+        _acct_say refuse - - bad-mode - -; return 4 ;;
+  esac
+  thr=$(_acct_threshold) || {
+    echo "session account auto: invalid USAGE_WARN_PCT='${USAGE_WARN_PCT:-}' (use a whole number of percent)" >&2
+    _acct_say fail - - bad-threshold - -; return 5; }
+  cfg=$(acct_cfg)
+  [ -s "$cfg/.credentials.json" ] || {
+    echo "session account auto: this Claude Code stores credentials in the macOS Keychain, which this build cannot swap; see README.md" >&2
+    _acct_say refuse - - no-credentials - -; return 4; }
+  live=$(acct_live_login)
+  [ "$(acct_paths | grep -c . || true)" -ge 2 ] || {
+    _acct_say refuse "$live" - too-few-logins - -; return 4; }
+
+  # ── no state, no switch ──
+  # Re-checked inside the lock, because this is the process that swaps: a root
+  # that went read-only since the caller looked (the btrfs flip on this box's
+  # record) would otherwise move the login and leave no row saying why.
+  [ -w "$SESSION_DATA" ] || { _acct_say hold "$live" - not-writable - -; return 3; }
+
+  # ── the cooldown, box-wide ──
+  now=$(now_epoch)
+  if ! _acct_past_cooldown "$now" "$live"; then
+    ev=hold
+    if [ "$dry" = 1 ]; then ev='dry-run'; else acct_log hold "$live" - "$trigger" cooldown - "sid=$sid"; fi
+    _acct_say "$ev" "$live" - cooldown - -
+    return 3
+  fi
+
+  # ── the candidates, screened before any token of theirs is sent ──
+  while IFS= read -r vf; do
+    [ -n "$vf" ] || continue
+    name=$(acct_name_of "$vf")
+    # The live login is not a candidate: installing a second copy of the
+    # credential already in place buys nothing, and probing it would ask the
+    # endpoint twice under one identity.
+    { [ -n "$name" ] && [ "$name" != "$live" ]; } || continue
+    acct_entry_ok "$vf" "$name" || continue
+    candmap="$candmap$name$tab$vf$nl"
+  done < <(acct_paths)
+
+  # A dry run changes nothing, and the probe legitimately caches what it read,
+  # so its writes go to a scratch root that is removed with them.
+  [ "$dry" = 1 ] && { dr="$SESSION_DATA/.dry.$$"; mkdir -p "$dr" 2>/dev/null || dr=""; }
+  probeout=$(
+    # shellcheck disable=SC2030,SC2031  # local to this subshell is the point
+    [ -n "$dr" ] && SESSION_DATA="$dr"
+    # The LIVE credentials file, never the vault's copy of it: that is the token
+    # actually serving requests, so its windows are the ones being decided on.
+    printf '%s\t%s\n' "$live" "$(acct_probe "$live" "$cfg/.credentials.json")"
+    printf '%s' "$candmap" | cut -f2 | acct_probe_all
+  )
+  [ -n "$dr" ] && rm -rf "$dr"
+
+  while IFS=$'\t' read -r name state f5 wk fb r5 rw rf sc; do
+    [ -n "$name" ] || continue
+    n=$(( n + 1 ))
+    if [ "$state" = good ]; then
+      fresh=probe; star='*'
+      if [ "$scoped" = - ] || [ "$sc" -gt "$scoped" ]; then scoped=$sc; fi
+    else
+      fresh=frozen; star=''
+      # A credential the endpoint REJECTED gets no frozen fallback. Its cached
+      # figures may look excellent, and ranking a dead credential on them is
+      # precisely how one goes live.
+      if [ "$state" != dead ]; then
+        IFS=$'\t' read -r f5 _ wk _ fb _ <<<"$(acct_row "$name")"
+        f5=$(acct_num "$f5"); wk=$(acct_num "$wk"); fb=$(acct_num "$fb")
+      fi
+      r5=0; rw=0; rf=0
+    fi
+    fg="$(_acct_fig "$f5")/$(_acct_fig "$wk")/$(_acct_fig "$fb")"
+    figures="${figures:+$figures;}$name=$fg$star"
+    if [ "$n" = 1 ]; then
+      livestate=$state
+      if [ "$state" = dead ]; then
+        # The token serving every request is rejected, so this login serves
+        # nothing whatever a cache from before the rejection still says. This
+        # is the authentication-failure case, and it is the one the record
+        # shows is worth the whole feature.
+        liveblocks=5h,week,fable
+      else
+        # UNKNOWN_BLOCKS=0: a live login that is merely unreadable is the
+        # network-down case, and must not read as blocked — that is exactly
+        # when the box most needs another login.
+        liveblocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 0)
+      fi
+      livetier=$(acct_tier "$liveblocks")
+      table="live=$name/$livetier/$fresh/$fg$nl"
+    else
+      # UNKNOWN_BLOCKS=1: everything ranked here is a candidate, so an unknown
+      # general window fails it closed and an unknown Fable caps it at tier 1.
+      blocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 1)
+      ctier=$(acct_tier "$blocks")
+      rankrows="$rankrows$name$tab$fresh$tab$f5$tab$wk$tab$fb$nl"
+      cinfo="$cinfo$name$tab$blocks$tab$r5$tab$rw$tab$rf$tab$state$nl"
+      table="${table}cand=$name/$ctier/$fresh/$fg$nl"
+    fi
+  done <<<"$probeout"
+
+  # ── the live login's tier, then the best thing standing above it ──
+  # Rank first and admit once: the winner carries the highest tier of any row,
+  # so if it is inadmissible no candidate is.
+  winner=$(printf '%s' "$rankrows" | acct_rank "$thr")
+  if [ -n "$winner" ]; then
+    wblocks=$(printf '%s' "$cinfo" | awk -F'\t' -v l="$winner" '$1 == l { print $2; exit }')
+    if acct_admissible "$wblocks" "$liveblocks"; then
+      to=$winner
+      wintier=$(acct_tier "$wblocks")
+      winvf=$(printf '%s' "$candmap" | awk -F'\t' -v l="$winner" '$1 == l { print $2; exit }')
+    fi
+  fi
+
+  if [ "$livestate" = good ] && [ "$livetier" = 2 ]; then
+    # Verified clean on every window: the death was transient and moving buys
+    # nothing. Only a 200 says this — an unreadable login does not.
+    ev=hold; reason='live-clean'; tier=$livetier; to='-'
+  elif [ "$to" = '-' ]; then
+    ev=hold; reason='no-candidate'; tier=$livetier
+    nexteli=$(printf '%s' "$cinfo" | _acct_next_eligible "$livetier")
+  elif [ "$dry" = 1 ]; then
+    ev=hold; reason=climbed; tier=$wintier
+  else
+    tier=$wintier
+    acct_swap "$winvf"
+    case $? in
+      0) ev=switch; reason=climbed ;;
+      1) ev=fail; reason='swap-write-failed'; tier=$livetier ;;
+      # The identity file already names the incoming login here while the
+      # credential that landed is somebody else's, so nothing downstream may
+      # read the live login name back as evidence of what happened.
+      2) ev=fail; reason='swap-not-observed'; tier=$livetier ;;
+      # Unreachable: step 4 already refuses an entry that cannot authenticate.
+      # Reaching it means the screening was skipped.
+      *) ev=fail; reason='swap-refused'; tier=$livetier ;;
+    esac
+  fi
+  # A dry run reaches no arm but those three, all of which hold.
+  [ "$dry" = 1 ] && ev='dry-run'
+
+  # ── one row, and the seam armed for the parent to fire ──
+  notify="${SESSION_SWITCH_NOTIFY:-}"
+  fired=off
+  [ -n "$notify" ] && [ -x "$notify" ] && fired=sent
+  detail="sid=$sid;http=$livestate;tier=$tier;scoped=$scoped"
+  case "$ev" in
+    # next_eligible is carried by holds alone and notify by switches alone: a
+    # reader takes each from the newest row that carries it, so a row stating a
+    # key it never computed would overwrite one that did.
+    switch) detail="$detail;notify=$fired" ;;
+    hold)   detail="$detail;next_eligible=$nexteli" ;;
+  esac
+  [ "$dry" = 1 ] || acct_log "$ev" "$live" "$to" "$trigger" "$reason" "$figures" "$detail"
+  [ "$dry" = 1 ] && printf '%s' "$table"
+  _acct_say "$ev" "$live" "$to" "$reason" "$tier" "$nexteli"
+  case "$ev" in
+    switch)       return 0 ;;
+    hold|dry-run) return 3 ;;
+    *)            return 5 ;;
+  esac
+}
+
+acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
+  local trigger=manual sid=- dry=0 locked=0 dryflag="" out rc notify msg
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trigger) shift; trigger="${1:-}" ;;
+      --sid)     shift; sid="${1:-}" ;;
+      --dry-run) dry=1 ;;
+      # How the locked child is entered, and deliberately not in the help: a
+      # decision taken outside the lock is what the lock exists to prevent.
+      --locked)  locked=1 ;;
+      *) echo "session account auto: unknown option '$1'" >&2
+         _acct_say fail - - bad-option - -; return 5 ;;
+    esac
+    shift
+  done
+  case "$trigger" in
+    cap|auth|manual) ;;
+    *) echo "session account auto: --trigger takes cap, auth or manual, not '$trigger'" >&2
+       _acct_say fail - - bad-trigger - -; return 5 ;;
+  esac
+  [ -n "$sid" ] || sid=-
+
+  [ "$locked" = 1 ] && { _acct_decide "$trigger" "$sid" "$dry"; return $?; }
+
+  # The lock file lives under the data root, and lock_run opening it is the
+  # first thing here that touches the filesystem — so a root that cannot hold it
+  # has to be caught BEFORE the lock, never in the child that never starts.
+  # Measured: flock(1) reports 66 and prints to stderr, the perl fallback
+  # reports 1, and 1 is the code every caller reads as "another decision holds
+  # the lock". A read-only data root would make a waiter retry for ever.
+  # shellcheck disable=SC2031  # the dry-run rebinding is another function's subshell
+  mkdir -p "$SESSION_DATA" 2>/dev/null
+  # shellcheck disable=SC2031
+  [ -w "$SESSION_DATA" ] || {
+    _acct_say hold "$(acct_live_login)" - not-writable - -; return 3; }
+
+  [ "$dry" = 1 ] && dryflag=--dry-run
+  # shellcheck disable=SC2086  # dryflag is one word or none, never a path
+  out=$(lock_run "$(acct_lock_file)" bash "$SESSION_HOME/session" account auto \
+          --locked --trigger "$trigger" --sid "$sid" $dryflag)
+  rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+
+  # The lock died with the child that held it, so the seam can be fired now —
+  # and only for a switch. Holds are the normal outcome and announcing them is
+  # about nine high-priority pushes a day through a Fable-capped week.
+  [ "$(_acct_out_val ev "$out")" = switch ] || return $rc
+  notify="${SESSION_SWITCH_NOTIFY:-}"
+  [ -n "$notify" ] && [ -x "$notify" ] || return $rc
+  msg=$(_acct_switch_msg "$(_acct_out_val from "$out")" "$(_acct_out_val to "$out")" \
+                         "$(_acct_out_val tier "$out")")
+  ( "$notify" "$msg" >/dev/null 2>&1 & )
+  return $rc
+}
