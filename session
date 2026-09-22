@@ -1225,7 +1225,8 @@ doctor_main() {
     *) echo "session doctor: unknown arg '$1' (it takes none)" >&2; exit 2 ;;
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
-        newest_s have_e plat miss age crdl
+        newest_s have_e plat miss age crdl warnsrc \
+        swmode swnote swlast swcap swts swev vaultn probeable capd scoped lockf entname
 
   echo "-- session doctor -------------------------------------------------"
   echo "  code     $SESSION_HOME"
@@ -1304,6 +1305,20 @@ doctor_main() {
       doc FAIL "session.conf" "$cf is not valid shell — the lib sources it, so every path silently falls back to its default"
     fi
   fi
+
+  # The warn threshold, beside the two places that set it. `doctor` dispatches
+  # before the CLI's own validation loop runs — which is what lets a broken
+  # install be diagnosed at all, and is exactly why the value has to be checked
+  # here too: one that is not a whole number makes every UserPromptSubmit hook
+  # exit 2 and block the prompt, while every other line in this report reads
+  # fine. The pattern is the validation's, so the two cannot disagree.
+  case "$USAGE_WARN_PCT" in
+    *[!0-9]*)
+      warnsrc="the environment"
+      [ -r "$cf" ] && grep -q 'USAGE_WARN_PCT' "$cf" && warnsrc="$cf, which sets it"
+      doc FAIL "warn pct" "USAGE_WARN_PCT='$USAGE_WARN_PCT' is not a whole number of percent ($warnsrc) — every prompt is blocked with exit 2 until it is"
+      ;;
+  esac
 
   # The EFFECTIVE statusLine, not the one in the user settings: a project
   # settings file in the directory a session runs from silently wins, and a
@@ -1473,6 +1488,113 @@ doctor_main() {
     doc pending platform "macOS: \`session account\` cannot swap the login (credentials are in the Keychain)"
   fi
 
+  # 11. The automatic switcher: whether a cap death here can move the box onto
+  #     another vaulted login by itself. Read rather than run — invoking
+  #     `session account auto` would take the decision lock and write an audit
+  #     row for a question nobody asked.
+  #
+  #     The ladder is two lists, not one. The mode and the two pendings for a
+  #     missing credential and a second login are the decision verb's own
+  #     refusals, asked the way it asks them. The rest — the notify seam, the
+  #     trigger's wiring, the cache, curl — are the path that has to reach the
+  #     verb at all, and the verb never sees them: it switches perfectly
+  #     happily with a notify path it cannot run, recording notify=off.
+  #
+  #     The two pendings come BEFORE the trigger's wiring deliberately: a
+  #     machine that cannot switch at all yet has nothing wired wrong there,
+  #     and a fresh install must not read FAIL on a feature it has no logins
+  #     for. The notify arm sits above them on purpose — a path someone typed
+  #     that cannot be executed is a typo, and its remedy waits on nothing.
+  vaultn=0; probeable=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    vaultn=$(( vaultn + 1 ))
+    acct_token_ok "$f" && probeable=$(( probeable + 1 ))
+  done < <(acct_paths)
+
+  # The newest audit row beside the newest cap death. A switcher that is
+  # triggered and records nothing reads as a gap between the two, which is the
+  # one thing neither figure says on its own.
+  if last=$(acct_log_last 2>/dev/null); then
+    IFS=$'\t' read -r swts swev _ <<<"$last"
+    swlast="newest decision: $swev ($(acct_age $(( $(now_epoch) - swts ))))"
+  else
+    swlast="no decision recorded yet"
+  fi
+  capd=-1
+  if [ -s "$SESSION_TLOG" ]; then
+    t=$(awk -F'\t' '$3 == "f" && $5 ~ /rate_limit|usage_limit/ { ts = $1 } END { print ts + 0 }' "$SESSION_TLOG")
+    [ "$t" -gt 0 ] && capd=$(( $(now_epoch) - t ))
+  fi
+  if [ "$capd" -lt 0 ]; then swcap="no cap death recorded"; else swcap="newest cap death ($(acct_age "$capd"))"; fi
+
+  # What a decision left behind, reported whatever the mode: these describe
+  # what the endpoint and the log last said, which does not stop being true
+  # because the switcher is off. None of them is a FAIL — a second weekly
+  # window and an unreadable body are the endpoint moving, not this install
+  # being wired wrong, and one in-band error response would otherwise pin a
+  # FAIL until the next decision ran.
+  swnote=""
+  # The newest row that CARRIES scoped=, not the newest row: a refusal and a
+  # cooldown hold carry no figure, and would read as absent.
+  scoped=$(acct_log_key scoped 2>/dev/null || true)
+  case "$scoped" in
+    ''|-|0|1) ;;
+    *) swnote="$scoped model-scoped weekly windows in the newest decision that counted them — the selector reads Fable alone" ;;
+  esac
+  for f in "$SESSION_DATA"/probe-body.*.json; do
+    [ -f "$f" ] || continue
+    swnote="${swnote:+$swnote · }${f##*/}: the last usage response for that login carried no window this parser could read"
+  done
+  # Only a HELD lock says anything. The file itself survives the first decision
+  # this root ever took, and neither locking backend writes to it (measured on
+  # both), so its mtime is not an acquisition time and is not reported as one.
+  # Never created here either: a doctor that wrote into the root it is
+  # reporting on would be reporting on itself.
+  #
+  # Asking costs holding it for the length of one `true`, in which a decision
+  # starting at that instant reads busy and falls through to the ordinary
+  # waiter. Sub-millisecond, against a verb a human runs by hand.
+  #
+  # "not free" rather than "held", because lock_run reports non-zero for a
+  # command that never ran as well as for a lock somebody holds, and the perl
+  # backend — the one macOS takes — cannot open a lock file this user cannot
+  # write. The line says what was observed, not which of the two it was.
+  lockf=$(acct_lock_file)
+  if [ -e "$lockf" ] && ! lock_run "$lockf" true >/dev/null 2>&1; then
+    swnote="${swnote:+$swnote · }lock not free — a decision is in flight, or the lock file cannot be opened"
+  fi
+
+  swmode="${SESSION_AUTO_SWITCH:-on}"
+  if [ "$swmode" = off ]; then
+    doc pending switcher "off — SESSION_AUTO_SWITCH=off, so no cap death moves this box; that line is also the feature's instant rollback"
+  elif [ "$swmode" != on ]; then
+    doc FAIL switcher "SESSION_AUTO_SWITCH is '$swmode' — it takes on or off, and every decision refuses until it does"
+  elif [ -n "$SESSION_SWITCH_NOTIFY" ] && [ ! -x "$SESSION_SWITCH_NOTIFY" ]; then
+    doc FAIL switcher "SESSION_SWITCH_NOTIFY=$SESSION_SWITCH_NOTIFY is not executable — the box would move login and nothing would say so"
+  elif [ ! -s "$SESSION_CFG/.credentials.json" ]; then
+    doc pending switcher "no $SESSION_CFG/.credentials.json — nothing has logged in here yet, or this Claude Code keeps credentials in the macOS Keychain, which this build cannot swap"
+  elif [ "$vaultn" -lt 2 ]; then
+    doc pending switcher "$vaultn vaulted login(s) in $acctdir — a switch needs somewhere to go; \`session account save\` captures each one after its \`/login\`"
+  # StopFailure and not merely "armed somewhere": that hook is the one a turn
+  # dying on a cap reaches, so an entry armed only on UserPromptSubmit leaves
+  # the switcher with no trigger while check 9 above reads ok. Structural, like
+  # the advisory's own probe — `rewake-waiter` appears in a settings.json that
+  # arms nothing (a commented-out entry, an entry on another event, or this one
+  # with asyncRewake false, which the harness then runs synchronously).
+  elif ! jq -e '[.hooks.StopFailure[]?.hooks[]?
+                 | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)]
+                | length > 0' "$SESSION_CFG/settings.json" >/dev/null 2>&1; then
+    doc FAIL switcher "no armed --rewake-waiter entry on StopFailure in $SESSION_CFG/settings.json — that hook is what a cap death reaches, so nothing can carry one to a decision (install.sh arms it; --no-rewake leaves it off)"
+  elif [ ! -s "$cache_f" ]; then
+    doc pending switcher "no $cache_f — the rewake path exits without one, before it reaches a decision; interact once"
+  elif ! command -v curl >/dev/null 2>&1; then
+    doc pending switcher "no curl on PATH — a decision still runs, on the frozen figures in the per-login caches rather than on what the endpoint says now"
+  else
+    doc ok switcher "on · notify ${SESSION_SWITCH_NOTIFY:-none} · $vaultn logins, $probeable with a token · $swlast · $swcap"
+  fi
+  [ -z "$swnote" ] || doc ok switcher "$swnote"
+
   # A blank live credential. Not one of the numbered checks: it reports a state
   # the machine is in rather than how it is wired, and says nothing when the
   # machine is not in it. The condition is "proven blank" rather than "not
@@ -1489,6 +1611,38 @@ doctor_main() {
     else
       doc FAIL credentials "the live accessToken is empty — nothing can authenticate, and no vaulted copy of $crdl carries a usable token; re-run /login"
     fi
+  fi
+
+  # A vault entry filed under a name its own identity does not derive. The swap
+  # writes .credentials.json and .claude.json as two files and the statusline's
+  # autosave reads both, so landing between them files a credential under
+  # another login's name — a window of milliseconds, never once observed, which
+  # is why nothing guards it. This is the detector rather than the guard: if it
+  # ever fires there is a real instance to design against instead of a guess.
+  # The switcher already skips such an entry, so what one costs today is a
+  # login silently missing from every decision.
+  #
+  # Only with a writable root, because deriving a name needs a scratch
+  # directory under it — and a doctor that created the root it had just
+  # reported as absent would be reporting on itself.
+  if [ -w "$SESSION_DATA" ]; then
+    for f in "$acctdir"/*.json; do
+      [ -f "$f" ] || continue
+      v=${f##*/}; v=${v%.json}
+      # Non-zero only when the scratch directory could not be made, i.e. when
+      # nothing was asked — never a verdict on the entry.
+      entname=$(acct_entry_name "$f") || continue
+      [ "$entname" = "$v" ] && continue
+      # An entry carrying no identity at all is a different fault with a
+      # different remedy: `unknown` is what the naming rule answers for a file
+      # with no readable oauthAccount, and calling that a collision would send
+      # its reader to .history for a restore that is not the answer.
+      if [ "$entname" = unknown ]; then
+        doc FAIL vault "$f has no identity of its own, so nothing can say whose credential it holds — the switcher skips it; save the login again while it is live"
+      else
+        doc FAIL vault "$f carries the identity $entname and is filed under $v — one of the two belongs to another login, and the switcher skips the entry either way"
+      fi
+    done
   fi
 
   echo "-------------------------------------------------------------------"
@@ -1669,8 +1823,9 @@ Overview:
                                    countdowns, context fill, this session's share
   session doctor                   check this install end to end: data root, the
                                    CLI on PATH, cache, turn log, the effective
-                                   statusLine, hooks, platform. ok / pending /
-                                   FAIL; only a FAIL exits 1
+                                   statusLine, hooks, platform, the automatic
+                                   switcher. ok / pending / FAIL; only a FAIL
+                                   exits 1
 
 Identity (pane-safe: reports the session actually invoking it):
   session whoami                   two lines: id + auto-title
