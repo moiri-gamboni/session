@@ -1882,6 +1882,14 @@ Accounts (several subscription logins, one config dir; `session account -h`):
   session account save             vault the live login (the statusline does
                                    this by itself whenever credentials change)
   session account rm <name>        drop a saved login (copy kept in .history/)
+  session account auto             decide once, box-wide, whether a vaulted login
+                                   stands strictly higher on the capability ladder
+                                   than the live one, and move to it if so. The
+                                   StopFailure rewake entry runs it, so a cap or
+                                   authentication death takes this decision by
+                                   itself; SESSION_AUTO_SWITCH=off in session.conf
+                                   turns that off. `session account -h` has the
+                                   options, the exit codes and the k=v output
   Adding a login = run /login in a session; it is vaulted automatically, and the
   login it replaces is kept, so switching back never needs re-authenticating.
 
@@ -1925,6 +1933,8 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
   probe-body.<login>.json   a usage-endpoint response no window could be read
                             from; removed once a later probe reads
   session-log.tsv   per-session cost/token samples    turn-log.tsv  turn events
+  switch-log.tsv    one row per decision about which login the box runs on; never
+                    pruned, and the switcher's own control state
   title-index.tsv   sid ↔ title over the transcript store, built by `session id`
                     on first use and refreshed per query for changed transcripts
   Limits + attribution are keyed by LOGIN NAME: the email in the invoking config
