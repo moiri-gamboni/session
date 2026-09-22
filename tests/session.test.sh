@@ -2854,6 +2854,110 @@ WTEOF
     rm -f "$WWT/cfg/session.conf"
 fi
 
+echo "--- case 14 [blank credential]: an empty accessToken is never vaulted ---"
+
+if ! have jq; then
+    skip "case 14 [blank credential]" "no jq"
+else
+    # Recorded five times in two months: .credentials.json holds a complete
+    # claudeAiOauth object — every key present, every type right — whose
+    # accessToken is "". The autosave vaulted it over the last working copy of
+    # that login, it went live, and nothing on the box could authenticate for
+    # 10.5 hours. Both recorded shapes are here: expiresAt 0, and expiresAt
+    # absent, both with the refresh token blanked alongside. The keys are the
+    # seven Claude Code writes, in the order it writes them.
+    blank() {  # WORLD EXPIRES_FRAGMENT — the live credential, token blank
+        printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"",%s"refreshTokenExpiresAt":0,"scopes":["user:inference","user:profile"],"subscriptionType":"max","rateLimitTier":"default"},"mcpOAuth":{"granola":"keep-me"}}\n' \
+            "$2" > "$1/cfg/.credentials.json"
+    }
+    WBC=$(world); VBC="$WBC/vault"; VFBC="$VBC/a@example.com.json"
+    mklogin "$WBC" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-good","refreshToken":"rt-a","expiresAt":1,"refreshTokenExpiresAt":0,"scopes":["user:inference","user:profile"],"subscriptionType":"max","rateLimitTier":"default"},"mcpOAuth":{"granola":"keep-me"}}\n' \
+        > "$WBC/cfg/.credentials.json"
+    sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account save >/dev/null 2>&1
+    report yes "$([ -s "$VFBC" ] && echo yes || echo no)" \
+        "case 14 [blank]: a working login vaults (the control)"
+    KEEP=$(cat "$VFBC")
+
+    blank "$WBC" '"expiresAt":0,'
+    out=$( (sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account save >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [blank]: save exits 1 on an empty accessToken with expiresAt 0"
+    report yes "$([ "$KEEP" = "$(cat "$VFBC")" ] && echo yes || echo no)" \
+        "case 14 [blank]: ... leaving the vault entry byte-identical"
+    report 0 "$(ls -1 "$VBC/.history" 2>/dev/null | grep -c . || true)" \
+        "case 14 [blank]: ... and rotating nothing into .history"
+    report yes "$(printf '%s' "$out" | grep -q 'accessToken' && echo yes || echo no)" \
+        "case 14 [blank]: ... saying on stderr why nothing was saved"
+
+    blank "$WBC" ''
+    out=$( (sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account save >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [blank]: save exits 1 on an empty accessToken with no expiresAt at all"
+    report yes "$([ "$KEEP" = "$(cat "$VFBC")" ] && echo yes || echo no)" \
+        "case 14 [blank]: ... leaving the vault entry byte-identical here too"
+
+    # A null claudeAiOauth is the same refusal on the same test — it too has
+    # been written to the vault on this machine, one second after a healthy
+    # save. A token that is absent rather than empty vaults nothing usable.
+    printf '{"claudeAiOauth":null,"mcpOAuth":{"granola":"keep-me"}}\n' > "$WBC/cfg/.credentials.json"
+    out=$( (sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account save >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [blank]: save exits 1 on a null claudeAiOauth"
+    report yes "$([ "$KEEP" = "$(cat "$VFBC")" ] && echo yes || echo no)" \
+        "case 14 [blank]: ... leaving the vault entry byte-identical there too"
+
+    # Only the empty token is refused. A token with no expiresAt beside it is a
+    # valid live shape and still vaults, so the refusal cannot widen into one.
+    printf '{"claudeAiOauth":{"accessToken":"tok-new"}}\n' > "$WBC/cfg/.credentials.json"
+    out=$(sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account save 2>&1); rc=$?
+    report 0 "$rc" "case 14 [blank]: a non-empty token with no expiresAt still vaults"
+    report "tok-new" "$(jq -r '.claudeAiOauth.accessToken' "$VFBC")" \
+        "case 14 [blank]: ... replacing the entry"
+
+    # `doctor` is where a human sees the state while it is happening, so it has
+    # to name the entry the refusal is protecting.
+    BBC=$(mktemp -d "$TMP/bbc.XXXXXX"); ln -sf "$BIN" "$BBC/session"
+    chmod 700 "$WBC/data"
+    dbc() {  # WORLD VAULT -> doctor output
+        ( cd "$TMP" && env -i PATH="$BBC:$PATH" HOME="$FH" TZ=UTC \
+            CLAUDE_CONFIG_DIR="$1/cfg" SESSION_DATA_DIR="$1/data" \
+            SESSION_ACCOUNTS_DIR="$2" CLAUDE_CODE_SESSION_ID="$UUID" \
+            timeout 60 bash "$BIN" doctor 2>&1 )
+    }
+    out=$(dbc "$WBC" "$VBC"); rc=$?
+    report 0 "$rc" "case 14 [blank]: doctor over a working live credential exits 0"
+    report 0 "$(printf '%s' "$out" | awk '$2 == "credentials"' | grep -c . || true)" \
+        "case 14 [blank]: ... and prints no credentials line (nothing to report)"
+
+    blank "$WBC" '"expiresAt":0,'
+    out=$(dbc "$WBC" "$VBC"); rc=$?
+    report 1 "$rc" "case 14 [blank]: doctor exits 1 while the live credential is blank"
+    report FAIL "$(printf '%s' "$out" | awk '$2 == "credentials" { print $1; exit }')" \
+        "case 14 [blank]: ... failing the credentials line"
+    report yes "$(printf '%s' "$out" | grep -qF -- "$VFBC" && echo yes || echo no)" \
+        "case 14 [blank]: ... naming the vault entry it is preserving"
+
+    # The same blank with nothing vaulted for that login: there is no copy to
+    # restore from, and saying so is the whole content of the report.
+    WBC2=$(world); chmod 700 "$WBC2/data"; mklogin "$WBC2" c@example.com
+    blank "$WBC2" '"expiresAt":0,'
+    out=$(dbc "$WBC2" "$WBC2/vault"); rc=$?
+    report FAIL "$(printf '%s' "$out" | awk '$2 == "credentials" { print $1; exit }')" \
+        "case 14 [blank]: doctor fails the credentials line with an empty vault too"
+    report yes "$(printf '%s' "$out" | grep -q 'no vaulted copy' && echo yes || echo no)" \
+        "case 14 [blank]: ... and says there is no copy to restore from"
+
+    # A vault entry that is itself blank was reachable before this refusal
+    # existed, and pointing a human at it during an outage would reinstall the
+    # blank. Existing is not the same as usable, and the line must not say it is.
+    mkdir -p "$WBC2/vault"
+    printf '{"login":"c@example.com","claudeAiOauth":{"accessToken":"","expiresAt":0}}\n' \
+        > "$WBC2/vault/c@example.com.json"
+    out=$(dbc "$WBC2" "$WBC2/vault")
+    report yes "$(printf '%s' "$out" | grep -q 'no vaulted copy' && echo yes || echo no)" \
+        "case 14 [blank]: a vault entry whose own token is empty is not offered as the copy to restore"
+    report no "$(printf '%s' "$out" | grep -q 'last working copy' && echo yes || echo no)" \
+        "case 14 [blank]: ... and is not called a working copy"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
