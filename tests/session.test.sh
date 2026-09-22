@@ -2808,8 +2808,11 @@ if ! have jq; then
     skip "warn-thr: USAGE_WARN_PCT" "no jq"
 else
     # One default, in one place. Two copies drift, and the consumer holding the
-    # stale one gates at a threshold nobody chose.
-    report 1 "$(grep -c 'USAGE_WARN_PCT:-90' "$BIN")" "warn-thr: the default 90 is written exactly once"
+    # stale one gates at a threshold nobody chose. Counted over every shipped
+    # script rather than over the CLI alone: the second copy this check was
+    # written against lived in lib/account.sh, where counting one file read green.
+    report 1 "$(cat "$BIN" "$SDIR"/lib/*.sh "$SDIR/statusline.sh" | grep -c 'USAGE_WARN_PCT:-90')" \
+        "warn-thr: the default 90 is written exactly once, across every shipped script"
 
     WWT=$(world); mklogin "$WWT" me@example.com
     WTHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
@@ -3560,7 +3563,12 @@ else
     }
     alwait() {  # LINES — the seam is fired in the background, so poll for it
         local n=0
-        while [ "$(grep -c . "$ALNOTE" 2>/dev/null || echo 0)" -lt "$1" ] && [ "$n" -lt 25 ]; do
+        # `have=$(…)` then test it, never `$( … || echo 0)`: grep -c prints 0 AND
+        # exits 1 on an existing empty file, so the fallback appends a second 0
+        # and the comparison gets `0\n0`, which errors and ends the loop at once.
+        # Harmless here only because this file is never existing-and-empty at a
+        # call site; two sibling pollers had the same line and did not survive it.
+        while have=$(grep -c . "$ALNOTE" 2>/dev/null); [ "${have:-0}" -lt "$1" ] && [ "$n" -lt 25 ]; do
             sleep 0.2 2>/dev/null || sleep 1
             n=$(( n + 1 ))
         done
@@ -4248,9 +4256,9 @@ DTAMPEREOF
 
     # ── a data root that cannot hold the lock ─────────────────────────────────
     # The lock file lives under the data root, so lock_run opening it is what
-    # fails first — with 66 under flock(1) and 1 under the perl fallback, and 1
-    # is the code every caller reads as "another decision holds the lock". A
-    # read-only root would make a waiter retry for ever.
+    # fails first — 66 on both backends, which carries no event, no reason and
+    # no row for a caller to act on. The hold below is the decision outcome that
+    # does.
     WD21=$(dworld); CD21=$(curlstub)
     dlive "$WD21" a@example.com tok-a
     dvent "$WD21" a@example.com tok-a; dvent "$WD21" b@example.com tok-b
@@ -5216,6 +5224,233 @@ WCEOF
             "wake-channel: ... with jq's complaint about the cache kept off it"
     fi
 fi
+
+echo "--- lock-open: an unopenable lock file is not a busy lock ---"
+
+# A backend has to separate "somebody holds this lock" from "this lock file
+# cannot be opened". Every caller reads the busy codes — 1 from flock(1), 75
+# from the perl fallback — as "another decision is in flight" and falls through
+# with no retry, no audit row and no message; busy clears by itself and an
+# unopenable lock file does not, so reported as busy it would disable automatic
+# switching for ever and say nothing about it.
+#
+# The perl fallback is where that bites, and it is the backend macOS takes: it
+# opens the lock file for append, so a read-only or foreign-owned one stops it
+# dead, while flock(1) opens O_RDONLY|O_CREAT and takes the lock on both. The
+# fixture below is therefore a mode-444 file and the perl path only — 66 is
+# flock(1)'s own <sysexits.h> code for a file it cannot open, which is why it is
+# the code to answer with, not a condition both backends meet here.
+LKO="$TMP/lockopen-unopenable"
+: > "$LKO"
+chmod 444 "$LKO"
+if ! have perl; then
+    skip "lock-open [perl]" "no perl"
+elif ( : >> "$LKO" ) 2>/dev/null; then
+    skip "lock-open [perl]" "a mode-444 file is still openable here (running as root)"
+else
+    LKOBIN=$(minipath flock)
+    if PATH="$LKOBIN" command -v flock >/dev/null 2>&1; then
+        skip "lock-open [perl]" "flock is still on the minimal PATH"
+    else
+        lko_rc=$( PATH="$LKOBIN"; lock_run "$LKO" ls >/dev/null 2>&1; echo $? )
+        report 66 "$lko_rc" "lock-open [perl]: a lock file that cannot be opened reports 66"
+        report no "$( { [ "$lko_rc" = 1 ] || [ "$lko_rc" = 75 ]; } && echo yes || echo no)" \
+            "lock-open [perl]: ... which is outside the busy set a caller falls through on"
+
+        # The other half of the same contract: a lock somebody holds still reports
+        # busy, so the two conditions are separated rather than one renamed.
+        LKOH="$TMP/lockopen-held"
+        rm -f "$LKOH" "$TMP/lockopen.ran"
+        ( PATH="$LKOBIN"; lock_run "$LKOH" sh -c "touch '$TMP/lockopen.ran'; sleep 3" ) &
+        lkopid=$!
+        lkon=0
+        while [ ! -e "$TMP/lockopen.ran" ] && [ "$lkon" -lt 10 ]; do sleep 1; lkon=$(( lkon + 1 )); done
+        lkoh_rc=$( PATH="$LKOBIN"; lock_run "$LKOH" ls >/dev/null 2>&1; echo $? )
+        wait "$lkopid"
+        rm -f "$TMP/lockopen.ran"
+        report 75 "$lkoh_rc" "lock-open [perl]: a lock another process holds still reports busy"
+
+        # What the decision verb does with it. Not an exit code left for a caller
+        # to branch on: nothing did, which is how the condition stayed invisible.
+        WLKO=$(world); mkdir -p "$WLKO/vault"
+        mklogin "$WLKO" a@example.com
+        printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":9999999999000}}\n' \
+            > "$WLKO/cfg/.credentials.json"
+        for lkl in a@example.com b@example.com; do
+            printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"tok-%s","expiresAt":9999999999000}}\n' \
+                "$lkl" "$lkl" "$lkl" "${lkl%%@*}" > "$WLKO/vault/$lkl.json"
+        done
+        : > "$WLKO/data/switch.lock"
+        chmod 444 "$WLKO/data/switch.lock"
+        out=$(sess "$WLKO" PATH="$LKOBIN" SESSION_ACCOUNTS_DIR="$WLKO/vault" \
+                -- account auto --trigger cap --sid sid-lko 2>&1); rc=$?
+        report 3 "$rc" "lock-open [perl]: a decision whose lock file cannot be opened holds"
+        report 'hold lock-unopenable' \
+            "$(printf '%s\n' "$out" | awk -F= '$1=="ev"{e=$2} $1=="reason"{r=$2} END{print e, r}')" \
+            "lock-open [perl]: ... saying which of the two lock conditions it met, since this one does not clear on its own"
+        report absent "$([ -e "$WLKO/data/switch-log.tsv" ] && echo present || echo absent)" \
+            "lock-open [perl]: ... and writes no row, no decision having been taken"
+        chmod 644 "$WLKO/data/switch.lock"
+    fi
+fi
+rm -f "$LKO"
+
+echo "--- mis-filed: a vault entry holding the live credential is not a switch target ---"
+
+# The statusline's unlocked autosave can land inside the swap's two-file window
+# and file the incoming credential under the outgoing login's name. The
+# screening excludes the live login BY NAME and acct_swap's post-condition
+# compares what it installed against the ENTRY's credential, so such an entry
+# passes both: nothing is installed, the readback confirms success, and the box
+# announces a switch and wakes a capped session onto a login it never left. The
+# session then retries into the same cap.
+if ! have jq || ! have perl; then
+    skip "mis-filed: an entry holding the live credential" "needs jq and perl"
+else
+    MNOW=$(date +%s); MFUT=$(( MNOW + 36000 )); MEXP=$(( MNOW + 3600 ))
+    mvent() {  # WORLD LOGIN TOKEN — a vault entry under LOGIN's name carrying TOKEN
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
+            "$2" "$2" "$2" "$3" "$MEXP" > "$1/vault/$2.json"
+    }
+    # The box live on b@ and capped, with a@ vaulted and clean. Both logins are
+    # read from their frozen caches: the endpoint answers nothing here, the state
+    # `doctor` reports as a supported pending rather than a fault, and the one in
+    # which a mis-filed entry ranks on the figures of the login it is named for.
+    mworld() {
+        local w; w=$(world); mkdir -p "$w/vault"
+        mklogin "$w" b@example.com
+        # The live file carries a refresh token the vault entries do not, so the
+        # screening cannot rest on the two claudeAiOauth objects being equal
+        # byte for byte: what decides whether a switch moves the box to another
+        # account is the ACCESS token, and an entry holding the live one moves
+        # nothing whatever else it carries.
+        printf '{"claudeAiOauth":{"accessToken":"tok-b","refreshToken":"rt-b","expiresAt":%s000},"mcpOAuth":{"granola":"keep-me"}}\n' \
+            "$MEXP" > "$w/cfg/.credentials.json"
+        mvent "$w" b@example.com tok-b
+        mkcache "$w" b@example.com 99 99 "$MFUT" "$MFUT"
+        mkcache "$w" a@example.com 3 3 "$MFUT" "$MFUT"
+        printf '{"fable":{"used_percentage":3,"resets_at":%s}}\n' "$MFUT" > "$w/data/fable.a@example.com.json"
+        printf '%s\n' "$w"
+    }
+    # One decision, stderr folded in. Its output is read with `dkv`, from the
+    # `decide` cases above; the world is this block's own, because what the
+    # mis-filing needs is frozen figures rather than a probed table.
+    mauto() {  # WORLD STUB SID
+        sess "$1" PATH="$2:$PATH" SESSION_ACCOUNTS_DIR="$1/vault" SESSION_NOW="$MNOW" \
+            SESSION_SWITCH_NOTIFY="$MNOTIFY" -- account auto --trigger cap --sid "$3" 2>&1
+    }
+    # The seam fires in the background, so poll for it. Counted with awk rather
+    # than `grep -c .`, which exits 1 on an empty file: a `|| echo 0` beside it
+    # then prints two zeroes, the comparison is not an integer, and the loop
+    # falls through having waited for nothing — which is how an assertion that
+    # nothing was announced passes without ever giving it time to arrive.
+    mwait() {  # FILE LINES
+        local n=0
+        while [ "$(awk 'END { print NR + 0 }' "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1
+            n=$(( n + 1 ))
+        done
+    }
+
+    MNOTE="$TMP/misfiled-notified"
+    MNOTIFY="$TMP/misfiled-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$MNOTE" > "$MNOTIFY"; chmod 755 "$MNOTIFY"
+
+    MW1=$(mworld); MC1=$(curlstub); MLOG1="$MW1/data/switch-log.tsv"
+    mvent "$MW1" a@example.com tok-b        # a@'s name over the credential already live
+    printf '000' > "$MC1/status.tok-b"
+    : > "$MNOTE"
+    out=$(mauto "$MW1" "$MC1" sid-m1); rc=$?
+    report 3 "$rc" "mis-filed: an entry carrying the live credential is held on, never switched to"
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "mis-filed: ... there being nothing left to rank once it is screened out"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$MW1/cfg/.credentials.json")" \
+        "mis-filed: ... with the live credential where it was"
+    report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$MW1/cfg/.claude.json")" \
+        "mis-filed: ... and the identity still naming the login actually serving requests"
+    report 0 "$(awk -F'\t' '$2 == "switch"' "$MLOG1" | grep -c . || true)" \
+        "mis-filed: ... no switch row, which is what a waiter with no output of its own reads back"
+    mwait "$MNOTE" 1
+    report 0 "$(grep -c . "$MNOTE" 2>/dev/null || true)" \
+        "mis-filed: ... and nothing announced, the announcement being what wakes a capped session"
+
+    # The same world with a@'s own credential in its entry: the screen rejects a
+    # duplicate of the live credential and nothing else.
+    MW2=$(mworld); MC2=$(curlstub)
+    mvent "$MW2" a@example.com tok-a
+    printf '000' > "$MC2/status.tok-b"; printf '000' > "$MC2/status.tok-a"
+    : > "$MNOTE"
+    out=$(mauto "$MW2" "$MC2" sid-m2); rc=$?
+    report 0 "$rc" "mis-filed: an entry carrying its own login's credential is still a candidate"
+    report 'switch a@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "mis-filed: ... and the box moves to it"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$MW2/cfg/.credentials.json")" \
+        "mis-filed: ... having installed the credential that was not there before"
+    mwait "$MNOTE" 1
+    report 1 "$(grep -c . "$MNOTE" 2>/dev/null || true)" \
+        "mis-filed: ... and says so, which is the wake a real switch owes a capped session"
+
+    # The screening is silent by construction, and what it screens out is a box
+    # that cannot move: every decision after it holds on no candidate while the
+    # entry stands. `doctor` is where that has to become visible — its existing
+    # vault detector cannot see this shape, the entry's own identity deriving
+    # its filename perfectly well.
+    mdoc() { sess "$1" SESSION_ACCOUNTS_DIR="$1/vault" -- doctor 2>&1; }
+    out=$(mdoc "$MW1")
+    report yes "$(printf '%s\n' "$out" | grep -q 'FAIL *vault .*holds the access token that is installed' && echo yes || echo no)" \
+        "mis-filed: doctor names an entry holding the installed access token under another login's name"
+    report yes "$(printf '%s\n' "$out" | grep -q 'a@example.com.json' && echo yes || echo no)" \
+        "mis-filed: ... naming the entry, the remedy being per file"
+    report yes "$(printf '%s\n' "$out" | grep -q 'session account use' && echo yes || echo no)" \
+        "mis-filed: ... and the verb that makes the two files agree again"
+    # MW2 switched to a@ with a@'s own credential, so a@'s entry now holds the
+    # live token under the live name — which is what the autosave keeps it doing.
+    report no "$(mdoc "$MW2" | grep -q 'holds the access token that is installed' && echo yes || echo no)" \
+        "mis-filed: ... and says nothing of the live login's own entry, which is meant to hold it"
+fi
+
+echo "--- cooldown-refuse: a blank-credential refusal is not a decision to wait behind ---"
+
+# The cooldown is measured against the newest row THIS VERB wrote. A refusal is
+# another producer's: the statusline writes one per login per cooldown while the
+# live access token is blank, and the outage that produces a run of them is
+# exactly when an authentication death most needs a decision. Counting one would
+# park the box on a login that cannot authenticate for as long as the refusals
+# kept coming. The fixture is the decision verb's, built with the `decide` cases
+# above and guarded the same way.
+if ! have jq || ! have perl; then
+    skip "cooldown-refuse: a refusal does not hold a decision" "needs jq and perl"
+else
+    DCLOCK=$DNOW; DNOTIFY=""
+    WCR=$(dworld); CCR=$(curlstub); DLOGCR="$WCR/data/switch-log.tsv"
+    dlive "$WCR" a@example.com tok-a
+    dvent "$WCR" a@example.com tok-a; dvent "$WCR" b@example.com tok-b
+    dbody "$CCR" tok-a 95 10 10; dbody "$CCR" tok-b 10 10 10
+    printf '%s\trefuse\ta@example.com\t-\tmanual\tblank-credential\t-\tnotify=off\n' \
+        $(( DNOW - 100 )) > "$DLOGCR"
+    out=$(dauto "$WCR" "$CCR" --trigger auth --sid sid-cr); rc=$?
+    report 0 "$rc" "cooldown-refuse: an authentication death 100s after a refusal still decides"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "cooldown-refuse: ... the refusal being another producer's row, not a decision to wait behind"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WCR/cfg/.credentials.json")" \
+        "cooldown-refuse: ... so the box reaches the login that can serve it"
+fi
+
+echo "--- next-eligible: a candidate's Fable reset promotes it only above a Fable-only live login ---"
+
+# Rows are `login TAB blocks TAB 5h_reset TAB week_reset TAB fable_reset TAB
+# state`, as the decision builds them. A tier-0 live login — a general window
+# spent — is beaten by any tier-1 candidate, so a candidate blocked on its
+# five-hour window and on Fable climbs the moment the five-hour one clears:
+# naming its Fable reset as well would send a waiter to sleep past the time
+# something changed. Only a live login blocked on nothing but Fable makes the
+# candidate clear all three.
+report 1000 "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 0)" \
+    "next-eligible: a tier-0 live login is climbed as soon as the candidate's five-hour window clears"
+report 5000 "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 1)" \
+    "next-eligible: ... while over a Fable-only live login the candidate's Fable window has to clear too"
+report - "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 2)" \
+    "next-eligible: ... and nothing stands above tier 2, so no reset promotes anything"
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"

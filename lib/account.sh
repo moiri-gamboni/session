@@ -477,9 +477,12 @@ acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 # also mean "no window is ever blocked" and quietly disable the switcher for
 # anyone who had quieted the hook. `session account` dispatches before the
 # CLI's own validation loop runs, so the validation lives here as well — a
-# threshold that is not a number is a refusal, not a threshold of nothing.
+# threshold that is not a number is a refusal, not a threshold of nothing, and
+# an unset one is no different. The default is declared once, by the CLI above
+# that dispatch; a second copy of the figure here would be the drift the one
+# declaration exists to prevent.
 _acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
-  local t="${USAGE_WARN_PCT:-90}"
+  local t="${USAGE_WARN_PCT:-}"
   case "$t" in ''|*[!0-9]*) return 1 ;; esac
   t=$(( 10#$t ))   # digits are not yet a number: a leading zero reads as octal
   [ "$t" -gt 100 ] && t=100
@@ -521,13 +524,33 @@ acct_entry_name() {  # VAULTFILE -> the derived login name, or `unknown`
   rm -rf "$d"
 }
 
-# Whether a vault entry may be switched TO at all. Three shapes are excluded,
-# and all three are on this machine's record: no token to authenticate with, an
-# expiry of zero (the 2026-09-15 blank, where every key was present and the
-# object held nothing), and an identity that does not derive the entry's name.
-acct_entry_ok() {  # VAULTFILE NAME
+# Whether a vault entry may be switched TO at all. Four shapes are excluded,
+# and the first three are on this machine's record: no token to authenticate
+# with, an expiry of zero (the 2026-09-15 blank, where every key was present and
+# the object held nothing), an identity that does not derive the entry's name,
+# and a credential that is the one already live.
+#
+# The last is the mis-filed entry the swap's two-file window can produce: the
+# statusline's autosave, which is under no lock, files the incoming credential
+# under the outgoing login's name. Excluding the live login by NAME does not
+# catch it — the name is the other login's — and neither does the swap, whose
+# post-condition compares what it installed against THE ENTRY's credential, so
+# a credential that never moved reads back as a successful switch. The box would
+# then announce a move and wake a capped session onto the login it never left,
+# which is not recoverable the way the mis-filed entry itself is.
+#
+# On the ACCESS TOKEN and not on the whole claudeAiOauth object: the token is
+# what authenticates, so an entry holding the live one moves the box nowhere
+# whatever else it carries, and the live file holds a refresh token an entry
+# saved from an earlier state of it may not. Compared as a boolean, so no token
+# is rendered. The live credentials file is passed in because whether an entry
+# may be switched to is a question about the entry and the machine's current
+# state together.
+acct_entry_ok() {  # VAULTFILE NAME LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
+  jq -e --slurpfile c "$3" \
+     '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$1" >/dev/null 2>&1 && return 1
   [ "$(acct_entry_name "$1")" = "$2" ]
 }
 
@@ -667,7 +690,7 @@ _acct_decide() {  # TRIGGER SID DRY
     # credential already in place buys nothing, and probing it would ask the
     # endpoint twice under one identity.
     { [ -n "$name" ] && [ "$name" != "$live" ]; } || continue
-    acct_entry_ok "$vf" "$name" || continue
+    acct_entry_ok "$vf" "$name" "$cfg/.credentials.json" || continue
     candmap="$candmap$name$tab$vf$nl"
   done < <(acct_paths)
 
@@ -819,9 +842,10 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   # The lock file lives under the data root, and lock_run opening it is the
   # first thing here that touches the filesystem — so a root that cannot hold it
   # has to be caught BEFORE the lock, never in the child that never starts.
-  # Measured: flock(1) reports 66 and prints to stderr, the perl fallback
-  # reports 1, and 1 is the code every caller reads as "another decision holds
-  # the lock". A read-only data root would make a waiter retry for ever.
+  # Measured on both: a root this user cannot write is 66 from either backend,
+  # and 73 from flock(1) where the filesystem is read-only rather than the
+  # directory unwritable — none of them a decision, and flock(1) prints to
+  # stderr besides. The hold below is an outcome a caller can act on and report.
   # shellcheck disable=SC2031  # the dry-run rebinding is another function's subshell
   mkdir -p "$SESSION_DATA" 2>/dev/null
   # shellcheck disable=SC2031
@@ -833,6 +857,17 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   out=$(lock_run "$(acct_lock_file)" bash "$SESSION_HOME/session" account auto \
           --locked --trigger "$trigger" --sid "$sid" $dryflag)
   rc=$?
+
+  # A lock file that could not be opened, which is not a lock somebody holds:
+  # busy clears by itself and this does not, so a caller left to fall through on
+  # it would retry for ever against a switcher that is off. Said as a hold, the
+  # outcome every caller already reads, rather than as an exit code nothing
+  # branches on — and with no row, because the reason is that this decision
+  # never started, not that one was taken.
+  if [ "$rc" = 66 ]; then
+    _acct_say hold "$(acct_live_login)" - lock-unopenable - -
+    return 3
+  fi
   [ -n "$out" ] && printf '%s\n' "$out"
 
   # The lock died with the child that held it, so the seam can be fired now —

@@ -1268,7 +1268,7 @@ doctor_main() {
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
         newest_s have_e plat miss age crdl warnsrc \
-        swmode swnote swlast swcap swts swev vaultn probeable capd scoped lockf entname
+        swmode swnote swlast swcap swts swev vaultn probeable capd scoped lockf entname vlive
 
   echo "-- session doctor -------------------------------------------------"
   echo "  code     $SESSION_HOME"
@@ -1657,22 +1657,40 @@ doctor_main() {
     fi
   fi
 
-  # A vault entry filed under a name its own identity does not derive. The swap
-  # writes .credentials.json and .claude.json as two files and the statusline's
-  # autosave reads both, so landing between them files a credential under
-  # another login's name — a window of milliseconds, never once observed, which
-  # is why nothing guards it. This is the detector rather than the guard: if it
-  # ever fires there is a real instance to design against instead of a guess.
-  # The switcher already skips such an entry, so what one costs today is a
-  # login silently missing from every decision.
+  # Two vault faults the switcher reacts to silently, reported here because the
+  # symptom either way is a box that will not move and says nothing about it.
+  #
+  # The first is an entry holding the access token that is actually installed
+  # while filed under a name that is not the live login. The swap writes
+  # .credentials.json and .claude.json as two files and tolerates the second
+  # failing — the identity file is a head start for the next render, not the
+  # source of truth — so this is what a half-written swap leaves behind, and the
+  # statusline's autosave produces it too by landing between the two writes.
+  # The switcher skips such an entry (installing it would move nothing), and
+  # skips the live name as well, so every decision after it holds on no
+  # candidate whatever headroom the other logins have.
+  #
+  # The second is an entry filed under a name its own identity does not derive,
+  # which is the same race caught one file later. The switcher skips it too, so
+  # what one costs is a login missing from every decision.
   #
   # Only with a writable root, because deriving a name needs a scratch
   # directory under it — and a doctor that created the root it had just
   # reported as absent would be reporting on itself.
   if [ -w "$SESSION_DATA" ]; then
+    vlive=$(acct_live_login)
     for f in "$acctdir"/*.json; do
       [ -f "$f" ] || continue
       v=${f##*/}; v=${v%.json}
+      # A boolean comparison, so no token is rendered. Not for the live login's
+      # own entry: that one SHOULD hold the installed credential, which is what
+      # the autosave keeps it doing.
+      if [ "$v" != "$vlive" ] && [ -s "$SESSION_CFG/.credentials.json" ] \
+         && jq -e --slurpfile c "$SESSION_CFG/.credentials.json" \
+              '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$f" >/dev/null 2>&1; then
+        doc FAIL vault "$f holds the access token that is installed, while the live login reads $vlive — one of the two is mislabelled: either .claude.json names a login whose credential is not the one serving requests, or this entry is $vlive's credential filed under another name. The switcher skips the entry either way, and holds on no candidate while it stands; \`session account use\` the login whose credential is genuinely live, and restore the other from $acctdir/.history/"
+        continue
+      fi
       # Non-zero only when the scratch directory could not be made, i.e. when
       # nothing was asked — never a verdict on the entry.
       entname=$(acct_entry_name "$f") || continue
