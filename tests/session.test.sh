@@ -4978,6 +4978,120 @@ else
     report yes "$(dcsays "$out" 'warn pct' 'session.conf')" "doctor: ... naming the file that sets it"
 fi
 
+echo "--- swap-save: the blank-credential refusal inside a locked decision ---"
+
+# The 2026-09-15 shape met by the DECISION rather than by the statusline: the
+# live credential is structurally perfect and empty, so the swap's "never lose
+# the login being replaced" save refuses — and it refuses inside the lock,
+# because lock_run execs its command. Anything that refusal backgrounds there
+# inherits the lock descriptor and holds switch.lock for as long as it lives,
+# so a notifier that hangs (a push to a phone on a dead network) would leave
+# every later decision reading the lock as another decision in flight.
+if ! have jq || ! have perl; then
+    skip "swap-save: the refusal inside the lock" "needs jq and perl"
+else
+    svent() {  # WORLD LOGIN TOKEN — a vault entry the candidate screening accepts
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":9999999999000}}\n' \
+            "$2" "$2" "$2" "$3" > "$1/vault/$2.json"
+    }
+    sbody() {  # STUB TOKEN FIVE WEEK FABLE
+        local iso='2099-01-01T00:00:00+00:00'
+        printf '{"limits":[{"kind":"session","percent":%s,"resets_at":"%s"},{"kind":"weekly_all","percent":%s,"resets_at":"%s"},{"kind":"weekly_scoped","percent":%s,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+            "$3" "$iso" "$4" "$iso" "$5" "$iso" > "$1/body.$2"
+    }
+    sworld() {  # -> a world whose live credential is blank and whose frozen 5h window is spent
+        local w n; w=$(world); mkdir -p "$w/vault"; n=$(date +%s)
+        mklogin "$w" a@example.com
+        printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0},"mcpOAuth":{"granola":"keep-me"}}\n' \
+            > "$w/cfg/.credentials.json"
+        svent "$w" a@example.com tok-a; svent "$w" b@example.com tok-b
+        # An empty token is never sent, so the live login probes lapsed and is
+        # ranked on the statusline cache instead — which is what puts a spent
+        # five-hour window under it and makes the candidate admissible.
+        mkcache "$w" a@example.com 95 10 $(( n + 600 )) $(( n + 6000 ))
+        printf '%s\n' "$w"
+    }
+    sauto() {  # WORLD PATH NOTIFY — one decision, stderr folded in
+        sess "$1" PATH="$2" SESSION_ACCOUNTS_DIR="$1/vault" \
+            SESSION_SWITCH_NOTIFY="$3" -- account auto --trigger cap --sid sid-s 2>&1
+    }
+    skv() {  # KEY OUTPUT -> the value of one k=v line
+        printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'
+    }
+    swait() {  # FILE LINES — the seam fires in the background, so poll for it
+        local n=0
+        while [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1
+            n=$(( n + 1 ))
+        done
+    }
+
+    # ── a notifier that never returns must not pin the decision lock ─────────
+    WS1=$(sworld); CS1=$(curlstub)
+    sbody "$CS1" tok-b 10 10 10
+    SHANG="$TMP/swap-save-hang.sh"; printf '#!/bin/sh\nsleep 30\n' > "$SHANG"; chmod 755 "$SHANG"
+    out=$(sauto "$WS1" "$CS1:$PATH" "$SHANG"); rc=$?
+    report 0 "$rc" "swap-save: a decision whose outgoing credential cannot be vaulted still switches"
+    report switch "$(skv ev "$out")" "swap-save: ... saying so on its own output channel"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WS1/cfg/.credentials.json")" \
+        "swap-save: ... having installed the candidate's credential"
+    report 0 "$(lock_run "$WS1/data/switch.lock" true >/dev/null 2>&1; echo $?)" \
+        "swap-save: ... and holding the lock no longer, which a refusal fired inside it would"
+
+    # ── the row is the durable record; the push is what the lock forbids ─────
+    WS2=$(sworld); CS2=$(curlstub); SLOG2="$WS2/data/switch-log.tsv"
+    sbody "$CS2" tok-b 10 10 10
+    SNOTE="$TMP/swap-save-notified"; SNOTIFY="$TMP/swap-save-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$SNOTE" > "$SNOTIFY"; chmod 755 "$SNOTIFY"
+    sauto "$WS2" "$CS2:$PATH" "$SNOTIFY" >/dev/null
+    report 1 "$(awk -F'\t' '$2 == "refuse"' "$SLOG2" | grep -c . || true)" \
+        "swap-save: the refusal still writes its audit row, which is the record doctor reads"
+    report 'refuse a@example.com - manual blank-credential -' \
+        "$(awk -F'\t' '$2 == "refuse" { print $2, $3, $4, $5, $6, $7 }' "$SLOG2")" \
+        "swap-save: ... naming the login it refused and why"
+    report notify=off "$(awk -F'\t' '$2 == "refuse" { print $8 }' "$SLOG2")" \
+        "swap-save: ... and recording that nothing was pushed, rather than claiming a push"
+    # Two lines are waited for and one must arrive: the switch's, fired by the
+    # parent once the locked child is gone. The wait has to outlast a second
+    # that never comes, or a passing run would only be a fast one.
+    swait "$SNOTE" 2
+    report 1 "$(grep -c . "$SNOTE" 2>/dev/null || true)" \
+        "swap-save: the switch is still announced, from outside the lock"
+    report no "$(grep -q 'not vaulting' "$SNOTE" && echo yes || echo no)" \
+        "swap-save: ... and the refusal beneath it announces nothing at all"
+
+    # ── the swap's other caller, where no lock is involved at all ────────────
+    # `use` is quiet for a different reason: the swap discards acct_save's
+    # stderr, so this path has never shown the refusal either way, and the row
+    # is the whole record of it.
+    WS4=$(sworld); CS4=$(curlstub)
+    sbody "$CS4" tok-a 10 10 10; sbody "$CS4" tok-b 10 10 10
+    : > "$SNOTE"
+    sess "$WS4" PATH="$CS4:$PATH" SESSION_ACCOUNTS_DIR="$WS4/vault" \
+        SESSION_SWITCH_NOTIFY="$SNOTIFY" -- account use b@example.com >/dev/null 2>&1
+    report notify=off "$(awk -F'\t' '$2 == "refuse" { print $8 }' "$WS4/data/switch-log.tsv")" \
+        "swap-save [use]: a blank outgoing credential is recorded by the manual switch too"
+    swait "$SNOTE" 1
+    report 0 "$(grep -c . "$SNOTE" 2>/dev/null || true)" \
+        "swap-save [use]: ... and announces nothing, there being no switch seam on this verb"
+
+    # ── the same on the backend macOS runs ───────────────────────────────────
+    # Without flock(1), lock_run locks through perl, which pins the descriptor
+    # across the exec ($^F=10) — so a grandchild inherits the lock there too,
+    # and the case has to be answered on both backends, not on this host's.
+    SNOFLOCK=$(minipath flock)
+    if PATH="$SNOFLOCK" command -v flock >/dev/null 2>&1; then
+        skip "swap-save [perl]" "flock is still on the minimal PATH"
+    else
+        WS3=$(sworld); CS3=$(curlstub)
+        sbody "$CS3" tok-b 10 10 10
+        out=$(sauto "$WS3" "$CS3:$SNOFLOCK" "$SHANG")
+        report switch "$(skv ev "$out")" "swap-save [perl]: the decision switches under the perl lock too"
+        report 0 "$(lock_run "$WS3/data/switch.lock" true >/dev/null 2>&1; echo $?)" \
+            "swap-save [perl]: ... and leaves the lock free behind it"
+    fi
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]

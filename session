@@ -821,8 +821,8 @@ acct_name_of() { jq -r '.login // .email // empty' "$1"; }   # a vault entry's n
 # whatever else it holds.
 acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/null 2>&1; }
 
-# Record a refused blank credential, and tell a human, once per login per
-# cooldown.
+# Record a refused blank credential, and — unless the caller silences it — tell
+# a human, once per login per cooldown.
 #
 # The rate limit is not decoration. The refusal below returns BEFORE the vault
 # entry's touch — deliberately, since touching would mark a blank as captured —
@@ -830,9 +830,9 @@ acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/nu
 # the statusline forks `session account save` on every render for the whole
 # duration. Unlimited, that is a push every ten seconds through an outage.
 #
-# This is the only code path that can observe a blank credential at all: the
-# automatic decision never produces one, so its notify policy cannot cover
-# this, and this cannot cover switches.
+# The row is written on every path, because it is the durable record and
+# `doctor` reads it. The push is not: `no-notify` records the refusal and sends
+# nothing, which is what acct_swap asks for and why that argument exists.
 #
 # The seam fires in the background, because the statusline waits on this save
 # synchronously and a notifier that blocks would stall the line box-wide; and
@@ -844,7 +844,7 @@ acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/nu
 # independent timers, the window is one `awk` wide, and the bound that matters
 # — not one push per render — holds either way. A mutex would put a lock on the
 # statusline's per-render path to save an occasional duplicate.
-acct_refuse_blank() {  # LOGIN VAULTFILE
+acct_refuse_blank() {  # LOGIN VAULTFILE [no-notify]
   local last notify="${SESSION_SWITCH_NOTIFY:-}" fired=off msg
   # The newest refusal OF THIS LOGIN, not the newest refusal: `use` vaults the
   # outgoing login, so a human switching entries during an outage puts another
@@ -853,6 +853,7 @@ acct_refuse_blank() {  # LOGIN VAULTFILE
   last=$(awk -F'\t' -v l="$1" '$2 == "refuse" && $3 == l { ts = $1 } END { print ts + 0 }' \
            "$(acct_log_file)" 2>/dev/null)
   [ "${last:-0}" -gt 0 ] && [ $(( $(now_epoch) - last )) -lt "$ACCT_COOLDOWN_S" ] && return 0
+  [ "${3:-}" = no-notify ] && notify=""
   [ -n "$notify" ] && [ -x "$notify" ] || notify=""
   [ -n "$notify" ] && fired=sent
   acct_log refuse "$1" - manual blank-credential - "notify=$fired" || return 0
@@ -868,7 +869,7 @@ acct_refuse_blank() {  # LOGIN VAULTFILE
 
 # Copy the live login into the vault. Idempotent: an unchanged entry is only
 # touched (the mtime is the autosave's "already captured" marker).
-acct_save() {
+acct_save() {  # [no-notify] — record a refusal without pushing it
   local cfg login vf now
   cfg=$(acct_cfg); login=$(acct_live_login)
   [ "$login" != unknown ] && [ -s "$cfg/.credentials.json" ] || {
@@ -881,7 +882,7 @@ acct_save() {
   # copy the recovery needs, so the save is refused instead.
   acct_token_ok "$cfg/.credentials.json" || {
     echo "session account: not saving $login — its live accessToken is empty, and vaulting that would destroy the last working copy of this login" >&2
-    acct_refuse_blank "$login" "$acctdir/$login.json"
+    acct_refuse_blank "$login" "$acctdir/$login.json" "${1:-}"
     return 1; }
   mkdir -p "$acctdir" && chmod 700 "$acctdir"
   vf="$acctdir/$login.json"; now=$(date +%s)
@@ -1062,7 +1063,15 @@ acct_swap() {  # VAULTFILE
   # takes while that outage is happening — reaching for another login and
   # installing a second dead credential over the one thing still working.
   acct_token_ok "$vf" || return 3
-  acct_save 2>/dev/null || true   # never lose the login being replaced
+  # Never lose the login being replaced — and announce nothing if it cannot be
+  # saved. The automatic decision runs this inside switch.lock, and lock_run
+  # EXECS its command, so a notifier backgrounded from here would inherit the
+  # lock descriptor and hold the lock for as long as it lived: one that hung
+  # would leave every later decision reading the lock as busy. The redirect
+  # below swallows acct_save's reason on `session account use` as well, so on
+  # both callers the audit row is the whole record of a blank credential met
+  # while switching — and it is written on every path for exactly that reason.
+  acct_save no-notify 2>/dev/null || true
   # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
   # DoneThat, …), which is not account-scoped and must survive the switch.
   tmp="$cfg/.credentials.swap.$$"
