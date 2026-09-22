@@ -305,6 +305,10 @@ _conf_for SESSION_TMUX_MAIN_GUARD "$main_guard"
 _conf_for SESSION_ATTEND_GRACE    "$attend_grace"
 _conf_for SESSION_ATTEND_TAIL     "$attend_tail"
 _conf_for SESSION_PRIMARY_CFG     "$primary_cfg"
+# No flag writes this one — the warn threshold is set by hand, and the conf is
+# the only channel that reaches a hook. Kept so that a run carrying some other
+# flag rewrites the file without silently restoring the default threshold.
+_conf_for USAGE_WARN_PCT          ""
 
 # A conf that is written and then not read is the worst outcome available here:
 # every producer silently falls back to the default root while the install

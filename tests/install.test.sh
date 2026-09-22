@@ -1058,6 +1058,21 @@ else
     report 8 "$(jq "$LIFECYCLE | length" "$CU6/settings.json")" "case U: ... and changes no settings"
 fi
 
+echo "--- warn-thr: a hand-set USAGE_WARN_PCT survives a re-run that rewrites the conf ---"
+
+# No flag writes this one — it is the only knob whose home is a hand-edited line
+# — so the merge rule has to keep it, or the next re-run carrying any flag
+# silently restores the default threshold on a machine that chose another.
+CWT=$(mkcfg); BWT="$TMP/binwt"; DWT="$TMP/datawt"
+out=$(inst "$CWT" --bindir "$BWT" --data-dir "$DWT")
+printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-85}"\n' >> "$CWT/session.conf"
+out=$(inst "$CWT" --bindir "$BWT" --attend-grace 900); rc=$?
+report 0 "$rc" "warn-thr: a re-run carrying another flag exits 0"
+report "85" "$(conf_value "$CWT/session.conf" USAGE_WARN_PCT)" \
+    "warn-thr: ... and the hand-set threshold is still there"
+report 1 "$(grep -c '^USAGE_WARN_PCT=' "$CWT/session.conf")" \
+    "warn-thr: ... exactly once"
+
 report "$SHIPPED_BEFORE" "$(shipped_sums)" "the suite modified none of the shipped files in the checkout"
 
 echo

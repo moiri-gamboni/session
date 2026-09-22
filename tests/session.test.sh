@@ -2758,6 +2758,102 @@ else
     report 1 "$(printf '%s' "$out" | grep -c . )" "cov: ... on exactly one line"
 fi
 
+echo "--- warn-thr: USAGE_WARN_PCT is one declaration, validated for both consumers ---"
+
+if ! have jq; then
+    skip "warn-thr: USAGE_WARN_PCT" "no jq"
+else
+    # One default, in one place. Two copies drift, and the consumer holding the
+    # stale one gates at a threshold nobody chose.
+    report 1 "$(grep -c 'USAGE_WARN_PCT:-90' "$BIN")" "warn-thr: the default 90 is written exactly once"
+
+    WWT=$(world); mklogin "$WWT" me@example.com
+    WTHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
+    WTREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
+
+    # The waiter fails closed without a claude ancestor, so reaching its use of
+    # the threshold at all needs one. Same shape as case 17's, kept local so this
+    # block stands on its own.
+    cat > "$TMP/wt-asclaude.sh" <<'WTEOF'
+b=$1; shift
+timeout 60 bash "$b" "$@"
+WTEOF
+    wt_rewake() {  # [VAR=VAL ...] -- <session args>
+        local e=""
+        while [ $# -gt 0 ] && [ "$1" != -- ]; do e="$e $1"; shift; done
+        [ "${1:-}" = -- ] && shift
+        env -i PATH="$PATH" HOME="$FH" TZ=UTC \
+            CLAUDE_CONFIG_DIR="$WWT/cfg" SESSION_DATA_DIR="$WWT/data" \
+            CLAUDE_CODE_SESSION_ID="$UUID" $e \
+            bash -c 'exec -a claude bash "$@"' _ "$TMP/wt-asclaude.sh" "$BIN" "$@"
+    }
+
+    NOWI=$(date +%s)
+    mkcache "$WWT" me@example.com 95 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
+
+    # An ALPHABETIC value is the case that matters. `(( fp >= thr ))` re-expands
+    # a non-numeric thr as a variable name, and under `set -u` an unset one kills
+    # the shell — inside a hook, where nothing surfaces the death. Refusing with
+    # exit 2 and a named variable is what makes the typo visible.
+    out=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=ninety -- --hook) 2>"$TMP/wt.err" ); rc=$?
+    report 2 "$rc" "warn-thr: an alphabetic USAGE_WARN_PCT exits 2 on the hook path"
+    report yes "$(grep -q "invalid USAGE_WARN_PCT='ninety'" "$TMP/wt.err" && echo yes || echo no)" \
+        "warn-thr: ... naming the variable and the value it refused"
+    report no "$(grep -q 'unbound variable' "$TMP/wt.err" && echo yes || echo no)" \
+        "warn-thr: ... instead of dying inside the arithmetic"
+    report "" "$out" "warn-thr: ... and emitting no hook JSON"
+
+    err=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=ninety -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
+    report 2 "$rc" "warn-thr: the rewake path refuses the same value"
+    report yes "$(printf '%s' "$err" | grep -q "invalid USAGE_WARN_PCT='ninety'" && echo yes || echo no)" \
+        "warn-thr: ... with the same message, so the validation is reached from both consumers"
+
+    # Non-integer generally, not just alphabetic. A decimal is the quiet half of
+    # the same bug: the arithmetic itself fails, so the gate never fires and the
+    # hook stays silent at any usage at all.
+    rc=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=90.5 -- --hook >/dev/null 2>&1); echo $? )
+    report 2 "$rc" "warn-thr: a decimal is refused too"
+
+    # Above 100 is not an error: it is the documented way to turn the hook's
+    # output off, and no consumer may break on it.
+    out=$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=150 -- --hook 2>/dev/null); rc=$?
+    report 0 "$rc" "warn-thr: a threshold above 100 leaves the hook exiting 0"
+    report "" "$out" "warn-thr: ... injecting nothing at 95% used"
+    rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=150 -- --rewake-waiter >/dev/null 2>&1); echo $? )
+    report 0 "$rc" "warn-thr: ... and the waiter exits 0"
+    report absent "$([ -e "$WWT/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
+        "warn-thr: ... arming nothing"
+
+    # Digits only is not yet a number: bash reads a leading zero as octal, so an
+    # unnormalised 070 gates at 56 and 09 fails the arithmetic outright. That is
+    # the same silent mis-gating the check above exists to close, one base later.
+    mkcache "$WWT" me@example.com 60 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
+    report "" "$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=070 -- --hook 2>/dev/null)" \
+        "warn-thr: 070 is seventy, not octal fifty-six, so 60% used stays quiet"
+    mkcache "$WWT" me@example.com 95 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
+    err=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=09 -- --hook >"$TMP/wt09.out") 2>&1 )
+    report yes "$(jq -r '.hookSpecificOutput.additionalContext // ""' "$TMP/wt09.out" | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
+        "warn-thr: ... and 09 is nine, not a base error that silences the gate"
+    report "" "$err" "warn-thr: ... leaving nothing on stderr"
+
+    # The control: with nothing set, 95% still crosses the default 90.
+    ctx=$(printf '%s' "$WTHOOK" | sess "$WWT" -- --hook 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext')
+    report yes "$(printf '%s' "$ctx" | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
+        "warn-thr: with nothing set the default 90 still gates"
+
+    # session.conf is the only channel that reaches a hook — tmux, cron and the
+    # harness inherit no shell environment — and the declaration's
+    # environment-wins form is what makes a conf line land without any plumbing.
+    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-98}"\n' > "$WWT/cfg/session.conf"
+    chmod 600 "$WWT/cfg/session.conf"
+    report "" "$(printf '%s' "$WTHOOK" | sess "$WWT" -- --hook 2>/dev/null)" \
+        "warn-thr: session.conf raises the threshold, and 95% no longer warns"
+    report yes "$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=50 -- --hook 2>/dev/null \
+        | jq -r '.hookSpecificOutput.additionalContext' | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
+        "warn-thr: ... while the environment still wins over the conf"
+    rm -f "$WWT/cfg/session.conf"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
