@@ -3836,8 +3836,11 @@ else
         printf '%s\n' "$n"
     }
     dwait() {  # FILE LINES — the notify seam fires in the background, so poll for it
-        local n=0
-        while [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+        # `grep -c` prints its count AND exits 1 on zero matches, so a trailing
+        # `|| echo 0` appends a second line to the count rather than supplying a
+        # missing one, and the comparison is handed "0\n0" instead of 0.
+        local n=0 have
+        while have=$(grep -c . "$1" 2>/dev/null); [ "${have:-0}" -lt "$2" ] && [ "$n" -lt 25 ]; do
             sleep 0.2 2>/dev/null || sleep 1
             n=$(( n + 1 ))
         done
@@ -5019,8 +5022,11 @@ else
         printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'
     }
     swait() {  # FILE LINES — the seam fires in the background, so poll for it
-        local n=0
-        while [ "$(grep -c . "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+        # `grep -c` prints its count AND exits 1 on zero matches, so a trailing
+        # `|| echo 0` appends a second line to the count rather than supplying a
+        # missing one, and the comparison is handed "0\n0" instead of 0.
+        local n=0 have
+        while have=$(grep -c . "$1" 2>/dev/null); [ "${have:-0}" -lt "$2" ] && [ "$n" -lt 25 ]; do
             sleep 0.2 2>/dev/null || sleep 1
             n=$(( n + 1 ))
         done
