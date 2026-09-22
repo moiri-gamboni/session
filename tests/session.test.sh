@@ -1803,6 +1803,8 @@ PSEOF
         report 2 "$(cat "$W17b/rc" 2>/dev/null)" "case 17: a login switch mid-wait exits 2"
         report yes "$(grep -q 'login switched' "$W17b/err" && echo yes || echo no)" \
             "case 17: ... saying the switch is what woke it"
+        report yes "$(grep -q 'earlier cap no longer applies' "$W17b/err" && echo yes || echo no)" \
+            "case 17: ... and, with no audit row describing a landing tier, saying what it always said"
     else
         skip "case 17: login switch mid-wait" "no inotifywait (the poll fallback would take 15s a turn)"
     fi
@@ -4326,6 +4328,415 @@ DFAILEOF
     report bad-option "$(dkv reason "$out")" "decide: ... named as one"
     report absent "$([ -e "$WD25/data/switch-log.tsv" ] && echo present || echo absent)" \
         "decide: ... and nothing is decided on it"
+fi
+
+echo "--- arm: a cap death decides before the waiter sleeps ---"
+
+if ! have jq || ! have perl; then
+    skip "arm: the armed trigger" "needs jq and perl"
+else
+    # Two fixtures layered: the decision verb's world (a live credential, a vault
+    # and a curl answering the usage endpoint per token) under the waiter's
+    # simulated clock, so a reset hours out is reached in no real time.
+    #
+    # The clock base is PINNED TO THE ISO STAMPS the stub renders, because
+    # next_eligible_at comes out of the probe's own reset stamps and the only
+    # observable that says which target the waiter slept to is how far it slept.
+    AI1='2099-01-01T00:00:00+00:00'                  # behind the base, by a day
+    AI2='2099-01-02T00:00:00+00:00'; AE2=4070995200  # the base plus 1200 s
+    AISOON='2099-01-01T23:50:00+00:00'               # the base plus 600 s
+    AILATE='2099-01-02T01:53:20+00:00'               # the base plus 8000 s
+    ABASE=$(( AE2 - 1200 ))
+    AEXP=$(( ABASE + 86400 ))   # every fixture token outlives the simulated now
+    ANOW=""                     # empty: the decision reads the simulated clock too
+
+    # `sleep` records a tick instead of sleeping and `date +%s` reports 400 s per
+    # tick — one step wider than the waiter's 300 s chunk, so every chunk lands
+    # past its own end. Only the bare `date +%s` is intercepted: the probe's
+    # `date -d ... +%s` has to reach the real one.
+    AB=$(mktemp -d "$TMP/armbin.XXXXXX")
+    AREALDATE=$(command -v date)
+    AREALSLEEP=$(command -v sleep)
+    cat > "$AB/sleep" <<ATICKEOF
+#!/bin/sh
+echo tick >> "$AB/ticks"
+exit 0
+ATICKEOF
+    cat > "$AB/inotifywait" <<'AINOEOF'
+#!/bin/sh
+exit 0
+AINOEOF
+    cat > "$AB/date" <<ACLKEOF
+#!/bin/sh
+case "\$*" in
+  '+%s') n=\$(grep -c . "$AB/ticks" 2>/dev/null)
+         echo \$(( $ABASE + \${n:-0} * 400 )) ;;
+  *)     exec "$AREALDATE" "\$@" ;;
+esac
+ACLKEOF
+    chmod +x "$AB/sleep" "$AB/inotifywait" "$AB/date"
+
+    # The waiter fails closed without a claude ancestor, so reaching the arming
+    # arm at all needs one. Same shape as case 17's, kept local so this block
+    # stands on its own.
+    cat > "$TMP/arm-asclaude.sh" <<'AASEOF'
+b=$1; shift
+timeout 60 bash "$b" "$@"
+AASEOF
+
+    aworld() { local w; w=$(world); mkdir -p "$w/vault"; printf '%s\n' "$w"; }
+    aent() {  # WORLD LOGIN TOKEN — a vault entry the candidate screening accepts
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
+            "$2" "$2" "$2" "$3" "$AEXP" > "$1/vault/$2.json"
+    }
+    alive() {  # WORLD LOGIN TOKEN — the identity and the credential serving requests
+        mklogin "$1" "$2"
+        printf '{"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' "$3" "$AEXP" \
+            > "$1/cfg/.credentials.json"
+    }
+    adead() {  # STUB TOKEN — a credential the endpoint refuses
+        printf '401' > "$1/status.$2"
+        printf '%s\n' '{"type":"error","error":{"type":"authentication_error"}}' > "$1/body.$2"
+    }
+    abody() {  # STUB TOKEN FIVE WEEK FABLE [5h_ISO] [week_ISO] [fable_ISO]
+        printf '{"limits":[{"kind":"session","percent":%s,"resets_at":"%s"},{"kind":"weekly_all","percent":%s,"resets_at":"%s"},{"kind":"weekly_scoped","percent":%s,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+            "$3" "${6:-$AI1}" "$4" "${7:-$AI1}" "$5" "${8:-$AI1}" > "$1/body.$2"
+    }
+    ARMERR="$TMP/arm.err"
+    aspawn() {  # WORLD STUB ERROR_TYPE SID — one waiter, its status returned
+        printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"%s"}' "$4" "$3" \
+        | env -i PATH="$AB:$2:$PATH" HOME="$FH" TZ=UTC \
+              CLAUDE_CONFIG_DIR="$1/cfg" SESSION_DATA_DIR="$1/data" \
+              SESSION_ACCOUNTS_DIR="$1/vault" SESSION_SWITCH_NOTIFY="" SESSION_NOW="$ANOW" \
+              CLAUDE_CODE_SESSION_ID="$4" \
+              bash -c 'exec -a claude bash "$@"' _ "$TMP/arm-asclaude.sh" "$BIN" --rewake-waiter \
+              >/dev/null
+    }
+    # The waiter's exit code IS the wake-up, so the status is returned and the
+    # wake-up text goes to a file a `$(...)` capture could not hand back.
+    arun() {  # WORLD STUB ERROR_TYPE — from a fresh tick count and no waiter
+        : > "$AB/ticks"
+        rm -f "$1/data/sessions/$UUID.rewaiter"
+        aspawn "$1" "$2" "$3" "$UUID" 2>"$ARMERR"
+    }
+    asaid() { grep -q "$1" "$ARMERR" && echo yes || echo no; }
+    aticks() { grep -c . "$AB/ticks"; }
+    arows() { grep -c . "$1/data/switch-log.tsv" 2>/dev/null || echo 0; }
+    aswitches() { awk -F'\t' '$2 == "switch"' "$1/data/switch-log.tsv" 2>/dev/null | grep -c . || true; }
+    atok() { jq -r '.claudeAiOauth.accessToken' "$1/cfg/.credentials.json"; }
+
+    # ── a cap death the box can answer by moving ──────────────────────────────
+    WA1=$(aworld); CA1=$(curlstub)
+    alive "$WA1" a@example.com tok-a
+    aent "$WA1" a@example.com tok-a
+    aent "$WA1" b@example.com tok-b
+    abody "$CA1" tok-a 95 10 10     # live: its five-hour window is spent
+    abody "$CA1" tok-b 10 10 10     # a candidate clear on all three windows
+    mkcache "$WA1" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA1" "$CA1" rate_limit; rc=$?
+    report 2 "$rc" "arm: a cap death a login switch can answer wakes the session instead of parking it"
+    report yes "$(asaid 'login switched (a@example.com → b@example.com)')" \
+        "arm: ... naming the login it left and the one it moved to, from the decision's own output"
+    report tok-b "$(atok "$WA1")" "arm: ... having installed the candidate's credential"
+    report 0 "$(aticks)" "arm: ... and never slept, because the cap it would have slept out no longer applies"
+    report 1 "$(aswitches "$WA1")" "arm: ... on exactly one switch row"
+    report absent "$([ -e "$WA1/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
+        "arm: ... leaving no waiter behind"
+
+    # ── the wake comes after the pidfile dedup, the decision before it ────────
+    # A session whose waiter already sleeps must still be able to rescue the box,
+    # and must not then receive a second wake for the one switch: the sleeping
+    # owner is woken by the config-directory watch instead.
+    WA2=$(aworld); CA2=$(curlstub)
+    alive "$WA2" a@example.com tok-a
+    aent "$WA2" a@example.com tok-a; aent "$WA2" b@example.com tok-b
+    abody "$CA2" tok-a 95 10 10; abody "$CA2" tok-b 10 10 10
+    mkcache "$WA2" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    bash -c "exec -a rewake-waiter bash -c 'sleep 30; :'" &
+    AOWNER=$!
+    sleep 1
+    printf '%s\n' "$AOWNER" > "$WA2/data/sessions/$UUID.rewaiter"
+    : > "$AB/ticks"
+    aspawn "$WA2" "$CA2" rate_limit "$UUID" 2>"$ARMERR"; rc=$?
+    report 0 "$rc" "arm: a spawn whose session already owns a waiter delivers no second wake"
+    report 1 "$(aswitches "$WA2")" "arm: ... although it reached the decision, which is what rescues the box"
+    report tok-b "$(atok "$WA2")" "arm: ... and the switch happened"
+    report "$AOWNER" "$(cat "$WA2/data/sessions/$UUID.rewaiter")" "arm: ... leaving the owner's pidfile alone"
+    kill "$AOWNER" 2>/dev/null; wait "$AOWNER" 2>/dev/null
+
+    # ── an authentication death decides too, on the ordinary cooldown ─────────
+    # One interactive authentication failure with no recent switch to be in
+    # probation from, five minutes after a blank credential write, is what a
+    # ten-and-a-half-hour outage looked like.
+    WA3=$(aworld); CA3=$(curlstub)
+    alive "$WA3" a@example.com tok-a
+    aent "$WA3" a@example.com tok-a; aent "$WA3" b@example.com tok-b
+    adead "$CA3" tok-a
+    abody "$CA3" tok-b 10 10 10
+    mkcache "$WA3" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA3" "$CA3" authentication_failed; rc=$?
+    report 2 "$rc" "arm: an authentication death with no recent switch behind it still reaches a decision"
+    report yes "$(asaid 'login switched')" "arm: ... and the switch it takes is the wake-up"
+    report 'switch auth' "$(awk -F'\t' 'NR==1{print $2, $5}' "$WA3/data/switch-log.tsv")" \
+        "arm: ... recorded under the trigger that asked for it"
+
+    # Past probation, inside the cooldown: the gate that bounds an authentication
+    # storm to about one decision a quarter hour. The cache is keyed by the LIVE
+    # login, so the statusline's first render under the new one is what puts the
+    # waiter back above its reachability ceiling.
+    mkcache "$WA3" b@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    ANOW=$(( ABASE + 700 ))
+    arun "$WA3" "$CA3" authentication_failed; rc=$?
+    ANOW=""
+    report 0 "$rc" "arm: a second authentication death inside the cooldown wakes nobody"
+    report 'hold cooldown' "$(awk -F'\t' 'NR==2{print $2, $6}' "$WA3/data/switch-log.tsv")" \
+        "arm: ... it holds, which is what bounds an authentication storm"
+    report tok-b "$(atok "$WA3")" "arm: ... and swaps nothing"
+
+    # Every documented sibling of authentication_failed decides on the same gate.
+    for aerr in oauth_org_not_allowed account_on_hold billing_error cloud_credential_error; do
+        WAS=$(aworld); CAS=$(curlstub)
+        alive "$WAS" a@example.com tok-a
+        aent "$WAS" a@example.com tok-a; aent "$WAS" b@example.com tok-b
+        adead "$CAS" tok-a; abody "$CAS" tok-b 10 10 10
+        mkcache "$WAS" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+        arun "$WAS" "$CAS" "$aerr"; rc=$?
+        report 2 "$rc" "arm: $aerr decides like any other authentication death"
+        # The exit code alone cannot say WHICH arm it landed in: a sibling
+        # misfiled into the cap arm would switch here too, and would park the
+        # session on a reset that cannot lift it when no switch was available.
+        report 'switch auth' "$(awk -F'\t' 'NR==1{print $2, $5}' "$WAS/data/switch-log.tsv")" \
+            "arm: ... on the trigger the authentication family asks under"
+    done
+
+    # ── the ceiling above all of it, kept deliberately ───────────────────────
+    # The waiter reads its windows out of the statusline cache for the live
+    # login, and leaves at once when there is none. The decision sits BELOW that
+    # exit: it needs no cache, but hoisting it would mean hoisting the stdin read
+    # and the parent walk with it, and the only window it leaves open is the
+    # render or two after a switch, which `session doctor` reports as pending.
+    WA14=$(aworld); CA14=$(curlstub)
+    alive "$WA14" a@example.com tok-a
+    aent "$WA14" a@example.com tok-a; aent "$WA14" b@example.com tok-b
+    abody "$CA14" tok-a 95 10 10; abody "$CA14" tok-b 10 10 10
+    arun "$WA14" "$CA14" rate_limit; rc=$?
+    report 0 "$rc" "arm: a cap death on a login whose statusline has never rendered reaches no decision"
+    report 0 "$(arows "$WA14")" "arm: ... and writes no row, which is what doctor reports as pending"
+
+    # ── a failure that is neither a cap nor an authentication death ───────────
+    WA6=$(aworld); CA6=$(curlstub)
+    alive "$WA6" a@example.com tok-a
+    aent "$WA6" a@example.com tok-a; aent "$WA6" b@example.com tok-b
+    abody "$CA6" tok-a 95 10 10; abody "$CA6" tok-b 10 10 10
+    mkcache "$WA6" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA6" "$CA6" api_error; rc=$?
+    report 0 "$rc" "arm: a failure that is neither a cap nor an authentication death decides nothing"
+    report 0 "$(arows "$WA6")" "arm: ... writing no row"
+    report tok-a "$(atok "$WA6")" "arm: ... and leaving the live login alone"
+
+    # ── a busy lock: no retry, and no reading of somebody else's decision ─────
+    # Busy is 1 under flock(1) and 75 under the perl fallback. Both legs of this
+    # suite resolve lock_run to flock(1), so only the 1 is exercised here; the 75
+    # is the macOS path and nothing on either leg reaches it.
+    WA4=$(aworld); CA4=$(curlstub)
+    alive "$WA4" a@example.com tok-a
+    aent "$WA4" a@example.com tok-a; aent "$WA4" b@example.com tok-b
+    abody "$CA4" tok-a 95 10 10; abody "$CA4" tok-b 10 10 10
+    mkcache "$WA4" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    # A switch row fresh enough that an audit-log fallback would read it as this
+    # decision's own. It is a PREVIOUS decision, and waking on it would tell the
+    # session the box had just moved when nothing moved.
+    printf '%s\tswitch\tx@example.com\ty@example.com\tcap\tclimbed\t-\tsid=-;tier=2\n' \
+        "$ABASE" > "$WA4/data/switch-log.tsv"
+    lock_run "$WA4/data/switch.lock" "$AREALSLEEP" 5 &
+    ALK=$!
+    sleep 1
+    arun "$WA4" "$CA4" rate_limit; rc=$?
+    report 2 "$rc" "arm: a decision already in flight leaves the waiter to sleep the cap out"
+    report yes "$(asaid '5h rate-limit window has reset')" \
+        "arm: ... waking on the reset it derived itself"
+    report no "$(asaid 'login switched')" \
+        "arm: ... never on an audit row describing a decision it did not just cause"
+    report 10 "$(aticks)" "arm: ... having slept the whole way to the 5h reset"
+    report 1 "$(arows "$WA4")" "arm: ... and taking no decision of its own"
+    wait "$ALK" 2>/dev/null
+
+    # ── the insertion point: above the exit that used to end it here ──────────
+    WA5=$(aworld); CA5=$(curlstub)
+    alive "$WA5" a@example.com tok-a
+    aent "$WA5" a@example.com tok-a; aent "$WA5" b@example.com tok-b
+    abody "$CA5" tok-a 95 10 10; abody "$CA5" tok-b 10 10 10
+    mkcache "$WA5" a@example.com 10 10 $(( ABASE - 100 )) $(( ABASE - 50 ))
+    arun "$WA5" "$CA5" rate_limit; rc=$?
+    report 2 "$rc" "arm: a cap death with no future reset in the cache still reaches a decision"
+    report yes "$(asaid 'login switched')" "arm: ... where the waiter used to exit without arming anything"
+    report tok-b "$(atok "$WA5")" "arm: ... and the box moves"
+
+    # ── a switch onto a Fable-spent login says what it bought ────────────────
+    WA10=$(aworld); CA10=$(curlstub)
+    alive "$WA10" a@example.com tok-a
+    aent "$WA10" a@example.com tok-a; aent "$WA10" b@example.com tok-b
+    abody "$CA10" tok-a 95 10 10
+    abody "$CA10" tok-b 10 10 95     # serves every model except Fable
+    mkcache "$WA10" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA10" "$CA10" rate_limit; rc=$?
+    report 2 "$rc" "arm: a cap death answered by a Fable-spent login still wakes the session"
+    report yes "$(asaid 'except Fable')" \
+        "arm: ... told in one sentence that the new login cannot serve Fable"
+    report no "$(asaid 'earlier cap no longer applies')" \
+        "arm: ... and never told the earlier cap is gone, which for a Fable turn is false"
+
+    # ── an early wake at next_eligible_at is not a reset wake ────────────────
+    # The hold names the time its best rejected candidate climbs above the live
+    # login. That shortens the sleep once; it does not become the target, and it
+    # must never take the loop's own exit message.
+    WA7=$(aworld); CA7=$(curlstub)
+    alive "$WA7" a@example.com tok-a
+    aent "$WA7" a@example.com tok-a; aent "$WA7" b@example.com tok-b
+    abody "$CA7" tok-a 95 10 10
+    abody "$CA7" tok-b 10 95 10 "$AI1" "$AI2" "$AI1"   # held down by its weekly, +1200 s
+    mkcache "$WA7" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA7" "$CA7" rate_limit; rc=$?
+    report 2 "$rc" "arm: a hold that names a time leaves the waiter armed on the reset it derived"
+    report yes "$(asaid '5h rate-limit window has reset')" \
+        "arm: ... and the wake-up still names the window that target came from"
+    report no "$(asaid 'login switched')" "arm: ... which is not a switch"
+    report 10 "$(aticks)" "arm: ... having slept the whole way to the 5h reset, through the early wake"
+    report 2 "$(arows "$WA7")" "arm: ... re-deciding exactly once on the way"
+    report "$(( ABASE + 1200 ))" "$(awk -F'\t' 'NR==2{print $1}' "$WA7/data/switch-log.tsv")" \
+        "arm: ... at the time the first decision named, not at the reset"
+
+    # The same shape where the re-decision can move: the early wake is then the
+    # wake-up, at the named time rather than at the reset.
+    WA8=$(aworld); CA8=$(curlstub)
+    alive "$WA8" a@example.com tok-a
+    aent "$WA8" a@example.com tok-a; aent "$WA8" b@example.com tok-b
+    abody "$CA8" tok-a 95 10 10
+    abody "$CA8" tok-b 10 10 10
+    cp "$CA8/body.tok-b" "$CA8/next.tok-b"                 # what b's window becomes
+    abody "$CA8" tok-b 10 95 10 "$AI1" "$AI2" "$AI1"       # and what it is now
+    mv "$CA8/curl" "$CA8/curl.real"
+    cat > "$CA8/curl" <<ATURNEOF
+#!/bin/sh
+"$CA8/curl.real" "\$@"
+rc=\$?
+# The candidate's weekly window turns over between the two decisions, which a
+# body file can only do by being replaced once it has been served.
+[ -f "$CA8/next.tok-b" ] && [ -f "$CA8/asked.tok-b" ] && mv "$CA8/next.tok-b" "$CA8/body.tok-b"
+exit \$rc
+ATURNEOF
+    chmod +x "$CA8/curl"
+    mkcache "$WA8" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA8" "$CA8" rate_limit; rc=$?
+    report 2 "$rc" "arm: an early wake whose re-decision can move the box takes it"
+    report yes "$(asaid 'login switched')" "arm: ... and says so rather than announcing a reset"
+    report 3 "$(aticks)" "arm: ... having slept only to the time the first decision named"
+    report tok-b "$(atok "$WA8")" "arm: ... with the candidate's credential installed"
+
+    # ── min(target, -) and min(target, a stale epoch) are both the target ─────
+    WA9=$(aworld); CA9=$(curlstub)
+    alive "$WA9" a@example.com tok-a
+    aent "$WA9" a@example.com tok-a; aent "$WA9" b@example.com tok-b
+    abody "$CA9" tok-a 95 10 10
+    adead "$CA9" tok-b               # a rejected candidate carries no reset at all
+    mkcache "$WA9" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA9" "$CA9" rate_limit; rc=$?
+    report 2 "$rc" "arm: a hold that names no time at all still wakes on the reset"
+    report 10 "$(aticks)" "arm: ... an unknown next_eligible_at never shortens the sleep"
+    report 1 "$(arows "$WA9")" "arm: ... and nothing re-decides on the way"
+
+    # A reset that has passed while the percentage behind it has not yet dropped:
+    # the epoch is real and already behind, and arming on it would wake the
+    # session straight back into the cap it is sleeping out.
+    WA13=$(aworld); CA13=$(curlstub)
+    alive "$WA13" a@example.com tok-a
+    aent "$WA13" a@example.com tok-a; aent "$WA13" b@example.com tok-b
+    abody "$CA13" tok-a 95 10 10
+    abody "$CA13" tok-b 10 95 10 "$AI1" "$AI1" "$AI1"   # held down by a weekly that reset a day ago
+    mkcache "$WA13" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA13" "$CA13" rate_limit; rc=$?
+    report 2 "$rc" "arm: a next_eligible_at already in the past wakes nothing early"
+    report 10 "$(aticks)" "arm: ... the sleep runs to the reset, as if no time had been named"
+    report 1 "$(arows "$WA13")" "arm: ... and nothing re-decides on the way"
+
+    # Inside the cooldown, where a re-decision could only hold on it again.
+    WA15=$(aworld); CA15=$(curlstub)
+    alive "$WA15" a@example.com tok-a
+    aent "$WA15" a@example.com tok-a; aent "$WA15" b@example.com tok-b
+    abody "$CA15" tok-a 95 10 10
+    abody "$CA15" tok-b 10 95 10 "$AI1" "$AISOON" "$AI1"   # its weekly turns over in 600 s
+    mkcache "$WA15" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA15" "$CA15" rate_limit; rc=$?
+    report 2 "$rc" "arm: a next_eligible_at inside the cooldown wakes nothing early"
+    report 10 "$(aticks)" "arm: ... because the decision it would wake for cannot be taken yet"
+    report 1 "$(arows "$WA15")" "arm: ... so nothing re-decides on the way"
+
+    # Beyond the reset, which is the ordinary shape: a candidate held down by its
+    # WEEKLY window names a time days out while the live login's five-hour target
+    # is hours out. The named time may only ever shorten a sleep.
+    WA16=$(aworld); CA16=$(curlstub)
+    alive "$WA16" a@example.com tok-a
+    aent "$WA16" a@example.com tok-a; aent "$WA16" b@example.com tok-b
+    abody "$CA16" tok-a 95 10 10
+    abody "$CA16" tok-b 10 95 10 "$AI1" "$AILATE" "$AI1"   # its weekly turns over past the reset
+    mkcache "$WA16" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    arun "$WA16" "$CA16" rate_limit; rc=$?
+    report 2 "$rc" "arm: a next_eligible_at past the reset does not lengthen the sleep"
+    report yes "$(asaid '5h rate-limit window has reset')" \
+        "arm: ... so the wake-up is not delivered hours after the window it names turned over"
+    report 10 "$(aticks)" "arm: ... the sleep still ends at the 5h reset"
+    report 1 "$(arows "$WA16")" "arm: ... and nothing re-decides on the way"
+
+    # ── every spawn decides; the lock makes it one decision ──────────────────
+    WA12=$(aworld); CA12=$(curlstub)
+    alive "$WA12" a@example.com tok-a
+    aent "$WA12" a@example.com tok-a; aent "$WA12" b@example.com tok-b
+    abody "$CA12" tok-a 95 10 10; abody "$CA12" tok-b 10 10 10
+    mv "$CA12/curl" "$CA12/curl.real"
+    printf '#!/bin/sh\n%s 2\nexec "%s/curl.real" "$@"\n' "$AREALSLEEP" "$CA12" > "$CA12/curl"
+    chmod +x "$CA12/curl"
+    mkcache "$WA12" a@example.com 10 10 $(( ABASE - 100 )) $(( ABASE - 50 ))
+    : > "$AB/ticks"
+    for i in 1 2 3; do
+        ( aspawn "$WA12" "$CA12" rate_limit "sid-$i" 2>/dev/null; echo $? > "$TMP/arm-race.rc.$i" ) &
+    done
+    wait
+    report 1 "$(aswitches "$WA12")" "arm: three spawns racing one cap produce exactly one switch"
+    report 1 "$(cat "$TMP/arm-race.rc.1" "$TMP/arm-race.rc.2" "$TMP/arm-race.rc.3" | grep -c '^2$' || true)" \
+        "arm: ... and exactly one of them wakes its session"
+
+    # ── the tier a waiter reads when it never saw the decision ───────────────
+    # A waiter woken by the config-directory watch sees the files change and not
+    # the decision behind them, so the landing tier comes off the audit row.
+    if have inotifywait; then
+        WA11=$(aworld)
+        alive "$WA11" a@example.com tok-a
+        aent "$WA11" a@example.com tok-a          # one entry: the decision refuses, the waiter just arms
+        ANOWR=$(date +%s)
+        mkcache "$WA11" a@example.com 95 10 $(( ANOWR + 3600 )) $(( ANOWR + 36000 ))
+        ( printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID" \
+          | env -i PATH="$PATH" HOME="$FH" TZ=UTC \
+                CLAUDE_CONFIG_DIR="$WA11/cfg" SESSION_DATA_DIR="$WA11/data" \
+                SESSION_ACCOUNTS_DIR="$WA11/vault" CLAUDE_CODE_SESSION_ID="$UUID" \
+                bash -c 'exec -a claude bash "$@"' _ "$TMP/arm-asclaude.sh" "$BIN" --rewake-waiter \
+                >/dev/null 2>"$WA11/err"; echo $? > "$WA11/rc" ) &
+        AWPID=$!
+        i=0
+        while [ ! -e "$WA11/data/sessions/$UUID.rewaiter" ] && [ "$i" -lt 15 ]; do sleep 1; i=$(( i + 1 )); done
+        report present "$([ -e "$WA11/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
+            "arm: a decision that refuses leaves the waiter armed on its reset"
+        printf '%s\tswitch\ta@example.com\tb@example.com\tcap\tclimbed\t-\tsid=-;tier=1;notify=off\n' \
+            "$(date +%s)" >> "$WA11/data/switch-log.tsv"
+        mklogin "$WA11" b@example.com
+        i=0
+        while [ ! -e "$WA11/rc" ] && [ "$i" -lt 25 ]; do sleep 1; i=$(( i + 1 )); done
+        wait "$AWPID" 2>/dev/null
+        report 2 "$(cat "$WA11/rc" 2>/dev/null)" "arm: a waiter woken by a switch it did not take exits 2"
+        report yes "$(grep -q 'except Fable' "$WA11/err" && echo yes || echo no)" \
+            "arm: ... reading the landing tier off the audit row, having never seen the decision"
+    else
+        skip "arm: the tier a waiter reads off the audit row" "no inotifywait"
+    fi
 fi
 
 echo
