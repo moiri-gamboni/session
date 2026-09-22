@@ -78,6 +78,8 @@
 #                     name is still the app's cwd slug. `claude --name` and
 #                     `/rename` set the same field themselves and are never
 #                     overwritten; rename is how you change it afterwards.
+#                     Side effect every turn, gated or not: appends this turn's
+#                     START event to the turn log.
 #   session --rewake-waiter  asyncRewake hook plumbing (second UserPromptSubmit
 #                     entry AND second StopFailure entry): the harness
 #                     backgrounds it and treats exit 2 as "wake the model with
@@ -99,8 +101,6 @@
 #                     parent: the harness only backgrounds asyncRewake for
 #                     interactive/streaming sessions, so there the hook would
 #                     run synchronously and block the print run.
-#                     Side effect every turn, gated or not: appends this turn's
-#                     START event to the turn log.
 #   session --turn-end  Stop-hook plumbing: appends the turn's END event to the
 #                     turn log; always exits 0 silently (a Stop hook's exit 2
 #                     would force the agent to keep going).
@@ -136,6 +136,39 @@
 # e.g.  WEEK_GUARD=sqrt FIVE_GUARD=linear  |  FIVE_GUARD=off WEEK_GUARD=90
 # Window sizes for the curves: FIVE_WINDOW (s, 18000), WEEK_WINDOW (s, 604800).
 set -uo pipefail
+
+# `session --rewake-waiter` is an asyncRewake hook (see the rewake block): there
+# exit 2 is not a failure code but a WAKE-UP, and the stderr carried with it is
+# the message delivered to the model in a live session. Two consequences, and
+# both are box-wide, because every session on the machine runs this hook
+# unattended:
+#
+#   Nothing else may write to that stderr. Whatever any earlier line put there
+#   — the lib's conf-permission warnings, a jq parse error over a torn cache —
+#   arrives glued to the front of the wake message. So the real channel is
+#   parked on fd 9 for the one writer entitled to it (rewake_done) and fd 2 is
+#   discarded from here on, ahead of the lib sourcing below that is itself one
+#   of the producers.
+#
+#   Nothing may REFUSE with exit 2 either, which is what conf_refuse is for: a
+#   single malformed line in session.conf would otherwise wake every session on
+#   the box, on every prompt, with a configuration complaint. On that entry the
+#   waiter fails closed instead — exit 0, arming nothing. What keeps the
+#   misconfiguration visible is the synchronous --hook entry, which refuses on
+#   every prompt and blocks it; `session doctor` adds a line for the warn
+#   threshold alone, having dispatched long before the guard specs are read.
+#
+# Keyed off the flag anywhere in the argument list, which is how the parser
+# below resolves `mode=rewake` too — so fd 9 is open wherever rewake_done can be
+# reached, and the refusal rule already covers the parser's own error arm, which
+# fires before any mode is settled.
+rewake_entry=0
+case " $* " in *' --rewake-waiter '*) rewake_entry=1; exec 9>&2 2>/dev/null ;; esac
+conf_refuse() {  # MESSAGE — exit 2 with it, except where exit 2 means "wake"
+  [ "$rewake_entry" = 1 ] && exit 0
+  echo "session: $1" >&2
+  exit 2
+}
 
 # Every path, every host facility and the platform layer come from the lib
 # beside this script. The walk is POSIX on purpose: `readlink -f` is GNU-only,
@@ -1318,14 +1351,16 @@ doctor_main() {
   # The warn threshold, beside the two places that set it. `doctor` dispatches
   # before the CLI's own validation loop runs — which is what lets a broken
   # install be diagnosed at all, and is exactly why the value has to be checked
-  # here too: one that is not a whole number makes every UserPromptSubmit hook
-  # exit 2 and block the prompt, while every other line in this report reads
-  # fine. The pattern is the validation's, so the two cannot disagree.
+  # here too: one that is not a whole number makes the synchronous
+  # UserPromptSubmit hook exit 2 and block the prompt — and leaves the waiter on
+  # the same event unarmed, silently, because exit 2 there is a wake-up — while
+  # every other line in this report reads fine. The pattern is the validation's,
+  # so the two cannot disagree.
   case "$USAGE_WARN_PCT" in
     *[!0-9]*)
       warnsrc="the environment"
       [ -r "$cf" ] && grep -q 'USAGE_WARN_PCT' "$cf" && warnsrc="$cf, which sets it"
-      doc FAIL "warn pct" "USAGE_WARN_PCT='$USAGE_WARN_PCT' is not a whole number of percent ($warnsrc) — every prompt is blocked with exit 2 until it is"
+      doc FAIL "warn pct" "USAGE_WARN_PCT='$USAGE_WARN_PCT' is not a whole number of percent ($warnsrc) — every prompt is blocked with exit 2 until it is, and the auto-resume waiter, where exit 2 would mean 'wake the session' instead, quietly does not arm"
       ;;
   esac
 
@@ -1956,11 +1991,13 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
 Exit codes:
   0  success (plumbing modes: unconditionally)
   1  no data yet, not inside a Claude Code session, or a failed `doctor` check
-  2  bad arguments / invalid guard spec or warn threshold
+  2  bad arguments / invalid guard spec or warn threshold — never from
+     --rewake-waiter, where exit 2 means "wake the session": there every one
+     of those refusals is a silent exit 0 that arms no waiter
   3  PAUSE (from --guard)
 HELP
       exit 0 ;;
-    *) echo "session: unknown arg '$1'" >&2; exit 2 ;;
+    *) conf_refuse "unknown arg '$1'" ;;
   esac
   shift
 done
@@ -1985,18 +2022,19 @@ valid_spec() {
 }
 for pair in "FIVE_GUARD=$FIVE_GUARD" "WEEK_GUARD=$WEEK_GUARD"; do
   if ! valid_spec "${pair#*=}"; then
-    echo "session: invalid ${pair%%=*}='${pair#*=}' (use: linear | sqrt | pow:P | <int> | off)" >&2; exit 2
+    conf_refuse "invalid ${pair%%=*}='${pair#*=}' (use: linear | sqrt | pow:P | <int> | off)"
   fi
 done
 # Same reason, sharper failure: the warn threshold is used in arithmetic
 # ((fp >= thr)). A non-numeric value is re-expanded as a VARIABLE NAME, and an
 # unset one kills the shell under `set -u` — inside a hook, where the death
 # surfaces as neither output nor error; a decimal is quieter still, failing the
-# arithmetic so the gate never fires. Both refuse here, in front of the hook
-# path and the rewake path alike. No upper bound: above 100 is the documented
-# way to turn the hook's output off.
+# arithmetic so the gate never fires. Both are refused here, in front of the
+# hook path and the rewake path alike — silently on the latter, where exit 2
+# would be a wake-up rather than a refusal (conf_refuse, top of the file). No
+# upper bound: above 100 is the documented way to turn the hook's output off.
 case "$USAGE_WARN_PCT" in
-  *[!0-9]*) echo "session: invalid USAGE_WARN_PCT='$USAGE_WARN_PCT' (use a whole number of percent; above 100 disables the hook's output)" >&2; exit 2 ;;
+  *[!0-9]*) conf_refuse "invalid USAGE_WARN_PCT='$USAGE_WARN_PCT' (use a whole number of percent; above 100 disables the hook's output)" ;;
 esac
 # Digits are not yet a number: bash reads a leading zero as octal, so 070 would
 # gate at 56 and 09 would not parse at all. Fix the base once, here, so both
@@ -3264,7 +3302,11 @@ if [ "$mode" = rewake ]; then
   fi
   [ -d "$snapdir" ] || mkdir -p "$snapdir"
   printf '%s\n' $$ > "$pidf.$$" && mv "$pidf.$$" "$pidf"
-  rewake_done() { rm -f "$pidf"; printf '%s\n' "$1" >&2; exit 2; }
+  # fd 9, not stderr: this entry's stderr was discarded at the top of the file
+  # so that no earlier producer's line can ride in front of the wake message.
+  # Nothing else in this file writes to fd 9 — children inherit it and none of
+  # them uses it — so the message is the whole channel.
+  rewake_done() { rm -f "$pidf"; printf '%s\n' "$1" >&9; exit 2; }
   # After the dedup, never before it: a session whose waiter already sleeps is
   # woken by the config-directory watch instead, so one switch delivers one wake.
   [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"
