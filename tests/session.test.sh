@@ -5155,6 +5155,100 @@ else
 fi
 rm -f "$LKO"
 
+echo "--- mis-filed: a vault entry holding the live credential is not a switch target ---"
+
+# The statusline's unlocked autosave can land inside the swap's two-file window
+# and file the incoming credential under the outgoing login's name. The
+# screening excludes the live login BY NAME and acct_swap's post-condition
+# compares what it installed against the ENTRY's credential, so such an entry
+# passes both: nothing is installed, the readback confirms success, and the box
+# announces a switch and wakes a capped session onto a login it never left. The
+# session then retries into the same cap.
+if ! have jq || ! have perl; then
+    skip "mis-filed: an entry holding the live credential" "needs jq and perl"
+else
+    MNOW=$(date +%s); MFUT=$(( MNOW + 36000 )); MEXP=$(( MNOW + 3600 ))
+    mvent() {  # WORLD LOGIN TOKEN — a vault entry under LOGIN's name carrying TOKEN
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
+            "$2" "$2" "$2" "$3" "$MEXP" > "$1/vault/$2.json"
+    }
+    # The box live on b@ and capped, with a@ vaulted and clean. Both logins are
+    # read from their frozen caches: the endpoint answers nothing here, the state
+    # `doctor` reports as a supported pending rather than a fault, and the one in
+    # which a mis-filed entry ranks on the figures of the login it is named for.
+    mworld() {
+        local w; w=$(world); mkdir -p "$w/vault"
+        mklogin "$w" b@example.com
+        # The live file carries a refresh token the vault entries do not, so the
+        # screening cannot rest on the two claudeAiOauth objects being equal
+        # byte for byte: what decides whether a switch moves the box to another
+        # account is the ACCESS token, and an entry holding the live one moves
+        # nothing whatever else it carries.
+        printf '{"claudeAiOauth":{"accessToken":"tok-b","refreshToken":"rt-b","expiresAt":%s000},"mcpOAuth":{"granola":"keep-me"}}\n' \
+            "$MEXP" > "$w/cfg/.credentials.json"
+        mvent "$w" b@example.com tok-b
+        mkcache "$w" b@example.com 99 99 "$MFUT" "$MFUT"
+        mkcache "$w" a@example.com 3 3 "$MFUT" "$MFUT"
+        printf '{"fable":{"used_percentage":3,"resets_at":%s}}\n' "$MFUT" > "$w/data/fable.a@example.com.json"
+        printf '%s\n' "$w"
+    }
+    mauto() {  # WORLD STUB SID — one decision, stderr folded in
+        sess "$1" PATH="$2:$PATH" SESSION_ACCOUNTS_DIR="$1/vault" SESSION_NOW="$MNOW" \
+            SESSION_SWITCH_NOTIFY="$MNOTIFY" -- account auto --trigger cap --sid "$3" 2>&1
+    }
+    mkv() { printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'; }
+    # The seam fires in the background, so poll for it. Counted with awk rather
+    # than `grep -c .`, which exits 1 on an empty file: a `|| echo 0` beside it
+    # then prints two zeroes, the comparison is not an integer, and the loop
+    # falls through having waited for nothing — which is how an assertion that
+    # nothing was announced passes without ever giving it time to arrive.
+    mwait() {  # FILE LINES
+        local n=0
+        while [ "$(awk 'END { print NR + 0 }' "$1" 2>/dev/null || echo 0)" -lt "$2" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1
+            n=$(( n + 1 ))
+        done
+    }
+
+    MNOTE="$TMP/misfiled-notified"
+    MNOTIFY="$TMP/misfiled-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$MNOTE" > "$MNOTIFY"; chmod 755 "$MNOTIFY"
+
+    MW1=$(mworld); MC1=$(curlstub); MLOG1="$MW1/data/switch-log.tsv"
+    mvent "$MW1" a@example.com tok-b        # a@'s name over the credential already live
+    printf '000' > "$MC1/status.tok-b"
+    : > "$MNOTE"
+    out=$(mauto "$MW1" "$MC1" sid-m1); rc=$?
+    report 3 "$rc" "mis-filed: an entry carrying the live credential is held on, never switched to"
+    report 'hold no-candidate' "$(mkv ev "$out") $(mkv reason "$out")" \
+        "mis-filed: ... there being nothing left to rank once it is screened out"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$MW1/cfg/.credentials.json")" \
+        "mis-filed: ... with the live credential where it was"
+    report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$MW1/cfg/.claude.json")" \
+        "mis-filed: ... and the identity still naming the login actually serving requests"
+    report 0 "$(awk -F'\t' '$2 == "switch"' "$MLOG1" | grep -c . || true)" \
+        "mis-filed: ... no switch row, which is what a waiter with no output of its own reads back"
+    mwait "$MNOTE" 1
+    report 0 "$(grep -c . "$MNOTE" 2>/dev/null || true)" \
+        "mis-filed: ... and nothing announced, the announcement being what wakes a capped session"
+
+    # The same world with a@'s own credential in its entry: the screen rejects a
+    # duplicate of the live credential and nothing else.
+    MW2=$(mworld); MC2=$(curlstub)
+    mvent "$MW2" a@example.com tok-a
+    printf '000' > "$MC2/status.tok-b"; printf '000' > "$MC2/status.tok-a"
+    : > "$MNOTE"
+    out=$(mauto "$MW2" "$MC2" sid-m2); rc=$?
+    report 0 "$rc" "mis-filed: an entry carrying its own login's credential is still a candidate"
+    report 'switch a@example.com' "$(mkv ev "$out") $(mkv to "$out")" \
+        "mis-filed: ... and the box moves to it"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$MW2/cfg/.credentials.json")" \
+        "mis-filed: ... having installed the credential that was not there before"
+    mwait "$MNOTE" 1
+    report 1 "$(grep -c . "$MNOTE" 2>/dev/null || true)" \
+        "mis-filed: ... and says so, which is the wake a real switch owes a capped session"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
