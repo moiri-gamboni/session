@@ -821,6 +821,51 @@ acct_name_of() { jq -r '.login // .email // empty' "$1"; }   # a vault entry's n
 # whatever else it holds.
 acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/null 2>&1; }
 
+# Record a refused blank credential, and tell a human, once per login per
+# cooldown.
+#
+# The rate limit is not decoration. The refusal below returns BEFORE the vault
+# entry's touch — deliberately, since touching would mark a blank as captured —
+# so the entry's mtime never advances while the live credential is blank and
+# the statusline forks `session account save` on every render for the whole
+# duration. Unlimited, that is a push every ten seconds through an outage.
+#
+# This is the only code path that can observe a blank credential at all: the
+# automatic decision never produces one, so its notify policy cannot cover
+# this, and this cannot cover switches.
+#
+# The seam fires in the background, because the statusline waits on this save
+# synchronously and a notifier that blocks would stall the line box-wide; and
+# it fires only after the row is down, because a root that cannot hold the row
+# cannot hold the rate limit either, and pushing without one is the storm.
+#
+# Nothing serialises the read from the write, so two renders landing within the
+# same few milliseconds both record and both push. Accepted: renders run on
+# independent timers, the window is one `awk` wide, and the bound that matters
+# — not one push per render — holds either way. A mutex would put a lock on the
+# statusline's per-render path to save an occasional duplicate.
+acct_refuse_blank() {  # LOGIN VAULTFILE
+  local last notify="${SESSION_SWITCH_NOTIFY:-}" fired=off msg
+  # The newest refusal OF THIS LOGIN, not the newest refusal: `use` vaults the
+  # outgoing login, so a human switching entries during an outage puts another
+  # login's row in between, and reading only the last row would reopen this
+  # login's window every time that happened.
+  last=$(awk -F'\t' -v l="$1" '$2 == "refuse" && $3 == l { ts = $1 } END { print ts + 0 }' \
+           "$(acct_log_file)" 2>/dev/null)
+  [ "${last:-0}" -gt 0 ] && [ $(( $(now_epoch) - last )) -lt "$ACCT_COOLDOWN_S" ] && return 0
+  [ -n "$notify" ] && [ -x "$notify" ] || notify=""
+  [ -n "$notify" ] && fired=sent
+  acct_log refuse "$1" - manual blank-credential - "notify=$fired" || return 0
+  [ -n "$notify" ] || return 0
+  msg="session account: not vaulting $1 — its live access token is empty."
+  if [ -s "$2" ]; then
+    msg="$msg The vaulted copy at $2 is untouched; \`session account use\` reinstalls it."
+  else
+    msg="$msg There is no vaulted copy of this login to restore from."
+  fi
+  ( "$notify" "$msg" >/dev/null 2>&1 & )
+}
+
 # Copy the live login into the vault. Idempotent: an unchanged entry is only
 # touched (the mtime is the autosave's "already captured" marker).
 acct_save() {
@@ -836,6 +881,7 @@ acct_save() {
   # copy the recovery needs, so the save is refused instead.
   acct_token_ok "$cfg/.credentials.json" || {
     echo "session account: not saving $login — its live accessToken is empty, and vaulting that would destroy the last working copy of this login" >&2
+    acct_refuse_blank "$login" "$acctdir/$login.json"
     return 1; }
   mkdir -p "$acctdir" && chmod 700 "$acctdir"
   vf="$acctdir/$login.json"; now=$(date +%s)

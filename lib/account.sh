@@ -52,7 +52,22 @@
 # value down, so the clamp has exactly one site.
 
 # ── 2. constants ──────────────────────────
-# The cooldown and probation intervals.
+# Two intervals, and they are deliberately not one. The cooldown bounds
+# decision storms box-wide: one decision per quarter hour, whatever fires, not
+# one per login. (The blank-credential refusal is the one caller that applies
+# it per login, because its subject is a login rather than the box.) Probation
+# is the narrower window in which a switch that has just happened is still
+# being judged — the one job it has is letting a FAILED switch bypass the
+# cooldown and re-decide. Collapsing both into a single 300-second value would
+# put that interval BELOW this box's measured retry cadence of 326-343 s, so
+# the bypass would never engage and a failed switch would sit until the next
+# cap death fifteen minutes later.
+#
+# Neither is a knob. No caller wants a different value, and the "a switch is
+# expensive, so make the cooldown tunable" argument was measured and does not
+# hold: the median switch costs 1,457 cache-creation tokens.
+ACCT_COOLDOWN_S=900
+ACCT_PROBATION_S=600
 
 # ── 3. pure selector ──────────────────────
 
@@ -168,7 +183,89 @@ acct_rank() {  # THRESHOLD  (rows on stdin) -> the winning login, or nothing
 # The usage-endpoint probe: ACCT_USAGE_URL, ACCT_USAGE_JQ and acct_probe.
 
 # ── 5. audit log ──────────────────────────
-# The switch log's writer and reader: acct_log and acct_log_last.
+# Every automatic decision about which login the box runs on leaves one row in
+# `$SESSION_DATA/switch-log.tsv`, and that file is also the switcher's only
+# control state: the cooldown, the failed-switch probation and the recovery of
+# `next_eligible_at` by a caller that got no output from the decision child all
+# read it back.
+#
+# 8 columns, never fewer:
+#
+#   ts · ev · from · to · trigger · reason · figures · detail
+#
+#   ev       switch | hold | fail | refuse. There is no `dead` event: a
+#            credential proved dead is a property of ONE CANDIDATE inside a
+#            decision, not a decision of its own, so it belongs in that
+#            decision's figures and detail and must not compete with the
+#            one-row-per-decision rule.
+#   trigger  cap | auth | manual
+#   figures  `login=5h/wk/fb` joined by `;`, `*` marking a probe-fresh figure
+#   detail   a `k=v;` bag over sid= http= tier= next_eligible= scoped= notify=.
+#            There is no `recov=`: recovery_at was cut from the design, and the
+#            waiter's own sleep target already is it.
+#
+# NO FIELD IS EVER EMPTY. The writer substitutes `-` for every empty argument
+# rather than trusting its call sites, because a reader that reached for `read`
+# would not see an empty field as an empty field: tab is IFS whitespace, so a
+# leading one is stripped and a run of them merges into one, silently shifting
+# every field after it. Same hazard `acct_row`'s comment names and `acct_rank`'s
+# row contract states — one hazard, three owners, and this is the one place
+# that can keep it from arising at all. The readers below use `awk -F'\t'` for
+# the other half of the same reason.
+#
+# The file is deliberately exempt from the daily prune: 244 cooldown-surviving
+# decisions across the entire two-month record is about 1,500 rows a year
+# against a 79 MB store, and they are the only account of why the box moved.
+
+# Resolved per call rather than bound when this file is sourced, so the path
+# follows SESSION_DATA wherever a caller has put it.
+acct_log_file() { printf '%s\n' "$SESSION_DATA/switch-log.tsv"; }
+
+acct_log() {  # EV FROM TO TRIGGER REASON FIGURES DETAIL -> 0 written, non-zero not
+  local row arg
+  # A caller with nothing to say for the trailing columns may simply stop; the
+  # row still has to be eight wide.
+  while [ $# -lt 7 ]; do set -- "$@" '-'; done
+  row=$(now_epoch)
+  for arg in "$@"; do row="$row"$'\t'"${arg:--}"; done
+  # The brace group carries the redirect: a redirect that fails is reported
+  # when it is SET UP, so a trailing 2>/dev/null on the same command is too
+  # late. An unwritable data root is reported to the caller as a non-zero
+  # status — no state means no decision — but never as noise on a hook's
+  # stderr.
+  { printf '%s\n' "$row" >> "$(acct_log_file)"; } 2>/dev/null
+}
+
+acct_log_last() {  # [EV] -> the newest row, or the newest of that event
+  local f
+  f=$(acct_log_file)
+  [ -s "$f" ] || return 1
+  awk -F'\t' -v ev="${1:-}" '
+    ev == "" || $2 == ev { row = $0; found = 1 }
+    END { if (found) { print row; exit 0 } exit 1 }
+  ' "$f"
+}
+
+# The value of one `k=v` key from the newest row THAT CARRIES IT, which is not
+# the same as the newest row. A refusal and a cooldown hold carry neither
+# `next_eligible=` nor `scoped=`, and a caller recovering either from the log —
+# because the decision child was locked out, or held before it computed
+# anything — would read both as absent if it looked only at the newest row.
+# A key present with the value `-` IS carried: that is a decision saying it
+# computed the figure and found none, which is newer than an older epoch.
+acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
+  local f
+  f=$(acct_log_file)
+  [ -s "$f" ] || return 1
+  awk -F'\t' -v key="$1" '
+    {
+      n = split($8, kv, ";")
+      for (i = 1; i <= n; i++)
+        if (index(kv[i], key "=") == 1) { val = substr(kv[i], length(key) + 2); found = 1 }
+    }
+    END { if (found) { print val; exit 0 } exit 1 }
+  ' "$f"
+}
 
 # ── 6. decision ───────────────────────────
 # The decision verb acct_auto, and the notify seam.

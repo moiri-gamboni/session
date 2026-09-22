@@ -3100,6 +3100,191 @@ report aaa "$(printf '\naaa\tprobe\t50\t50\t50\n' | acct_rank 90)" \
     "case 20: a blank row cannot suppress a real candidate — it is tier 0 and frozen by construction"
 report "" "$(printf '\n' | acct_rank 90)" "case 20: ... and on its own it wins nothing"
 
+echo "--- switch-log: the audit row, its readers, and the blank-credential refusal ---"
+
+# The writer resolves its path per call, so these drive it in a subshell with
+# the data root pointed at a fixture: the lib sourced at the top of this suite
+# resolved SESSION_DATA to the store of the session RUNNING the suite, and
+# nothing here may write there.
+AL="$TMP/alog"; mkdir -p "$AL"
+ALF="$AL/switch-log.tsv"
+ALNOW=1000
+al() { ( SESSION_DATA="$AL"; SESSION_NOW="$ALNOW"; "$@" ); }
+
+# ── the writer ─────────────────────────────────────────────────────────────
+al acct_log switch a@example.com b@example.com cap climbed \
+    'a@example.com=21/52/100*;b@example.com=10/10/10*' 'tier=2;sid=s1'
+report 1 "$(grep -c . "$ALF")" "switch-log: one call appends one row"
+report 8 "$(awk -F'\t' 'NR==1{print NF}' "$ALF")" "switch-log: ... of exactly eight columns"
+report "1000 switch a@example.com b@example.com cap climbed" \
+    "$(awk -F'\t' 'NR==1{print $1, $2, $3, $4, $5, $6}' "$ALF")" \
+    "switch-log: ... carrying the timestamp, the event, both logins, the trigger and the reason"
+report 'a@example.com=21/52/100*;b@example.com=10/10/10*' "$(awk -F'\t' 'NR==1{print $7}' "$ALF")" \
+    "switch-log: ... the figures the decision saw"
+report 'tier=2;sid=s1' "$(awk -F'\t' 'NR==1{print $8}' "$ALF")" \
+    "switch-log: ... and the detail bag last"
+
+# An empty field does not survive `read` — tab is IFS whitespace, so a leading
+# one is stripped and a run of them merges, shifting every field after it. The
+# writer is what keeps that from ever arising, for every caller at once.
+: > "$ALF"
+al acct_log hold '' '' cap cooldown '' 'sid=s2'
+report 8 "$(awk -F'\t' 'NR==1{print NF}' "$ALF")" \
+    "switch-log: an empty argument still leaves eight columns"
+report '- - -' "$(awk -F'\t' 'NR==1{print $3, $4, $7}' "$ALF")" \
+    "switch-log: ... written as a dash, so no field in a row is ever empty"
+report '8 cooldown sid=s2' "$(al acct_log_last | awk -F'\t' '{print NF, $6, $8}')" \
+    "switch-log: ... and the row survives the reader with its later fields unshifted"
+
+: > "$ALF"
+al acct_log refuse a@example.com
+report '8 refuse a@example.com - - - - -' \
+    "$(awk -F'\t' 'NR==1{print NF, $2, $3, $4, $5, $6, $7, $8}' "$ALF")" \
+    "switch-log: a caller that passes fewer arguments than there are columns still writes eight"
+
+# ── acct_log_last ──────────────────────────────────────────────────────────
+: > "$ALF"
+al acct_log hold a@example.com - cap cooldown - 'sid=h1'
+al acct_log switch a@example.com b@example.com cap climbed - 'tier=2'
+report switch "$(al acct_log_last | awk -F'\t' '{print $2}')" \
+    "switch-log: acct_log_last reads the newest row"
+report 'hold sid=h1' "$(al acct_log_last hold | awk -F'\t' '{print $2, $8}')" \
+    "switch-log: ... and with an event, the newest row of that event, whole"
+report "" "$(al acct_log_last fail 2>/dev/null)" \
+    "switch-log: an event with no row prints nothing"
+report yes "$(al acct_log_last fail >/dev/null 2>&1 || echo yes)" \
+    "switch-log: ... and says so in its exit status"
+report yes "$( ( SESSION_DATA="$TMP/no-such-root"; acct_log_last ) >/dev/null 2>&1 || echo yes)" \
+    "switch-log: so does a read with no log at all"
+
+# ── acct_log_key: the newest row THAT CARRIES IT ───────────────────────────
+# A refusal and a cooldown hold carry neither next_eligible= nor scoped=, and
+# a caller that gets no output from the decision child — a busy lock, or that
+# very cooldown — recovers the value from the log rather than re-probing. Read
+# off the newest row alone, both would read as absent.
+: > "$ALF"
+al acct_log hold a@example.com - cap no-candidate - 'next_eligible=1758000000;scoped=1'
+al acct_log refuse a@example.com - manual blank-credential - 'notify=sent'
+al acct_log hold a@example.com - cap cooldown - 'sid=h3'
+report 1758000000 "$(al acct_log_key next_eligible)" \
+    "switch-log: a key the newest rows do not carry is read from the newest row that does"
+report 1 "$(al acct_log_key scoped)" \
+    "switch-log: ... which is also how doctor reads the probe's scoped-row count"
+report yes "$(al acct_log_key tier >/dev/null 2>&1 || echo yes)" \
+    "switch-log: a key no row carries exits non-zero"
+al acct_log hold a@example.com - cap no-candidate - 'next_eligible=-'
+report - "$(al acct_log_key next_eligible)" \
+    "switch-log: a decision that computed the value and found none answers with its dash, not with the older epoch"
+
+# ── a data root the writer cannot write ────────────────────────────────────
+# No state means no decision: the caller has to hear about it rather than read
+# a silent success and switch anyway.
+if [ "$(id -u)" = 0 ]; then
+    skip "switch-log: an unwritable data root" "running as root, which writes anyway"
+else
+    RO="$TMP/alog-ro"; mkdir -p "$RO"; chmod 500 "$RO"
+    alout=$( ( SESSION_DATA="$RO"; acct_log hold a@example.com - cap cooldown - - ) 2>&1 ); alrc=$?
+    report yes "$([ "$alrc" != 0 ] && echo yes || echo no)" \
+        "switch-log: a data root it cannot write is reported to the caller, not swallowed"
+    report "" "$alout" \
+        "switch-log: ... without putting the shell's redirect error on a hook's stderr"
+    chmod 700 "$RO"
+fi
+
+# ── retention: deliberately none ───────────────────────────────────────────
+# ~1,500 rows a year against a 79 MB store, and the rows are the only record of
+# why the box moved. The three live logs beside it keep 8 days.
+ALPR="$TMP/alog-prune"; mkdir -p "$ALPR"
+alold=$(( $(date +%s) - 90 * 86400 ))
+printf '%s\tswitch\ta@example.com\tb@example.com\tcap\tclimbed\t-\t-\n' "$alold" > "$ALPR/switch-log.tsv"
+printf '%s\tsid\told\n' "$alold" > "$ALPR/turn-log.tsv"
+probe 'session_prune_daily' SESSION_DATA_DIR="$ALPR" SESSION_NOW="$(date +%s)"
+report 1 "$(grep -c . "$ALPR/switch-log.tsv")" \
+    "switch-log: the daily prune leaves a 90-day-old decision row where it is"
+report 0 "$(grep -c . "$ALPR/turn-log.tsv" || true)" \
+    "switch-log: ... while the live logs in the same root are pruned as usual"
+
+# ── the blank-credential refusal records and announces itself ──────────────
+if ! have jq; then
+    skip "switch-log: the blank-credential refusal" "no jq"
+else
+    WAL=$(world); VAL="$WAL/vault"; ALOG="$WAL/data/switch-log.tsv"
+    mklogin "$WAL" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-secret-a"},"mcpOAuth":{}}\n' > "$WAL/cfg/.credentials.json"
+    sess "$WAL" SESSION_ACCOUNTS_DIR="$VAL" -- account save >/dev/null 2>&1
+    ALNOTE="$TMP/alog-notified"; ALNOTIFY="$TMP/alog-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$ALNOTE" > "$ALNOTIFY"; chmod 755 "$ALNOTIFY"
+    printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0},"mcpOAuth":{}}\n' \
+        > "$WAL/cfg/.credentials.json"
+    alsave() {  # EPOCH — one autosave against the blank live credential
+        sess "$WAL" SESSION_ACCOUNTS_DIR="$VAL" SESSION_SWITCH_NOTIFY="$ALNOTIFY" \
+            SESSION_NOW="$1" -- account save >/dev/null 2>&1
+    }
+    alwait() {  # LINES — the seam is fired in the background, so poll for it
+        local n=0
+        while [ "$(grep -c . "$ALNOTE" 2>/dev/null || echo 0)" -lt "$1" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1
+            n=$(( n + 1 ))
+        done
+    }
+    alsave 2000
+    report 1 "$(grep -c . "$ALOG" 2>/dev/null || true)" \
+        "switch-log [refusal]: a refused blank credential writes one row"
+    report 'refuse a@example.com - manual blank-credential -' \
+        "$(awk -F'\t' 'NR==1{print $2, $3, $4, $5, $6, $7}' "$ALOG")" \
+        "switch-log [refusal]: ... naming the login it refused and why"
+    report 'notify=sent' "$(awk -F'\t' 'NR==1{print $8}' "$ALOG")" \
+        "switch-log [refusal]: ... and recording that the seam was fired"
+    alwait 1
+    report 1 "$(grep -c . "$ALNOTE" 2>/dev/null || true)" \
+        "switch-log [refusal]: the notify seam is called once"
+    report yes "$(grep -q 'a@example.com' "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: ... naming the login"
+    report yes "$(grep -qF "$VAL/a@example.com.json" "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: ... and the vault entry being preserved"
+
+    # The refusal returns before the vault entry's touch, deliberately — a
+    # touch would mark a blank as captured — so the statusline forks this save
+    # on every render for as long as the live credential stays blank.
+    alsave 2000
+    report 1 "$(grep -c . "$ALOG")" \
+        "switch-log [refusal]: a second refusal inside the cooldown writes no second row"
+    alsave 2900
+    alwait 2
+    report 2 "$(grep -c . "$ALOG")" \
+        "switch-log [refusal]: ... and at the cooldown, not merely past it, the state is recorded again"
+    report 2 "$(grep -c . "$ALNOTE")" \
+        "switch-log [refusal]: ... one notification per row and no more"
+    report refuse "$(awk -F'\t' 'END{print $2}' "$ALOG")" \
+        "switch-log [refusal]: both rows are refusals"
+
+    report 0 "$(grep -c 'tok-secret-a' "$ALOG" || true)" \
+        "switch-log [refusal]: no token value reaches the log"
+
+    # With no seam configured there is nothing to fire, and the row says so
+    # rather than claiming a notification nobody received.
+    WAL2=$(world); VAL2="$WAL2/vault"
+    mklogin "$WAL2" c@example.com
+    printf '{"claudeAiOauth":{"accessToken":""},"mcpOAuth":{}}\n' > "$WAL2/cfg/.credentials.json"
+    sess "$WAL2" SESSION_ACCOUNTS_DIR="$VAL2" SESSION_NOW=3000 -- account save >/dev/null 2>&1
+    report 'notify=off' "$(awk -F'\t' 'NR==1{print $8}' "$WAL2/data/switch-log.tsv")" \
+        "switch-log [refusal]: with no notify seam set, the row records that nothing was sent"
+    report 'refuse c@example.com' "$(awk -F'\t' 'NR==1{print $2, $3}' "$WAL2/data/switch-log.tsv")" \
+        "switch-log [refusal]: ... and the refusal is still recorded"
+
+    # The limit is per LOGIN, so it has to survive another login's refusal
+    # landing in the same log between two of this one's. `use` vaults the
+    # OUTGOING login, and a human switching entries during an outage is exactly
+    # when that interleaving happens.
+    sess "$WAL2" SESSION_ACCOUNTS_DIR="$VAL2" SESSION_DATA_DIR="$WAL/data" \
+        SESSION_NOW=2950 -- account save >/dev/null 2>&1
+    report 3 "$(grep -c . "$ALOG")" \
+        "switch-log [refusal]: another login's first refusal is recorded beside this one's"
+    alsave 3000
+    report 3 "$(grep -c . "$ALOG")" \
+        "switch-log [refusal]: ... and does not reopen the first login's cooldown"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
