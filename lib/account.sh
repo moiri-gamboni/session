@@ -4,11 +4,14 @@
 # box should move to another login, and which one.
 #
 # SOURCED, NEVER EXECUTED, beside lib/common.sh and after it. It sets no shell
-# options, reads no file, makes no network call, asks no clock and reads no
-# global — every input arrives as an argument or on stdin. That is what makes
-# the policy testable in-process: the suite sources this file and drives it
-# from literals, while `session` itself cannot be sourced at all (sourcing it
-# runs it).
+# options. Section 3, the policy itself, also reads no file, makes no network
+# call, asks no clock and reads no global — every input arrives as an argument
+# or on stdin, which is what makes the policy testable in-process: the suite
+# sources this file and drives it from literals. The sections after it do reach
+# the vault, the clock and the usage endpoint, and they live here for the same
+# reason: `session` cannot be sourced at all (sourcing it runs it), so anything
+# a test has to drive in-process has to sit beside the policy rather than in
+# the CLI.
 #
 # bash 3.2 clean, like the rest of the shipped tree: macOS ships 3.2 and the
 # suite runs a leg under `docker run bash:3.2`.
@@ -165,7 +168,165 @@ acct_rank() {  # THRESHOLD  (rows on stdin) -> the winning login, or nothing
 }
 
 # ── 4. probe ──────────────────────────────
-# The usage-endpoint probe: ACCT_USAGE_URL, ACCT_USAGE_JQ and acct_probe.
+# The usage endpoint is the only way to read a login's rate-limit windows
+# WITHOUT being logged into it: the statusline cache refreshes for the login in
+# use and no other, so every other login's figures are frozen at the moment the
+# box switched away, and a decision taken on them is a decision taken on data
+# that can only be older than the truth. Undocumented, observed 2026-09-22:
+#
+#   GET https://api.anthropic.com/api/oauth/usage
+#   anthropic-beta: oauth-2025-04-20, bearer token on curl's STDIN
+#   200  a limits[] array of {kind, percent, resets_at, scope} rows, beside the
+#        flat five_hour/seven_day pair the endpoint carried before it grew that
+#        array — both shapes read here, the array first
+#   401  {"type":"error","error":{"type":"authentication_error",…}} for an
+#        INVALID token and, word for word bar the message, for an EXPIRED one
+#
+# ONE FETCHER, not two. acct_probe is also what refreshes fable.<login>.json,
+# so the token on stdin, the beta header, the five-second timeout, the lapsed
+# token skip, the parallel fan-out and the same-directory temp have a single
+# implementation. Two copies of those six properties, each pinned by the suite
+# on only one of the copies, is how they drift.
+ACCT_USAGE_URL=https://api.anthropic.com/api/oauth/usage
+
+# One pass over the response: the two general windows, Fable's, their resets,
+# and how many model-scoped windows the body carried. Integers throughout, -1
+# for a percentage the body does not have and 0 for a reset it does not have,
+# so no consumer has to tell an absent figure from a zero one.
+#
+# scoped_rows comes out of the same pass rather than a second traversal, and it
+# is the whole of a deliberately deferred guard: the selector looks only at
+# Fable, so a SECOND model-scoped window would be spent without anything
+# noticing. The count reaches the audit row instead, where a shape change shows
+# up the week it happens rather than after a bad switch.
+ACCT_USAGE_JQ='
+  def num: if type == "number" then floor else -1 end;
+  def ep: try ((. // "") | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+               | fromdateiso8601) catch 0;
+  (if (.limits | type) == "array" then .limits else [] end) as $l
+  | ($l | map(select(.kind == "session"))     | first) as $s
+  | ($l | map(select(.kind == "weekly_all"))  | first) as $w
+  | ($l | map(select(.kind == "weekly_scoped")))       as $sc
+  | ($sc | map(select(((.scope.model.display_name // "")
+                       | ascii_downcase | startswith("fable")))) | first) as $f
+  | [ (if $s then $s.percent   else .five_hour.utilization end | num),
+      (if $w then $w.percent   else .seven_day.utilization end | num),
+      ($f.percent | num),
+      (if $s then $s.resets_at else .five_hour.resets_at   end | ep),
+      (if $w then $w.resets_at else .seven_day.resets_at   end | ep),
+      ($f.resets_at | ep),
+      ($sc | length) ]
+  | @tsv'
+
+# The Fable row alone, in the shape the account table reads back. Kept separate
+# from ACCT_USAGE_JQ because it is a FILE FORMAT, not a parse: anything short of
+# a Fable row with a numeric percent must yield no output and a non-zero status,
+# so the previous figure survives a body that simply does not mention Fable.
+ACCT_FABLE_JQ='
+  if (.limits | type) != "array" then empty else
+    first(.limits[]
+          | select(.kind == "weekly_scoped"
+                   and ((.scope.model.display_name // "") | ascii_downcase | startswith("fable"))
+                   and (.percent | type) == "number"))
+    | { fable: { used_percentage: .percent,
+                 resets_at: ((.resets_at // "") | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
+                             | try fromdateiso8601 catch 0) } }
+  end'
+
+_acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unknown
+  printf '%s\t-1\t-1\t-1\t0\t0\t0\t%s\n' "$1" "${2:-0}"
+}
+
+# One login's windows, straight from the endpoint. The reset epochs are
+# meaningful ONLY here: the frozen path renders durations and discards Fable's
+# reset outright, so a consumer must read a non-good candidate's resets as
+# unknown rather than as zero.
+#
+# A LAPSED access token is never sent. Refreshing it rotates credentials that
+# the live login's own sessions may be holding, and nothing needs it: a login's
+# figures only move while that login is in use, so its last reading stays as
+# right as it was. An entry with no readable token at all answers `lapsed` as
+# well: nothing was asked, so nothing is known — `dead` would claim the
+# endpoint rejected a token that was never sent.
+acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5reset TAB wreset TAB freset TAB scoped
+  local login="$1" vf="$2" tok c body code row five week fable scoped
+  command -v curl >/dev/null 2>&1 || { _acct_probe_blank nocurl; return 0; }
+  tok=$(jq -r --argjson now "$(now_epoch)" '
+      select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60)
+      | .claudeAiOauth.accessToken // empty' "$vf" 2>/dev/null)
+  [ -n "$tok" ] || { _acct_probe_blank lapsed; return 0; }
+  c=$(session_cache_path "$login" fable)
+  body="$c.tmp.$$.body"
+  # The token rides stdin (-K -), never argv, where any local user's ps reads
+  # it. No -f: the status IS the classification, so an error response has to
+  # arrive intact for %{http_code} to report it — that is 000 when the transfer
+  # produced no response at all.
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+         | curl -s -m 5 -K - -H 'anthropic-beta: oauth-2025-04-20' \
+                -o "$body" -w '%{http_code}' "$ACCT_USAGE_URL")
+  case "$code" in
+    200) ;;
+    # An expired token and an invalid one are both 401 and differ only in the
+    # message, so the body is never read to decide this.
+    401|403) rm -f "$body"; _acct_probe_blank dead; return 0 ;;
+    # Everything else, 429 included. A 429 is a 4xx, but this endpoint's rate
+    # bucket is selected by User-Agent: reading it as dead would mark healthy
+    # logins dead and, worse, mark the LIVE login blocked on every window — and
+    # the box would move because it was throttled rather than because it was
+    # capped.
+    *) rm -f "$body"; _acct_probe_blank unreachable; return 0 ;;
+  esac
+  row=$(jq -r "$ACCT_USAGE_JQ" "$body" 2>/dev/null)
+  IFS=$'\t' read -r five week fable _ _ _ scoped <<<"$row"
+  if [ -z "$row" ] || { [ "$five" = -1 ] && [ "$week" = -1 ] && [ "$fable" = -1 ]; }; then
+    # The one case worth keeping a body for. This endpoint's shape has already
+    # moved once, and a 200 that reads as nothing is the only evidence that
+    # would let anyone follow it again.
+    mv -f "$body" "$(session_cache_path "$login" probe-body)"
+    _acct_probe_blank noshape "${scoped:-0}"
+    return 0
+  fi
+  jq -ce "$ACCT_FABLE_JQ" "$body" > "$c.tmp.$$" && mv -f "$c.tmp.$$" "$c" || rm -f "$c.tmp.$$"
+  # Dropped the moment a body reads again, so the file is always the last
+  # response this login gave that nothing could be read from, never an older
+  # one — which is the only version of that statement worth acting on.
+  rm -f "$body" "$(session_cache_path "$login" probe-body)"
+  printf 'good\t%s\n' "$row"
+}
+
+# Every vaulted login at once: paths on stdin, `login TAB <probe row>` on
+# stdout. Parallel because each fetch waits up to five seconds on a network the
+# caller is asking about precisely because it may be slow.
+#
+# Each child writes its own file, keyed by the login name sanitised exactly the
+# way session_cache_path sanitises it, and the parent reads them after `wait`.
+# Not one shared pipe: interleaved writes produce a row carrying another
+# login's figures, and that is a switch to the wrong account rather than a
+# crash. Not $$ per child either — it is the same number inside a subshell, so
+# it cannot key anything; $BASHPID would, and is bash 4 only.
+acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … per login
+  local d vf login key row names="" tab=$'\t' nl=$'\n'
+  d="$SESSION_DATA/.probe.$$"
+  mkdir -p "$d" || return 1
+  while IFS= read -r vf; do
+    [ -n "$vf" ] || continue
+    login=$(jq -r '.login // .email // empty' "$vf" 2>/dev/null)
+    [ -n "$login" ] || continue
+    key=${login//[!A-Za-z0-9@._+-]/_}
+    names="$names$key$tab$login$nl"
+    acct_probe "$login" "$vf" > "$d/$key" </dev/null &
+  done
+  wait
+  printf '%s' "$names" | while IFS=$'\t' read -r key login; do
+    row=$(cat "$d/$key" 2>/dev/null)
+    # A child that died wrote nothing, and an empty field is not a field: tab is
+    # IFS whitespace, so a consumer's `read` would silently shift every figure
+    # after it and rank the login on somebody else's windows.
+    [ -n "$row" ] || row=$(_acct_probe_blank unreachable)
+    printf '%s\t%s\n' "$login" "$row"
+  done
+  rm -rf "$d"
+}
 
 # ── 5. audit log ──────────────────────────
 # The switch log's writer and reader: acct_log and acct_log_last.

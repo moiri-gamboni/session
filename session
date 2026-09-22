@@ -990,53 +990,12 @@ acct_print_row() {  # MARKER NUMBER LOGIN
   acct_line "$1" "$2" "$3" "$p5" "$r5" "$pw" "$rw" "$pf" "$age"
 }
 
-# Refresh fable.<login>.json for every vaulted login whose access token is still
-# good. The source is the usage endpoint behind /usage, whose limits[] carries
-# Fable's cap as a `weekly_scoped` row scoped to the model (observed 2026-09-16:
-# display_name "Fable", resets_at an ISO string with microseconds and +00:00).
-#
-# A lapsed token is skipped, never refreshed: a refresh rotates credentials that
-# the live login's sessions may be holding, and nothing needs it — a login's
-# Fable figure moves only while that login is used, so its last fetch stays
-# right, and a passed reset is projected like the weekly's. The token reaches
-# curl on stdin (-K -), never in argv, where any local user's ps can read it.
-# One fetch per login, in parallel, 5 s each. Anything short of a Fable row
-# with a numeric percent keeps the previous file: a failed request, a 200 with
-# an error body, and a well-formed answer with no usable Fable row alike, since
-# the endpoint is undocumented and absence there proves nothing. A host without
-# curl lists every login's last figure.
-ACCT_USAGE_URL=https://api.anthropic.com/api/oauth/usage
-ACCT_FABLE_JQ='
-  if (.limits | type) != "array" then empty else
-    first(.limits[]
-          | select(.kind == "weekly_scoped"
-                   and ((.scope.model.display_name // "") | ascii_downcase | startswith("fable"))
-                   and (.percent | type) == "number"))
-    | { fable: { used_percentage: .percent,
-                 resets_at: ((.resets_at // "") | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
-                             | try fromdateiso8601 catch 0) } }
-  end'
-acct_fetch_fable() {
-  command -v curl >/dev/null 2>&1 || return 0
-  local now vf login tok c
-  now=$(date +%s)
-  while IFS= read -r vf; do
-    IFS=$'\t' read -r login tok < <(jq -r --argjson now "$now" '
-        select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60)
-        | [(.login // .email // ""), (.claudeAiOauth.accessToken // "")] | @tsv' "$vf") || continue
-    [ -n "$login" ] && [ -n "$tok" ] || continue
-    c=$(session_cache_path "$login" fable)
-    # -e: a body without limits[] yields no output and exit 4, so it never
-    # replaces the file; pipefail carries a curl failure through the same way.
-    (
-      printf 'header = "Authorization: Bearer %s"\n' "$tok" \
-        | curl -sf -m 5 -K - -H 'anthropic-beta: oauth-2025-04-20' "$ACCT_USAGE_URL" \
-        | jq -ce "$ACCT_FABLE_JQ" > "$c.tmp.$$" \
-        && mv -f "$c.tmp.$$" "$c" || rm -f "$c.tmp.$$"
-    ) &
-  done < <(acct_paths)
-  wait
-}
+# Refresh fable.<login>.json for every vaulted login. The file is written by the
+# probe (lib/account.sh §4), which is the only thing here that talks to the
+# usage endpoint, so what the table lists and what a switching decision reads
+# come from one fetcher. The rows are for a caller that is deciding something;
+# `list` is not, and a login the probe could not read keeps its last figure.
+acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 
 acct_main() {
   local sub="${1:-list}"; shift 2>/dev/null || true
@@ -1713,6 +1672,8 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
 `session doctor` prints the resolved path):
   last-status.<login>.json  per-account limits cache (statusline-written, ~10s)
   fable.<login>.json        per-account Fable weekly cap (`session account`-fetched)
+  probe-body.<login>.json   a usage-endpoint response no window could be read
+                            from; removed once a later probe reads
   session-log.tsv   per-session cost/token samples    turn-log.tsv  turn events
   title-index.tsv   sid ↔ title over the transcript store, built by `session id`
                     on first use and refreshed per query for changed transcripts

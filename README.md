@@ -163,6 +163,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` — the store holds sessi
 | `focus-log.tsv` | focused-tab flanks and activity marks, from the tmux hooks and the cron tick |
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
 | `fable.<login>.json` | that login's Fable weekly cap, fetched by `session account` |
+| `probe-body.<login>.json` | the raw usage-endpoint response of the last probe of that login from which no rate-limit window could be read; removed as soon as one can |
 | `sessions/<sid>.json` | `{"session_name": …}` — the session's title |
 | `sessions/<sid>.cost` | dedup state for the sample log: content is the last logged cost, mtime the last sample time |
 | `sessions/<sid>[.p<pane>].limits` | the rate-limit tuple this session last saw, and which login owns it |
