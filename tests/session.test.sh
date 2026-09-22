@@ -2854,6 +2854,128 @@ WTEOF
     rm -f "$WWT/cfg/session.conf"
 fi
 
+echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"
+
+if ! have jq; then
+    skip "case 14 [swap]: the swap post-condition" "no jq"
+else
+    # A write that reports success and lands something else is not a swap, and
+    # the post-condition is what makes that visible: it reads .credentials.json
+    # back and compares the
+    # installed claudeAiOauth with the vault entry's — the credential itself, not
+    # the login name, because the name lives in .claude.json, which a concurrent
+    # session rewrites from memory and which this fixture leaves correct on
+    # purpose: a check against it would confirm a swap that did not land.
+    W14s=$(world); VS="$W14s/vault"
+    mklogin "$W14s" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1},"mcpOAuth":{"granola":"keep-me"}}\n' > "$W14s/cfg/.credentials.json"
+    sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account save >/dev/null 2>&1
+    mklogin "$W14s" b@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-b","expiresAt":2},"mcpOAuth":{"granola":"keep-me"}}\n' > "$W14s/cfg/.credentials.json"
+    sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account save >/dev/null 2>&1
+
+    # The control: an untampered swap, so the case below is about the check and
+    # not about the fixture.
+    out=$(sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use a@ 2>&1); rc=$?
+    report 0 "$rc" "case 14 [swap]: an untampered swap exits 0"
+    report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$W14s/cfg/.credentials.json")" \
+        "case 14 [swap]: ... installing the vault entry's credential"
+
+    # A jq that rewrites the one filter the credential swap uses and passes every
+    # other call through: the write succeeds, the wrong token lands.
+    TJ=$(mktemp -d "$TMP/tamperjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'TAMPEREOF'
+args=()
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && \
+        x='.claudeAiOauth = ($v[0].claudeAiOauth | .accessToken = "tok-tampered")'
+    args+=("$x")
+done
+exec "$RJQ" "${args[@]}"
+TAMPEREOF
+    } > "$TJ/jq"
+    chmod +x "$TJ/jq"
+
+    out=$( (sess "$W14s" PATH="$TJ:$PATH" SESSION_ACCOUNTS_DIR="$VS" -- account use b@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a write that lands a different credential exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'did not land' && echo yes || echo no)" \
+        "case 14 [swap]: ... saying the swap was not observed"
+    report no "$(printf '%s' "$out" | grep -qE 'tok-b|tok-tampered' && echo yes || echo no)" \
+        "case 14 [swap]: ... and rendering no token value while saying so"
+    report "b@example.com" "$(jq -r '.oauthAccount.emailAddress' "$W14s/cfg/.claude.json")" \
+        "case 14 [swap]: ... although the identity file names the incoming login (what makes it the wrong witness)"
+
+    # An entry with no claudeAiOauth key at all carries no token either, so it
+    # is refused on the same ground as an empty one and installs nothing.
+    cp "$W14s/cfg/.credentials.json" "$TMP/creds.before.nokey"
+    printf '{"email":"c@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"c@example.com"}}\n' \
+        > "$VS/c@example.com.json"
+    out=$( (sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use c@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a vault entry carrying no credential at all exits 1"
+    report yes "$(printf '%s' "$out" | grep -q '/login' && echo yes || echo no)" \
+        "case 14 [swap]: ... refused as unusable rather than announced as a switch"
+    report yes "$(cmp -s "$TMP/creds.before.nokey" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... with the live credentials byte-identical"
+
+    # The write-failure arm: nothing is installed and the message names the write.
+    FJ=$(mktemp -d "$TMP/failjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'FAILEOF'
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && exit 5
+done
+exec "$RJQ" "$@"
+FAILEOF
+    } > "$FJ/jq"
+    chmod +x "$FJ/jq"
+    cp "$W14s/cfg/.credentials.json" "$TMP/creds.before"
+    out=$( (sess "$W14s" PATH="$FJ:$PATH" SESSION_ACCOUNTS_DIR="$VS" -- account use a@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a credentials write that fails exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'failed to write credentials' && echo yes || echo no)" \
+        "case 14 [swap]: ... naming the write as what failed"
+    report yes "$(cmp -s "$TMP/creds.before" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... leaving the live credentials byte-identical"
+    report "" "$(ls -a "$W14s/cfg" | grep '\.swap\.' || true)" \
+        "case 14 [swap]: ... and no temp file behind"
+
+    # A vault entry that cannot authenticate is refused before anything is
+    # written, not after. Installing it is how a human turns one dead login
+    # into a machine with nothing left able to authenticate, and it is reached
+    # by hand exactly during the outage that makes them reach for it: five
+    # entries with a zero-length accessToken are on this machine already.
+    cp "$W14s/cfg/.credentials.json" "$TMP/creds.before.dead"
+    cp "$W14s/cfg/.claude.json" "$TMP/claude.before.dead"
+    live14s=$(jq -r '.oauthAccount.emailAddress' "$W14s/cfg/.claude.json")
+    printf '{"email":"d@example.com","login":"d@example.com","oauthAccount":{"emailAddress":"d@example.com"},"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}\n' \
+        > "$VS/d@example.com.json"
+    out=$( (sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use d@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a vault entry whose accessToken is empty exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'd@example.com' && echo yes || echo no)" \
+        "case 14 [swap]: ... naming the login whose entry is unusable"
+    report yes "$(printf '%s' "$out" | grep -q '/login' && echo yes || echo no)" \
+        "case 14 [swap]: ... and pointing at /login, since a retry cannot help"
+    report no "$(printf '%s' "$out" | grep -q 'failed to write' && echo yes || echo no)" \
+        "case 14 [swap]: ... rather than blaming the write, which never ran"
+    report yes "$(cmp -s "$TMP/creds.before.dead" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... leaving the live credentials byte-identical"
+    report yes "$(cmp -s "$TMP/claude.before.dead" "$W14s/cfg/.claude.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... and the identity file untouched, so the live login does not move"
+    report "$live14s" "$(jq -r '.oauthAccount.emailAddress' "$W14s/cfg/.claude.json")" \
+        "case 14 [swap]: ... which still names the login it named before"
+
+    # The null shape, which is also on this machine: a claudeAiOauth that is
+    # not an object at all carries no token to install either.
+    printf '{"email":"e@example.com","login":"e@example.com","oauthAccount":{"emailAddress":"e@example.com"},"claudeAiOauth":null}\n' \
+        > "$VS/e@example.com.json"
+    out=$( (sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use e@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a vault entry whose claudeAiOauth is null exits 1 the same way"
+    report yes "$(printf '%s' "$out" | grep -q 'e@example.com' && echo yes || echo no)" \
+        "case 14 [swap]: ... naming that login too"
+    report yes "$(cmp -s "$TMP/creds.before.dead" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... and installing nothing"
+fi
+
 echo "--- case 14 [blank credential]: an empty accessToken is never vaulted ---"
 
 if ! have jq; then
