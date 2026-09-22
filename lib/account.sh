@@ -500,7 +500,19 @@ _acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
 # that rule has an organisation-seat branch and a sanitising step, and two
 # implementations of it would disagree the first time either moved. The entry's
 # own oauthAccount is written where that function looks for one.
-acct_entry_name() {  # VAULTFILE -> the derived login name
+# Derive a vault entry's own login name, by the one rule that computes it:
+# point SESSION_CFG at a scratch directory holding that entry's oauthAccount
+# and let session_login_read answer. A second implementation in jq would
+# disagree with the first the day either moved — the rule has an
+# organisation-seat branch and a sanitising step.
+#
+# THE STATUS IS NOT A VERDICT ON THE ENTRY. It is non-zero only when the
+# scratch directory could not be made, i.e. when nothing was asked. An entry
+# with no readable oauthAccount answers `unknown` on stdout and exits 0, so a
+# caller's `|| return` never fires for it. That split is deliberate: a reader
+# has to tell "could not ask" from "asked, and this entry has no identity",
+# which are different faults with different remedies.
+acct_entry_name() {  # VAULTFILE -> the derived login name, or `unknown`
   local d="$SESSION_DATA/.ident.$$"
   mkdir -p "$d" 2>/dev/null || return 1
   jq -c '{oauthAccount}' "$1" > "$d/.claude.json" 2>/dev/null
