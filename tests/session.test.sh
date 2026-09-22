@@ -4239,9 +4239,9 @@ DTAMPEREOF
 
     # ── a data root that cannot hold the lock ─────────────────────────────────
     # The lock file lives under the data root, so lock_run opening it is what
-    # fails first — with 66 under flock(1) and 1 under the perl fallback, and 1
-    # is the code every caller reads as "another decision holds the lock". A
-    # read-only root would make a waiter retry for ever.
+    # fails first — 66 on both backends, which carries no event, no reason and
+    # no row for a caller to act on. The hold below is the decision outcome that
+    # does.
     WD21=$(dworld); CD21=$(curlstub)
     dlive "$WD21" a@example.com tok-a
     dvent "$WD21" a@example.com tok-a; dvent "$WD21" b@example.com tok-b
@@ -5091,6 +5091,69 @@ else
             "swap-save [perl]: ... and leaves the lock free behind it"
     fi
 fi
+
+echo "--- lock-open: an unopenable lock file is not a busy lock ---"
+
+# A backend has to separate "somebody holds this lock" from "this lock file
+# cannot be opened at all". Every caller reads the busy codes — 1 from flock(1),
+# 75 from the perl fallback — as "another decision is in flight" and falls
+# through with no retry, no audit row and no message, so an unopenable
+# switch.lock reported as busy would disable automatic switching for ever and
+# say nothing about it. flock(1) reports EX_NOINPUT (66) for that condition and
+# the perl fallback — the backend macOS takes, having no flock(1) — has to agree.
+LKO="$TMP/lockopen-unopenable"
+: > "$LKO"
+chmod 444 "$LKO"
+if ! have perl; then
+    skip "lock-open [perl]" "no perl"
+elif ( : >> "$LKO" ) 2>/dev/null; then
+    skip "lock-open [perl]" "a mode-444 file is still openable here (running as root)"
+else
+    LKOBIN=$(minipath flock)
+    if PATH="$LKOBIN" command -v flock >/dev/null 2>&1; then
+        skip "lock-open [perl]" "flock is still on the minimal PATH"
+    else
+        lko_rc=$( PATH="$LKOBIN"; lock_run "$LKO" ls >/dev/null 2>&1; echo $? )
+        report 66 "$lko_rc" "lock-open [perl]: a lock file that cannot be opened reports 66"
+        report no "$( { [ "$lko_rc" = 1 ] || [ "$lko_rc" = 75 ]; } && echo yes || echo no)" \
+            "lock-open [perl]: ... which is outside the busy set a caller falls through on"
+
+        # The other half of the same contract: a lock somebody holds still reports
+        # busy, so the two conditions are separated rather than one renamed.
+        LKOH="$TMP/lockopen-held"
+        rm -f "$LKOH" "$TMP/lockopen.ran"
+        ( PATH="$LKOBIN"; lock_run "$LKOH" sh -c "touch '$TMP/lockopen.ran'; sleep 3" ) &
+        lkopid=$!
+        lkon=0
+        while [ ! -e "$TMP/lockopen.ran" ] && [ "$lkon" -lt 10 ]; do sleep 1; lkon=$(( lkon + 1 )); done
+        lkoh_rc=$( PATH="$LKOBIN"; lock_run "$LKOH" ls >/dev/null 2>&1; echo $? )
+        wait "$lkopid"
+        rm -f "$TMP/lockopen.ran"
+        report 75 "$lkoh_rc" "lock-open [perl]: a lock another process holds still reports busy"
+
+        # The prune is the lock's other caller, and the live logs are what it has
+        # at stake: it may replace one only when the awk under the lock ran to
+        # completion, which a lock it could never open is not.
+        LKOR="$TMP/lockopen-prune"
+        rm -rf "$LKOR"; mkdir -p "$LKOR"
+        lko_old=$(( PRUNE_NOW - 10 * 86400 )); lko_new=$(( PRUNE_NOW - 86400 ))
+        for lg in turn-log session-log focus-log; do
+            printf '%s\tsid\told\n%s\tsid\tnew\n' "$lko_old" "$lko_new" > "$LKOR/$lg.tsv"
+            : > "$LKOR/$lg.tsv.lock"
+            chmod 444 "$LKOR/$lg.tsv.lock"
+        done
+        probe 'session_prune_daily' SESSION_DATA_DIR="$LKOR" SESSION_NOW="$PRUNE_NOW" \
+            PATH="$LKOBIN" >/dev/null 2>&1
+        report 2 "$(wc -l < "$LKOR/turn-log.tsv" | tr -d ' ')" \
+            "lock-open [perl]: a prune whose lock file cannot be opened leaves the live turn log intact"
+        report 2 "$(wc -l < "$LKOR/session-log.tsv" | tr -d ' ')" \
+            "lock-open [perl]: ... and the session log"
+        report absent "$([ -s "$LKOR/archive/turn-log.tsv" ] && echo present || echo absent)" \
+            "lock-open [perl]: ... and archives nothing"
+        rm -rf "$LKOR"
+    fi
+fi
+rm -f "$LKO"
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"

@@ -298,11 +298,18 @@ mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 # ── Locking ──────────────────────────────────────────────────────────────────
 # A caller treats any non-zero as "somebody else holds it, or the command did
-# not run — skip either way", which is the only distinction the one caller makes.
-# The backends therefore do not agree on a code for busy and are not made to:
-# util-linux flock has -E, busybox flock does not, and the perl path picks its
-# own. Anything that ever needs busy-versus-broken has to make the two agree
-# deliberately rather than inherit an accident.
+# not run — skip either way", which is the only distinction the prune makes.
+# The backends do not agree on a code for BUSY and are not made to: util-linux
+# flock has -E, busybox flock does not, and the perl path picks its own, so a
+# caller that cares reads 1 and 75 as one set.
+#
+# A lock file that cannot be OPENED is a different condition and must not wear
+# either of those codes: the decision verb's callers read busy as "another
+# decision is in flight" and fall through with no retry, no row and no message,
+# so a switch.lock left unopenable (a decision once run under sudo, a restore
+# with the wrong owner) would disable automatic switching for ever and say
+# nothing. Both backends report EX_NOINPUT (66) for it — flock(1) by way of
+# <sysexits.h>, the perl path by saying so.
 lock_run() {  # LOCK CMD... -> the command's status, or non-zero if it never ran
   local lock="$1"
   shift
@@ -317,7 +324,7 @@ lock_run() {  # LOCK CMD... -> the command's status, or non-zero if it never ran
     # without it the one-liner falls off the end reporting 0 — a caller would
     # read "the command ran" for a command that never started. 127 is the shell's
     # code for that, and flock(1) likewise reports non-zero.
-    perl -e '$^F=10; open(F,">>",$ARGV[0]) or exit 1; flock(F,6) or exit 75; exec {$ARGV[1]} @ARGV[1..$#ARGV]; exit 127' "$lock" "$@"
+    perl -e '$^F=10; open(F,">>",$ARGV[0]) or exit 66; flock(F,6) or exit 75; exec {$ARGV[1]} @ARGV[1..$#ARGV]; exit 127' "$lock" "$@"
   fi
 }
 
@@ -365,10 +372,12 @@ session_prune_daily() {
          '$1+0 >= cut { print; next } { print >> ENVIRON["SESSION_PRUNE_ARCHIVE"] }' "$lg" > "$tmp"; then
       mv -f "$tmp" "$lg"
     else
-      # 75 is another producer holding the lock, which is normal and silent.
-      # Anything else means the command did not run to completion, so the temp
-      # is not a replacement for the live log — the one thing this must never
-      # get wrong, since the live log is the only copy of the recent rows.
+      # A busy code (1 from flock(1), 75 from perl) is another producer holding
+      # the lock, which is normal and silent; 66 is a lock file that cannot be
+      # opened and anything else a command that did not run to completion. All
+      # of them mean the temp is not a replacement for the live log — the one
+      # thing this must never get wrong, since the live log is the only copy of
+      # the recent rows.
       rm -f "$tmp"
     fi
   done
