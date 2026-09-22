@@ -17,7 +17,7 @@
 #   layer, the flock(1) lock, and the daily prune.
 #
 #   What it does NOT cover on the stock image: it is Alpine + busybox with no
-#   perl, no jq, no timezone database and no GNU date, so the date layer
+#   perl, no jq, no timezone database, no GNU date and no GNU find, so the date layer
 #   (epoch_of, fmt_epoch, epoch_ms), the perl lock fallback and the login/cache
 #   cases print `skip` there — and install.test.sh and statusline.test.sh skip
 #   WHOLE (one `skip` line each), both being jq programs with a shell around
@@ -34,10 +34,19 @@
 #   mistakes agreeing. The suite probes the oracle rather than trusting -d.
 #
 #   To run every case under bash 3.2, give the runner an image that carries the
-#   four missing pieces:
-#       printf 'FROM bash:3.2\nRUN apk add --no-cache perl jq tzdata coreutils\n' > /tmp/Dockerfile.b32
+#   five missing pieces:
+#       printf 'FROM bash:3.2\nRUN apk add --no-cache perl jq tzdata coreutils findutils\n' > /tmp/Dockerfile.b32
 #       docker build -t session-tests:bash3.2 -f /tmp/Dockerfile.b32 /tmp
 #       SESSION_TEST_IMAGE=session-tests:bash3.2 bash tests/run.sh
+#   findutils is not optional there: busybox `find -newer` compares st_mtime
+#   alone — whole seconds, nanoseconds never read — so a transcript written in
+#   the same second as the title index reads as not newer, the incremental
+#   refresh sees no changed files, and five title-index cases fail against code
+#   that is correct everywhere else. BSD find, which is what macOS ships,
+#   compares the full timespec and does not have the problem, so those failures
+#   were the image talking, not the port. Without the package the suite reports
+#   them as failures rather than skips, because nothing in the code can detect
+#   a find that silently answers a comparison wrong.
 #   coreutils puts GNU date at /bin/date and tzdata gives the real zones, so the
 #   DST sweep becomes a genuine comparison there; it is also the only place the
 #   musl side of the date layer is exercised at all, and the only place that
