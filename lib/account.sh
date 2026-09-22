@@ -477,9 +477,12 @@ acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 # also mean "no window is ever blocked" and quietly disable the switcher for
 # anyone who had quieted the hook. `session account` dispatches before the
 # CLI's own validation loop runs, so the validation lives here as well — a
-# threshold that is not a number is a refusal, not a threshold of nothing.
+# threshold that is not a number is a refusal, not a threshold of nothing, and
+# an unset one is no different. The default is declared once, by the CLI above
+# that dispatch; a second copy of the figure here would be the drift the one
+# declaration exists to prevent.
 _acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
-  local t="${USAGE_WARN_PCT:-90}"
+  local t="${USAGE_WARN_PCT:-}"
   case "$t" in ''|*[!0-9]*) return 1 ;; esac
   t=$(( 10#$t ))   # digits are not yet a number: a leading zero reads as octal
   [ "$t" -gt 100 ] && t=100
