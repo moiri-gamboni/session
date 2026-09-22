@@ -556,11 +556,14 @@ _acct_out_val() {  # KEY OUTPUT -> the value of that k=v line
 _acct_fig() { case "$1" in -1) printf -- '-' ;; *) printf '%s' "$1" ;; esac; }
 
 # What a human is told when the box moved under them. The tier is in the
-# sentence because a switch onto a Fable-spent login buys every model except
-# Fable, and a session that resumes on Fable would die on the same cap again.
+# sentence because a tier-1 target buys every model except Fable, and a session
+# that resumes on Fable would die on the same cap again. The sentence does not
+# say the target SPENT its Fable window: an unreadable one reaches tier 1 too,
+# by the fail-closed rule, and naming a figure nobody measured would be worse
+# than naming none.
 _acct_switch_msg() {  # FROM TO TIER
   local rest="It has headroom on every rate-limit window."
-  [ "$3" = 1 ] && rest="It serves every model except Fable, whose weekly cap it has already spent."
+  [ "$3" = 1 ] && rest="It serves every model except Fable, so a session resuming on Fable has to continue on another model."
   printf 'session: the live login switched from %s to %s. %s' "$1" "$2" "$rest"
 }
 
