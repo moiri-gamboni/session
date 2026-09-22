@@ -2972,22 +2972,110 @@ if [ "$mode" = rewake ]; then
     (( p >= thr && r > now + 60 )) || return 1
     FBRESET=$r
   }
+  # What a woken session is told about a switch. The tier is in the sentence
+  # because a move onto a login the selector will not put Fable on buys every
+  # other model and not that one, and a resumed subagent keeps the model it died
+  # on: told only that the cap is gone, a Fable session retries on Fable and dies
+  # on the same cap again. Tier 1 is what the selector concluded, not a measured
+  # percentage — an unreadable Fable window reaches it too — so the sentence
+  # states the capability, never the figure behind it.
+  rewake_switch_text() {  # FROM TO TIER
+    local mid="The earlier cap no longer applies."
+    [ "${3:-}" = 1 ] && mid="$2 serves every model except Fable, so a turn that died on a Fable cap has to continue on another model."
+    printf '%s' "The Claude login switched ($1 → $2) — the session now runs under $2's rate-limit windows. $mid This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work."
+  }
+  # The switch the audit log last recorded, as `from TAB to TAB tier`, for a
+  # waiter that did not take it and so never saw the decision's own output.
+  # Bounded by the row's age, and optionally by the login it moved to: an older
+  # row describes a different decision, and announcing it would tell a session
+  # the box had just moved when nothing moved.
+  rewake_switch_row() {  # NOW WINDOW [TO]
+    local f; f=$(acct_log_file)
+    [ -s "$f" ] || return 0
+    awk -F'\t' -v now="$1" -v win="$2" -v to="${3:-}" '
+      $2 == "switch" && (to == "" || $4 == to) && now - $1 <= win {
+        t = "-"; n = split($8, kv, ";")
+        for (i = 1; i <= n; i++) if (index(kv[i], "tier=") == 1) t = substr(kv[i], 6)
+        row = $3 "\t" $4 "\t" t
+      }
+      END { if (row != "") print row }' "$f"
+  }
+  # A cap death is not only a reason to sleep: another login may be able to serve
+  # the box right now, and `session account auto` is the one place that decides
+  # that. Sets REWSWITCH to the wake-up text when the box moved, and REWNEXT to
+  # the time a hold said its best rejected candidate would climb.
+  rewake_decide() {  # TRIGGER
+    local out="" rc=0 ev="" from="" to="" tier=""
+    REWSWITCH=""; REWNEXT=""
+    # The verb's own diagnostics must never reach this hook's stderr: here
+    # stderr IS the wake-up, and only an exit 2 may carry one.
+    out=$(acct_auto --trigger "$1" --sid "$hsid" 2>/dev/null); rc=$?
+    # Busy on either locking backend — 1 from flock(1), 75 from the perl
+    # fallback, both measured. Another session is deciding this very thing, so
+    # fall through to the ordinary waiter with no retry and deliberately no look
+    # at the audit log: its newest row is a PREVIOUS decision, possibly a switch
+    # from minutes ago, and waking on it would claim a switch that did not just
+    # happen.
+    { [ "$rc" = 1 ] || [ "$rc" = 75 ]; } && return 0
+    ev=$(_acct_out_val ev "$out")
+    if [ -z "$ev" ]; then
+      # The child ran and said nothing — killed, or a tree it could not read. A
+      # swap it managed before dying is still a swap and the row is the only
+      # witness left, so this fallback is bounded to this invocation's own
+      # seconds rather than to any decision the log happens to hold.
+      IFS=$'\t' read -r from to tier < <(rewake_switch_row "$(date +%s)" 60)
+      [ -n "$to" ] && REWSWITCH=$(rewake_switch_text "$from" "$to" "$tier")
+      return 0
+    fi
+    if [ "$ev" = switch ]; then
+      REWSWITCH=$(rewake_switch_text "$(_acct_out_val from "$out")" \
+                                     "$(_acct_out_val to "$out")" \
+                                     "$(_acct_out_val tier "$out")")
+    else
+      REWNEXT=$(_acct_out_val next_eligible_at "$out")
+    fi
+  }
+  REWSWITCH=""; REWNEXT=""
   if [ "$hev" = StopFailure ]; then
     # a turn that died on a usage cap is capped whatever the (possibly lagging)
     # cache says — this is the only arming path for a cap that arrives mid-turn
-    # with no prompt ever submitted in the warned band. Non-cap failures (API
-    # errors etc.) are not a reason to wait for anything: exit. When neither
-    # window shows warned, the Fable window decides if it is spent, and
-    # otherwise whichever generic reset is still ahead (5h first — it is the cap
-    # the harness itself attributes these deaths to); no future reset at all
-    # means the cache can't say when to wake, so don't arm.
-    case "$herr" in *rate_limit*|*usage_limit*) ;; *) exit 0 ;; esac
-    if ! (( f_warn || w_warn )); then
-      now=$(date +%s)
-      if fable_capped "$now"; then fb_warn=1
-      elif (( fivereset > now )); then f_warn=1
-      elif (( weekreset > now )); then w_warn=1
-      else exit 0; fi
+    # with no prompt ever submitted in the warned band. Failures that are neither
+    # a cap nor an authentication death (API errors etc.) are not a reason to
+    # wait for anything, and not a reason to move either: exit.
+    case "$herr" in
+      *rate_limit*|*usage_limit*) htrig=cap ;;
+      # The authentication family. These decide on the ORDINARY cooldown rather
+      # than the probation bypass: the outage that produces them has no recent
+      # switch to be in probation from — one interactive authentication failure
+      # landed five minutes after a blank credential write and cost ten and a
+      # half hours — and the cooldown is what bounds an authentication storm to
+      # about one decision a quarter hour. Nothing is armed afterwards: no reset
+      # lifts an authentication failure, so there is no time to sleep to.
+      *authentication_failed*|*oauth_org_not_allowed*|*account_on_hold*|*billing_error*|*cloud_credential_error*)
+        htrig=auth ;;
+      *) exit 0 ;;
+    esac
+    # Ahead of the arming below, which exits outright when the cache names no
+    # future reset — exactly the stale-or-missing-cache case, where leaving the
+    # decision behind it would silently disable the feature. Ahead of the pidfile
+    # dedup too, so EVERY spawn reaches a decision rather than only the one that
+    # becomes the waiter: a session whose waiter already sleeps must still be
+    # able to rescue the box, and the lock plus the cooldown reduce the fan-in to
+    # one real decision.
+    rewake_decide "$htrig"
+    if [ -z "$REWSWITCH" ]; then
+      [ "$htrig" = cap ] || exit 0
+      # When neither window shows warned, the Fable window decides if it is
+      # spent, and otherwise whichever generic reset is still ahead (5h first —
+      # it is the cap the harness itself attributes these deaths to); no future
+      # reset at all means the cache can't say when to wake, so don't arm.
+      if ! (( f_warn || w_warn )); then
+        now=$(date +%s)
+        if fable_capped "$now"; then fb_warn=1
+        elif (( fivereset > now )); then f_warn=1
+        elif (( weekreset > now )); then w_warn=1
+        else exit 0; fi
+      fi
     fi
   else
     (( f_warn || w_warn )) || exit 0
@@ -3003,6 +3091,9 @@ if [ "$mode" = rewake ]; then
   [ -d "$snapdir" ] || mkdir -p "$snapdir"
   printf '%s\n' $$ > "$pidf.$$" && mv "$pidf.$$" "$pidf"
   rewake_done() { rm -f "$pidf"; printf '%s\n' "$1" >&2; exit 2; }
+  # After the dedup, never before it: a session whose waiter already sleeps is
+  # woken by the config-directory watch instead, so one switch delivers one wake.
+  [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"
   # One place decides both the target and the name the wake-up gives it, so the
   # loop can never announce the reset of a window it did not sleep to.
   if [ "$fb_warn" = 1 ]; then
@@ -3012,11 +3103,36 @@ if [ "$mode" = rewake ]; then
   else
     target=$weekreset; wlabel="weekly (7-day)"
   fi
-  while now=$(date +%s); (( now < target )); do
-    login_flip && rewake_done "The Claude login switched ($acct → $NEWACCT) — the session now runs under $NEWACCT's rate-limit windows, so the earlier cap no longer applies. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work."
-    { read -r opid < "$pidf"; } 2>/dev/null || opid=""
-    [ "$opid" = "$$" ] || exit 0
-    r=$(( target - now )); (( r > 300 )) && r=300; flip_wait "$r"
+  # A hold may have named the time its best rejected candidate climbs above the
+  # live login. That is worth waking for once, and it is NOT a reset: it only
+  # shortens the sleep, the label above stays with the target it was derived
+  # with, and the early wake re-decides rather than announcing anything.
+  #
+  # The floor is the cooldown, not the clock: a re-decision taken before the hold
+  # just written ages out of the cooldown can only hold on it again — the
+  # probation bypass needs a switch, and a hold is not one. That also absorbs a
+  # named time already in the PAST, which happens when a candidate's window
+  # turned over before the percentage behind it dropped.
+  now=$(date +%s); eff=$target
+  case "$REWNEXT" in
+    ''|*[!0-9]*) ;;
+    *) (( REWNEXT > now + ACCT_COOLDOWN_S && REWNEXT < eff )) && eff=$REWNEXT ;;
+  esac
+  while :; do
+    while now=$(date +%s); (( now < eff )); do
+      # 300 s is the longest a flip can go unnoticed — one sleep chunk — so a
+      # switch row older than that belongs to some earlier decision, and the
+      # wake-up says only what today's text said rather than guessing a tier.
+      login_flip && rewake_done "$(rewake_switch_text "$acct" "$NEWACCT" \
+        "$(rewake_switch_row "$now" 300 "$NEWACCT" | cut -f3)")"
+      { read -r opid < "$pidf"; } 2>/dev/null || opid=""
+      [ "$opid" = "$$" ] || exit 0
+      r=$(( eff - now )); (( r > 300 )) && r=300; flip_wait "$r"
+    done
+    (( eff < target )) || break
+    rewake_decide cap
+    [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"
+    eff=$target
   done
   rewake_done "The Claude $wlabel rate-limit window has reset to 0% — a fresh window is available. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work. The earlier ⚠ warning no longer applies."
 fi
