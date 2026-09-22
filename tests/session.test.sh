@@ -2847,16 +2847,22 @@ WTEOF
         "warn-thr: ... instead of dying inside the arithmetic"
     report "" "$out" "warn-thr: ... and emitting no hook JSON"
 
+    # The rewake entry reaches the same validation and must NOT speak there: on
+    # an asyncRewake hook exit 2 is not a refusal, it is a wake-up delivered
+    # into a live session, and every session on the box runs this hook — so one
+    # malformed conf line would wake the whole box on every prompt. The waiter
+    # fails closed instead, and the entry above is where the typo still shows.
     err=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=ninety -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
-    report 2 "$rc" "warn-thr: the rewake path refuses the same value"
-    report yes "$(printf '%s' "$err" | grep -q "invalid USAGE_WARN_PCT='ninety'" && echo yes || echo no)" \
-        "warn-thr: ... with the same message, so the validation is reached from both consumers"
+    report 0 "$rc" "warn-thr: the rewake path refuses the same value without waking the session"
+    report "" "$err" "warn-thr: ... and says nothing, that channel being the wake message itself"
 
     # Non-integer generally, not just alphabetic. A decimal is the quiet half of
     # the same bug: the arithmetic itself fails, so the gate never fires and the
     # hook stays silent at any usage at all.
     rc=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=90.5 -- --hook >/dev/null 2>&1); echo $? )
     report 2 "$rc" "warn-thr: a decimal is refused too"
+    rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=90.5 -- --rewake-waiter >/dev/null 2>&1); echo $? )
+    report 0 "$rc" "warn-thr: ... and wakes nobody on the rewake path either"
 
     # Above 100 is not an error: it is the documented way to turn the hook's
     # output off, and no consumer may break on it.
@@ -5095,6 +5101,119 @@ else
         report switch "$(skv ev "$out")" "swap-save [perl]: the decision switches under the perl lock too"
         report 0 "$(lock_run "$WS3/data/switch.lock" true >/dev/null 2>&1; echo $?)" \
             "swap-save [perl]: ... and leaves the lock free behind it"
+    fi
+fi
+
+echo "--- wake-channel: on the rewake entry, only the wake-up itself may speak ---"
+
+# `--rewake-waiter` is an asyncRewake hook: exiting 2 with text on stderr
+# delivers that text to the model as an automated wake-up. So stderr there is a
+# channel into a live session rather than a log, and it is shared — whatever any
+# earlier line wrote to it arrives glued to the front of the wake message. Every
+# session on the box runs this hook, unattended, so both halves of that are
+# box-wide.
+if ! have jq; then
+    skip "wake-channel: the rewake stderr channel" "no jq"
+else
+    WWC=$(world); mkdir -p "$WWC/vault"; mklogin "$WWC" me@example.com
+    WCREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
+    WCHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
+    WCERR="$TMP/wake-channel.err"
+
+    # The waiter fails closed without a claude ancestor, so reaching the channel
+    # at all needs one. Same shape as case 17's, kept local so this block stands
+    # on its own.
+    cat > "$TMP/wc-asclaude.sh" <<'WCEOF'
+b=$1; shift
+timeout 60 bash "$b" "$@"
+WCEOF
+    wc_sess() {  # WORLD [VAR=VAL ...] -- <session args>
+        local w=$1; shift
+        local e=""
+        while [ $# -gt 0 ] && [ "$1" != -- ]; do e="$e $1"; shift; done
+        [ "${1:-}" = -- ] && shift
+        env -i PATH="$PATH" HOME="$FH" TZ=UTC \
+            CLAUDE_CONFIG_DIR="$w/cfg" SESSION_DATA_DIR="$w/data" \
+            SESSION_ACCOUNTS_DIR="$w/vault" SESSION_SWITCH_NOTIFY="" \
+            CLAUDE_CODE_SESSION_ID="$UUID" $e \
+            bash -c 'exec -a claude bash "$@"' _ "$TMP/wc-asclaude.sh" "$BIN" "$@"
+    }
+
+    # ── a refusal is not a wake-up ────────────────────────────────────────────
+    # A guard spec the CLI cannot read is validated in front of both consumers,
+    # so the rewake entry reaches it too. Refusing there with exit 2 would be
+    # indistinguishable from a wake-up, and the text would be its message. Exit
+    # 0 is also what says no waiter was armed: this world's reset is an hour
+    # out, so a spawn that armed would still be sleeping when `timeout 60` cut
+    # it down, and the status would be 124.
+    NOWC=$(date +%s)
+    mkcache "$WWC" me@example.com 95 10 $(( NOWC + 3600 )) $(( NOWC + 36000 ))
+    err=$( (printf '%s' "$WCREW" | wc_sess "$WWC" FIVE_GUARD=lienar -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
+    report 0 "$rc" "wake-channel: a guard spec the CLI cannot read does not wake the session"
+    report "" "$err" "wake-channel: ... and writes nothing to the channel that carries the wake"
+    err=$( (printf '%s' "$WCHOOK" | wc_sess "$WWC" FIVE_GUARD=lienar -- --hook >/dev/null) 2>&1 ); rc=$?
+    report 2 "$rc" "wake-channel: ... while the synchronous entry still refuses loudly"
+    report yes "$(printf '%s' "$err" | grep -q "invalid FIVE_GUARD='lienar'" && echo yes || echo no)" \
+        "wake-channel: ... naming the variable, which is what makes the typo visible"
+
+    # An argument this build does not know is the same hazard by another door —
+    # and the one an install whose settings.json has drifted from its binary
+    # would take. Silence beats a wake-up carrying an empty message.
+    err=$( (printf '%s' "$WCREW" | wc_sess "$WWC" -- --rewake-waiter --no-such-flag >/dev/null) 2>&1 ); rc=$?
+    report 0 "$rc" "wake-channel: an argument this build does not know does not wake the session"
+    report "" "$err" "wake-channel: ... nor put its complaint where the wake-up goes"
+
+    # ── nothing rides in front of a wake that does fire ───────────────────────
+    # The conf permission warning is the producer nearest the top of the file:
+    # the lib emits it at source time, long before any wake is decided.
+    NOWC=$(date +%s)
+    mkcache "$WWC" me@example.com 95 10 $(( NOWC + 6 )) $(( NOWC + 8 ))
+    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-90}"\n' > "$WWC/cfg/session.conf"
+    chmod 666 "$WWC/cfg/session.conf"
+    printf '%s' "$WCREW" | wc_sess "$WWC" -- --rewake-waiter >/dev/null 2>"$WCERR"; rc=$?
+    report 2 "$rc" "wake-channel: a group-writable session.conf still lets the reset wake fire"
+    report 1 "$(grep -c . "$WCERR")" "wake-channel: ... on exactly one line"
+    report yes "$(grep -q 'rate-limit window has reset' "$WCERR" && echo yes || echo no)" \
+        "wake-channel: ... which is the wake-up"
+    report no "$(grep -q 'group- or world-writable' "$WCERR" && echo yes || echo no)" \
+        "wake-channel: ... and not the lib's warning about the conf glued to its front"
+    rm -f "$WWC/cfg/session.conf"
+
+    # The other confirmed producer is the statusline cache read, whose jq is the
+    # one on this path that never had its stderr redirected. A cap death a
+    # switch can answer is the wake that reaches the model with it: the decision
+    # runs before the cache is consulted for a sleep target, so an unreadable
+    # cache does not stop it.
+    if ! have perl; then
+        skip "wake-channel: the switch wake behind an unreadable cache" "no perl"
+    else
+        WWC2=$(world); mkdir -p "$WWC2/vault"; mklogin "$WWC2" a@example.com
+        WCEXP=$(( $(date +%s) + 86400 ))
+        printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":%s000}}\n' "$WCEXP" \
+            > "$WWC2/cfg/.credentials.json"
+        for wcl in a b; do
+            printf '{"email":"%s@example.com","login":"%s@example.com","oauthAccount":{"emailAddress":"%s@example.com"},"claudeAiOauth":{"accessToken":"tok-%s","expiresAt":%s000}}\n' \
+                "$wcl" "$wcl" "$wcl" "$wcl" "$WCEXP" > "$WWC2/vault/$wcl@example.com.json"
+        done
+        WCC=$(curlstub)
+        wcbody() {  # STUB TOKEN FIVE%
+            local iso='2099-01-01T00:00:00+00:00'
+            printf '{"limits":[{"kind":"session","percent":%s,"resets_at":"%s"},{"kind":"weekly_all","percent":10,"resets_at":"%s"},{"kind":"weekly_scoped","percent":10,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+                "$3" "$iso" "$iso" "$iso" > "$1/body.$2"
+        }
+        wcbody "$WCC" tok-a 95   # the live login's five-hour window is spent
+        wcbody "$WCC" tok-b 10   # a candidate clear on every window
+        # The shape a torn read leaves: the statusline rewrites this file every
+        # few seconds, so a reader catching it mid-write gets a prefix of it.
+        printf '{"rate_limits":{"five_hour":{' > "$WWC2/data/last-status.a@example.com.json"
+        printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID" \
+            | wc_sess "$WWC2" PATH="$WCC:$PATH" -- --rewake-waiter >/dev/null 2>"$WCERR"; rc=$?
+        report 2 "$rc" "wake-channel: a cap death a switch can answer wakes although the cache is unreadable"
+        report 1 "$(grep -c . "$WCERR")" "wake-channel: ... on exactly one line"
+        report yes "$(grep -q 'login switched (a@example.com → b@example.com)' "$WCERR" && echo yes || echo no)" \
+            "wake-channel: ... which is the switch wake and nothing else"
+        report no "$(grep -q 'parse error' "$WCERR" && echo yes || echo no)" \
+            "wake-channel: ... with jq's complaint about the cache kept off it"
     fi
 fi
 
