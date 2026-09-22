@@ -1672,6 +1672,21 @@ ASCEOF
           | claude_sess "$W17" -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
     report 2 "$rc" "case 17: StopFailure on a usage cap arms even below the warn threshold"
 
+    # The same shape with a Fable figure whose own window has already turned
+    # over: it is not a reason to wait for anything, so the 5h reset a couple of
+    # seconds out still decides. This is the real clock, where the wake-target
+    # block's Fable cases run on a simulated one.
+    printf '{"fable":{"used_percentage":99,"resets_at":%s}}\n' "$(( NOWI - 10 ))" \
+        > "$W17/data/fable.me@example.com.json"
+    NOWI=$(date +%s)
+    mkcache "$W17" me@example.com 10 10 $(( NOWI + 6 )) $(( NOWI + 8 ))
+    err=$( (printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID" \
+          | claude_sess "$W17" -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
+    report 2 "$rc" "case 17: a Fable window that has already reset does not retarget the wait"
+    report yes "$(printf '%s' "$err" | grep -q '5h rate-limit window has reset' && echo yes || echo no)" \
+        "case 17: ... which still wakes on the 5h reset"
+    rm -f "$W17/data/fable.me@example.com.json"
+
     # ── the parent walk, on the ps branch a mac would take ──────────────────
     # session_have_proc is the single platform decision point, so the branch is
     # forced by giving a COPY of the shipped tree a lib that answers no. The
@@ -3221,6 +3236,172 @@ report aaa "$(printf 'aaa\tprobe\t10\t10\t10\n' | acct_rank 90)" "case 20: one r
 report aaa "$(printf '\naaa\tprobe\t50\t50\t50\n' | acct_rank 90)" \
     "case 20: a blank row cannot suppress a real candidate — it is tier 0 and frozen by construction"
 report "" "$(printf '\n' | acct_rank 90)" "case 20: ... and on its own it wins nothing"
+
+echo "--- wake-target: a spent Fable window is what the waiter sleeps to ---"
+
+if ! have jq; then
+    skip "wake-target: the Fable wake target" "no jq"
+else
+    mkfable() {  # WORLD LOGIN PCT RESET — the file `session account list|use` caches
+        printf '{"fable":{"used_percentage":%s,"resets_at":%s}}\n' "$3" "$4" \
+            > "$1/data/fable.$2.json"
+    }
+
+    # A simulated clock, so a target an hour out is reached in no real time.
+    # `sleep` records a tick instead of sleeping and `date +%s` reports 400 s
+    # per tick — one step wider than the waiter's 300 s sleep chunk, so every
+    # chunk lands past its own end and the loop converges in a few ticks.
+    # inotifywait is stubbed for the same reason: where it is installed,
+    # flip_wait blocks on it for the whole chunk.
+    FBB=$(mktemp -d "$TMP/fbbin.XXXXXX")
+    FBBASE=$(date +%s)
+    FBDATE=$(command -v date)
+    cat > "$FBB/sleep" <<TICKEOF
+#!/bin/sh
+echo tick >> "$FBB/ticks"
+exit 0
+TICKEOF
+    cat > "$FBB/inotifywait" <<'INOEOF'
+#!/bin/sh
+exit 0
+INOEOF
+    cat > "$FBB/date" <<CLKEOF
+#!/bin/sh
+case "\$*" in
+  *%s*) n=\$(grep -c . "$FBB/ticks" 2>/dev/null)
+        echo \$(( $FBBASE + \${n:-0} * 400 )) ;;
+  *)    exec "$FBDATE" "\$@" ;;
+esac
+CLKEOF
+    chmod +x "$FBB/sleep" "$FBB/inotifywait" "$FBB/date"
+
+    WFB=$(world); mklogin "$WFB" me@example.com
+    FBCAP=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
+
+    # The waiter fails closed without a claude ancestor, so reaching the arming
+    # arm at all needs one. Same shape as case 17's, kept local so this block
+    # stands on its own.
+    cat > "$TMP/fb-asclaude.sh" <<'FBAEOF'
+b=$1; shift
+timeout 60 bash "$b" "$@"
+FBAEOF
+    fb_rewake() {  # one waiter run on the simulated clock, from a fresh tick count
+        : > "$FBB/ticks"
+        rm -f "$WFB/data/sessions/$UUID.rewaiter"
+        env -i PATH="$FBB:$PATH" HOME="$FH" TZ=UTC \
+            CLAUDE_CONFIG_DIR="$WFB/cfg" SESSION_DATA_DIR="$WFB/data" \
+            CLAUDE_CODE_SESSION_ID="$UUID" \
+            bash -c 'exec -a claude bash "$@"' _ "$TMP/fb-asclaude.sh" "$BIN" --rewake-waiter
+    }
+    # The waiter's exit code IS the wake-up, so the run's status is returned and
+    # the wake-up text goes to a file: a `$(...)` capture would put the status
+    # in a subshell the assertions cannot read.
+    FBERR="$TMP/fb.err"
+    fbwake() { (printf '%s' "$FBCAP" | fb_rewake >/dev/null) 2>"$FBERR"; }
+    fbsaid() { grep -q "$1" "$FBERR" && echo yes || echo no; }
+    # How far the waiter actually slept, in simulated 300 s chunks: the only
+    # observable that distinguishes WHICH reset it slept to, since the wake-up
+    # text is chosen beside the target rather than derived from it. A target at
+    # +4000 takes ten chunks, one at +200 takes one, and a target already past
+    # takes none.
+    fbticks() { grep -c . "$FBB/ticks"; }
+    fb_armed() { [ -e "$WFB/data/sessions/$UUID.rewaiter" ] && echo present || echo absent; }
+
+    # The measured common case: a 5h reset IS ahead, so today the waiter sleeps
+    # to it, wakes into the same Fable cap and dies again. 53 of 68 model-scoped
+    # cap deaths over 53 days took that loop.
+    mkcache "$WFB" me@example.com 10 10 $(( FBBASE + 200 )) $(( FBBASE + 300 ))
+    mkfable "$WFB" me@example.com 95 $(( FBBASE + 4000 ))
+    fbwake; rc=$?
+    report 2 "$rc" "wake-target: a cap death with the live login's Fable window spent wakes the session"
+    report yes "$(fbsaid 'Fable weekly rate-limit window has reset')" \
+        "wake-target: ... naming the Fable window"
+    report 10 "$(fbticks)" \
+        "wake-target: ... and having slept to the Fable reset, not the 5h one that does not lift it"
+
+    # The other measured shape: nothing ahead in the cache at all, where today
+    # the waiter does not arm and the session waits for a human.
+    mkcache "$WFB" me@example.com 10 10 $(( FBBASE - 100 )) $(( FBBASE - 50 ))
+    fbwake; rc=$?
+    report 2 "$rc" "wake-target: ... and it arms although both cached generic resets are stale"
+    report yes "$(fbsaid 'Fable weekly rate-limit window has reset')" \
+        "wake-target: ... naming the same window"
+    report 10 "$(fbticks)" "wake-target: ... and sleeping to the same target"
+
+    # At or above the threshold, so the boundary itself arms.
+    mkfable "$WFB" me@example.com 90 $(( FBBASE + 4000 ))
+    fbwake; rc=$?
+    report 2 "$rc" "wake-target: a figure exactly at the warn threshold is spent enough to retarget"
+    report 10 "$(fbticks)" "wake-target: ... to the Fable reset"
+
+    # fable.<login>.json is refreshed only by `session account list|use`, so a
+    # figure below the threshold is routinely just old. Suppressing the retarget
+    # is the deliberate half of that: unhelpful, never wrong.
+    mkfable "$WFB" me@example.com 89 $(( FBBASE + 4000 ))
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: a figure below the threshold leaves today's behaviour alone"
+    report absent "$(fb_armed)" "wake-target: ... arming nothing"
+
+    # A window that has already turned over needs no wake at all.
+    mkfable "$WFB" me@example.com 95 $(( FBBASE - 10 ))
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: a Fable reset already in the past leaves today's behaviour alone"
+    report absent "$(fb_armed)" "wake-target: ... arming nothing"
+
+    # Never a target the waiter cannot tell from one that has just passed: the
+    # wake would land back inside the same cap and re-enter the loop.
+    mkfable "$WFB" me@example.com 95 $(( FBBASE + 60 ))
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: a Fable reset at now+60 is not accepted"
+    report absent "$(fb_armed)" "wake-target: ... arming nothing"
+    mkfable "$WFB" me@example.com 95 $(( FBBASE + 61 ))
+    fbwake; rc=$?
+    report 2 "$rc" "wake-target: ... while one second past the floor is"
+    report yes "$(fbsaid 'Fable weekly rate-limit window has reset')" \
+        "wake-target: ... and wakes on it"
+
+    # A half-written file is a shape the endpoint fetch can leave behind, and it
+    # must read as "no figure", not as a figure of zero or of the shell's making.
+    printf '{"fable":{"used_percen' > "$WFB/data/fable.me@example.com.json"
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: an unparseable Fable file leaves today's behaviour alone"
+    report absent "$(fb_armed)" "wake-target: ... arming nothing"
+    report "" "$(cat "$FBERR")" "wake-target: ... and says nothing on stderr"
+
+    # Well-formed JSON whose numbers are not numbers. `(( p >= thr ))` re-expands
+    # a non-numeric p as a VARIABLE NAME, and under `set -u` an unset one kills
+    # the waiter — inside a hook, where the death surfaces as neither output nor
+    # error and auto-resume is simply gone for the session.
+    printf '{"fable":{"used_percentage":"lots","resets_at":%s}}\n' "$(( FBBASE + 4000 ))" \
+        > "$WFB/data/fable.me@example.com.json"
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: a non-numeric Fable percentage leaves today's behaviour alone"
+    report "" "$(cat "$FBERR")" "wake-target: ... without dying inside the arithmetic"
+    printf '{"fable":{"used_percentage":95,"resets_at":"soon"}}\n' \
+        > "$WFB/data/fable.me@example.com.json"
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: a non-numeric Fable reset does too"
+    report "" "$(cat "$FBERR")" "wake-target: ... and likewise survives it"
+
+    rm -f "$WFB/data/fable.me@example.com.json"
+    fbwake; rc=$?
+    report 0 "$rc" "wake-target: no Fable file at all leaves today's behaviour alone"
+    report absent "$(fb_armed)" "wake-target: ... arming nothing"
+
+    # The retarget is for the cap the generic windows cannot explain. A warned
+    # 5h window is the harness's own attribution and keeps its reset, whatever
+    # the Fable file beside it says.
+    mkcache "$WFB" me@example.com 95 10 $(( FBBASE + 200 )) $(( FBBASE + 300 ))
+    mkfable "$WFB" me@example.com 99 $(( FBBASE + 4000 ))
+    fbwake; rc=$?
+    report 2 "$rc" "wake-target: a warned 5h window still wakes on its own reset"
+    report yes "$(fbsaid '5h rate-limit window has reset')" \
+        "wake-target: ... named as the 5h window"
+    report no "$(fbsaid Fable)" \
+        "wake-target: ... with no mention of Fable"
+    report 1 "$(fbticks)" \
+        "wake-target: ... having slept to the 5h reset and not to the Fable one four thousand seconds out"
+fi
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"

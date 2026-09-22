@@ -2914,21 +2914,55 @@ if [ "$mode" = rewake ]; then
   done
   [ "$seen" = 1 ] || exit 0
   thr=$USAGE_WARN_PCT
-  f_warn=0; w_warn=0
+  f_warn=0; w_warn=0; fb_warn=0
   [ "$f_stale" = 0 ] && (( fp >= thr )) && f_warn=1
   [ "$w_stale" = 0 ] && (( wp >= thr )) && w_warn=1
+  # Fable has its own weekly window, and neither generic reset lifts it. Consulted
+  # only when neither generic window is warned, which is what a model-scoped cap
+  # death looks like from here: the 5h reset is normally still ahead, so the
+  # waiter sleeps to it, wakes into the same Fable cap and dies again (53 of 68
+  # such deaths over 53 days), and where the 5h stamp has gone stale it falls
+  # through to a weekly reset as much as 5.1 days out.
+  #
+  # The figure is the cached one `session account list|use` writes, never a
+  # fetch: a slow endpoint must not stand between a capped session and its wake.
+  # Nothing else refreshes that file, so the arm fires only when a human ran
+  # `session account` recently enough. That asymmetry is safe in both
+  # directions — a stale LOW figure suppresses the retarget and leaves the
+  # waiter exactly as it was, while a stale HIGH one is still true, because
+  # Fable only rises while its login is live and otherwise resets weekly.
+  #
+  # Sets FBRESET. The 60 s floor refuses a reset the waiter cannot tell from one
+  # that has just passed: waking there lands back inside the same cap, which is
+  # the loop this exists to end.
+  fable_capped() {  # NOW
+    local f p r now=$1
+    f=$(session_cache_path "$acct" fable)
+    [ -s "$f" ] || return 1
+    IFS=$'\t' read -r p r < <(jq -r '[(.fable.used_percentage // -1), (.fable.resets_at // 0)] | @tsv' "$f" 2>/dev/null) || return 1
+    p=${p%%.*}; r=${r%%.*}   # the endpoint's figures are JSON numbers, not integers
+    # Anything that is not a whole number is no figure at all. `(( p >= thr ))`
+    # re-expands a non-numeric p as a variable NAME, and an unset one kills the
+    # waiter under `set -u` — silently, taking auto-resume with it.
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    case "$r" in ''|*[!0-9]*) return 1 ;; esac
+    (( p >= thr && r > now + 60 )) || return 1
+    FBRESET=$r
+  }
   if [ "$hev" = StopFailure ]; then
     # a turn that died on a usage cap is capped whatever the (possibly lagging)
     # cache says — this is the only arming path for a cap that arrives mid-turn
     # with no prompt ever submitted in the warned band. Non-cap failures (API
     # errors etc.) are not a reason to wait for anything: exit. When neither
-    # window shows warned, default to whichever reset is still ahead (5h first
-    # — it is the cap the harness itself attributes these deaths to); no future
-    # reset at all means the cache can't say when to wake, so don't arm.
+    # window shows warned, the Fable window decides if it is spent, and
+    # otherwise whichever generic reset is still ahead (5h first — it is the cap
+    # the harness itself attributes these deaths to); no future reset at all
+    # means the cache can't say when to wake, so don't arm.
     case "$herr" in *rate_limit*|*usage_limit*) ;; *) exit 0 ;; esac
     if ! (( f_warn || w_warn )); then
       now=$(date +%s)
-      if (( fivereset > now )); then f_warn=1
+      if fable_capped "$now"; then fb_warn=1
+      elif (( fivereset > now )); then f_warn=1
       elif (( weekreset > now )); then w_warn=1
       else exit 0; fi
     fi
@@ -2946,7 +2980,11 @@ if [ "$mode" = rewake ]; then
   [ -d "$snapdir" ] || mkdir -p "$snapdir"
   printf '%s\n' $$ > "$pidf.$$" && mv "$pidf.$$" "$pidf"
   rewake_done() { rm -f "$pidf"; printf '%s\n' "$1" >&2; exit 2; }
-  if [ "$f_warn" = 1 ] && { [ "$w_warn" = 0 ] || (( fivereset <= weekreset )); }; then
+  # One place decides both the target and the name the wake-up gives it, so the
+  # loop can never announce the reset of a window it did not sleep to.
+  if [ "$fb_warn" = 1 ]; then
+    target=$FBRESET; wlabel="Fable weekly"
+  elif [ "$f_warn" = 1 ] && { [ "$w_warn" = 0 ] || (( fivereset <= weekreset )); }; then
     target=$fivereset; wlabel="5h"
   else
     target=$weekreset; wlabel="weekly (7-day)"
