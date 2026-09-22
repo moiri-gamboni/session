@@ -5249,6 +5249,49 @@ else
         "mis-filed: ... and says so, which is the wake a real switch owes a capped session"
 fi
 
+echo "--- cooldown-refuse: a blank-credential refusal is not a decision to wait behind ---"
+
+# The cooldown is measured against the newest row THIS VERB wrote. A refusal is
+# another producer's: the statusline writes one per login per cooldown while the
+# live access token is blank, and the outage that produces a run of them is
+# exactly when an authentication death most needs a decision. Counting one would
+# park the box on a login that cannot authenticate for as long as the refusals
+# kept coming. The fixture is the decision verb's, built with the `decide` cases
+# above and guarded the same way.
+if ! have jq || ! have perl; then
+    skip "cooldown-refuse: a refusal does not hold a decision" "needs jq and perl"
+else
+    DCLOCK=$DNOW; DNOTIFY=""
+    WCR=$(dworld); CCR=$(curlstub); DLOGCR="$WCR/data/switch-log.tsv"
+    dlive "$WCR" a@example.com tok-a
+    dvent "$WCR" a@example.com tok-a; dvent "$WCR" b@example.com tok-b
+    dbody "$CCR" tok-a 95 10 10; dbody "$CCR" tok-b 10 10 10
+    printf '%s\trefuse\ta@example.com\t-\tmanual\tblank-credential\t-\tnotify=off\n' \
+        $(( DNOW - 100 )) > "$DLOGCR"
+    out=$(dauto "$WCR" "$CCR" --trigger auth --sid sid-cr); rc=$?
+    report 0 "$rc" "cooldown-refuse: an authentication death 100s after a refusal still decides"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "cooldown-refuse: ... the refusal being another producer's row, not a decision to wait behind"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WCR/cfg/.credentials.json")" \
+        "cooldown-refuse: ... so the box reaches the login that can serve it"
+fi
+
+echo "--- next-eligible: a candidate's Fable reset promotes it only above a Fable-only live login ---"
+
+# Rows are `login TAB blocks TAB 5h_reset TAB week_reset TAB fable_reset TAB
+# state`, as the decision builds them. A tier-0 live login — a general window
+# spent — is beaten by any tier-1 candidate, so a candidate blocked on its
+# five-hour window and on Fable climbs the moment the five-hour one clears:
+# naming its Fable reset as well would send a waiter to sleep past the time
+# something changed. Only a live login blocked on nothing but Fable makes the
+# candidate clear all three.
+report 1000 "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 0)" \
+    "next-eligible: a tier-0 live login is climbed as soon as the candidate's five-hour window clears"
+report 5000 "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 1)" \
+    "next-eligible: ... while over a Fable-only live login the candidate's Fable window has to clear too"
+report - "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 2)" \
+    "next-eligible: ... and nothing stands above tier 2, so no reset promotes anything"
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
