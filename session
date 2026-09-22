@@ -157,6 +157,7 @@ while [ -L "$_src" ] && [ "$_n" -lt 40 ]; do
 done
 SESSION_HOME=$(cd -P "$(dirname "$_src")" && pwd)
 . "$SESSION_HOME/lib/common.sh" || { echo "session: cannot read $SESSION_HOME/lib/common.sh" >&2; exit 1; }
+. "$SESSION_HOME/lib/account.sh" || { echo "session: cannot read $SESSION_HOME/lib/account.sh" >&2; exit 1; }
 
 # cache resolution is deferred until after arg parsing: it depends on the login
 # (a jq read of .claude.json) which the hot plumbing paths (--focus-mark,
