@@ -2808,8 +2808,11 @@ if ! have jq; then
     skip "warn-thr: USAGE_WARN_PCT" "no jq"
 else
     # One default, in one place. Two copies drift, and the consumer holding the
-    # stale one gates at a threshold nobody chose.
-    report 1 "$(grep -c 'USAGE_WARN_PCT:-90' "$BIN")" "warn-thr: the default 90 is written exactly once"
+    # stale one gates at a threshold nobody chose. Counted over every shipped
+    # script rather than over the CLI alone: the second copy this check was
+    # written against lived in lib/account.sh, where counting one file read green.
+    report 1 "$(cat "$BIN" "$SDIR"/lib/*.sh "$SDIR/statusline.sh" | grep -c 'USAGE_WARN_PCT:-90')" \
+        "warn-thr: the default 90 is written exactly once, across every shipped script"
 
     WWT=$(world); mklogin "$WWT" me@example.com
     WTHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
