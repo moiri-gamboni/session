@@ -1138,6 +1138,9 @@ acct_main() {
         printf 'Takes effect on the next request.\n'
       fi
       ;;
+    auto)
+      acct_auto "$@"
+      ;;
     save)
       # acct_save says on stderr why it refused; a second, guessed reason here
       # would contradict it.
@@ -1152,7 +1155,7 @@ acct_main() {
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: session account [list | use <#|name> | save | rm <name>]
+Usage: session account [list | use <#|name> | save | rm <name> | auto [opts]]
   list           saved logins, numbered in name order, each with its rate-limit
                  headroom and reset countdowns (default). A non-live login's snapshot ages from
                  the moment you switch away; once a window's reset passes, its
@@ -1176,6 +1179,19 @@ Usage: session account [list | use <#|name> | save | rm <name>]
   save           snapshot the live login into the vault (the statusline
                  does this automatically every time credentials change)
   rm <name>      drop a saved login (a copy stays in accounts/.history/)
+  auto           decide, once and box-wide, whether to move to another vaulted
+                 login: hold unless one stands strictly higher on the
+                 capability ladder than the live one (5h and weekly gate every
+                 model, the Fable weekly gates only Fable). Every decision
+                 leaves a row in the data root's switch-log.tsv. Options:
+                 --trigger cap|auth|manual (what asked; default manual),
+                 --sid SID (the session it is for, recorded on the row),
+                 --dry-run (rank and print, change nothing).
+                 Prints k=v lines. Exits 0 switched, 3 held, 4 refused,
+                 5 error; 1 or 75 mean another decision holds the lock.
+                 SESSION_AUTO_SWITCH=off in session.conf disables it;
+                 SESSION_SWITCH_NOTIFY=<path> names an executable run with one
+                 message whenever the box moves
 
 To ADD a login, run `/login` in a session — there is no `add` subcommand and
 none is needed: the statusline vaults whatever you log into, within a render.
@@ -1185,7 +1201,7 @@ re-authentication. Note both `/login` and `use` are box-wide: every claude here
 shares this config dir, so all running sessions move to the new login too.
 EOF
       ;;
-    *) echo "session account: unknown subcommand '$sub' (list|use|save|rm)" >&2; return 2 ;;
+    *) echo "session account: unknown subcommand '$sub' (list|use|save|rm|auto)" >&2; return 2 ;;
   esac
 }
 [ "${1:-}" = account ] && { shift; acct_main "$@"; exit $?; }

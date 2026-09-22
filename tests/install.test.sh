@@ -1073,6 +1073,49 @@ report "85" "$(conf_value "$CWT/session.conf" USAGE_WARN_PCT)" \
 report 1 "$(grep -c '^USAGE_WARN_PCT=' "$CWT/session.conf")" \
     "warn-thr: ... exactly once"
 
+echo "--- switch knobs: the automatic switcher's two conf-backed values ---"
+
+# The paired --x/--no-x form is new here, and it is what the stickiness costs:
+# a recorded conf line survives every re-run, so a value the installer can set
+# but not unset would make the off state irreversible by the tool that set it.
+# (--no-rewake is unpaired precisely because it records nothing.)
+CSW=$(mkcfg); BSW="$TMP/binsw"; NSW="$TMP/notify-sw.sh"; : > "$NSW"; chmod 755 "$NSW"
+
+out=$(inst "$CSW" --bindir "$BSW" --no-auto-switch); rc=$?
+report 0 "$rc" "switch knobs: --no-auto-switch exits 0"
+report yes "$(yesno grep -qxF 'SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-off}"' "$CSW/session.conf")" \
+    "switch knobs: ... recording the environment-wins form every other conf line uses"
+report "off" "$(conf_value "$CSW/session.conf" SESSION_AUTO_SWITCH)" \
+    "switch knobs: ... and the conf reads back off"
+
+out=$(inst "$CSW" --bindir "$BSW" --auto-switch); rc=$?
+report 0 "$rc" "switch knobs: --auto-switch exits 0"
+report "on" "$(conf_value "$CSW/session.conf" SESSION_AUTO_SWITCH)" \
+    "switch knobs: ... turning it back on, which is the whole reason the flag is paired"
+report 1 "$(grep -c '^SESSION_AUTO_SWITCH=' "$CSW/session.conf")" \
+    "switch knobs: ... replacing the recorded line rather than adding a second"
+
+out=$(inst "$CSW" --bindir "$BSW" --switch-notify "$NSW"); rc=$?
+report 0 "$rc" "switch knobs: --switch-notify exits 0"
+report "$NSW" "$(conf_value "$CSW/session.conf" SESSION_SWITCH_NOTIFY)" \
+    "switch knobs: ... recording the notify target"
+report "on" "$(conf_value "$CSW/session.conf" SESSION_AUTO_SWITCH)" \
+    "switch knobs: ... and keeping the mode this run did not carry"
+
+# Same rule as every other path flag: hooks and cron resolve a relative path
+# against their own cwd, so a relative notify target would be a different file
+# for every producer.
+CSW2=$(mkcfg); WSW="$TMP/swwd"; mkdir -p "$WSW"
+out=$(inst_at "$WSW" "$CSW2" --bindir "$TMP/binsw2" --switch-notify relnotify.sh)
+report "$WSW/relnotify.sh" "$(conf_value "$CSW2/session.conf" SESSION_SWITCH_NOTIFY)" \
+    "switch knobs: a relative --switch-notify is recorded absolute"
+
+CSW3=$(mkcfg)
+out=$(inst "$CSW3" --bindir "$TMP/binsw3" --switch-notify '/tmp/no$tify.sh'); rc=$?
+report 2 "$rc" "switch knobs: a notify path the conf would execute is a usage error"
+report absent "$([ -e "$CSW3/session.conf" ] && echo present || echo absent)" \
+    "switch knobs: ... and nothing is written for it"
+
 report "$SHIPPED_BEFORE" "$(shipped_sums)" "the suite modified none of the shipped files in the checkout"
 
 echo

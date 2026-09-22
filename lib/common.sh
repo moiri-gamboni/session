@@ -74,6 +74,17 @@ SESSION_ATTEND_GRACE="${SESSION_ATTEND_GRACE:-600}"
 SESSION_ATTEND_TAIL="${SESSION_ATTEND_TAIL:-$SESSION_ATTEND_GRACE}"
 # optional script run before `session resume` (a host's own pre-resume guard)
 SESSION_TMUX_MAIN_GUARD="${SESSION_TMUX_MAIN_GUARD:-}"
+# Whether a cap or authentication death may move the box to another vaulted
+# login by itself (`session account auto`). `on` or `off`, and nothing else:
+# this is the feature's kill switch, so a value it cannot read is refused
+# rather than guessed at. Read on every invocation, which is what makes an
+# appended `SESSION_AUTO_SWITCH=off` line an instant rollback.
+SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-on}"
+# Optional executable called with one argument — the message — when the box
+# switches login by itself, and when a blank credential is refused. Empty means
+# nothing is sent; the two callers are the only ones, and each covers an event
+# the other cannot observe.
+SESSION_SWITCH_NOTIFY="${SESSION_SWITCH_NOTIFY:-}"
 # The live logs keep 8 days (covering the 7-day window); the floor is the day
 # below that, inside which a read needs the live file only.
 SESSION_LIVE_DAYS=8
