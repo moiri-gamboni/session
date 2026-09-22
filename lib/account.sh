@@ -842,9 +842,10 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   # The lock file lives under the data root, and lock_run opening it is the
   # first thing here that touches the filesystem — so a root that cannot hold it
   # has to be caught BEFORE the lock, never in the child that never starts.
-  # Both backends report that as 66 and flock(1) also prints to stderr, neither
-  # of which is a decision: a caller reading them gets no event, no reason and
-  # no row, while the hold below is an outcome it can act on and report.
+  # Measured on both: a root this user cannot write is 66 from either backend,
+  # and 73 from flock(1) where the filesystem is read-only rather than the
+  # directory unwritable — none of them a decision, and flock(1) prints to
+  # stderr besides. The hold below is an outcome a caller can act on and report.
   # shellcheck disable=SC2031  # the dry-run rebinding is another function's subshell
   mkdir -p "$SESSION_DATA" 2>/dev/null
   # shellcheck disable=SC2031
@@ -856,6 +857,17 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   out=$(lock_run "$(acct_lock_file)" bash "$SESSION_HOME/session" account auto \
           --locked --trigger "$trigger" --sid "$sid" $dryflag)
   rc=$?
+
+  # A lock file that could not be opened, which is not a lock somebody holds:
+  # busy clears by itself and this does not, so a caller left to fall through on
+  # it would retry for ever against a switcher that is off. Said as a hold, the
+  # outcome every caller already reads, rather than as an exit code nothing
+  # branches on — and with no row, because the reason is that this decision
+  # never started, not that one was taken.
+  if [ "$rc" = 66 ]; then
+    _acct_say hold "$(acct_live_login)" - lock-unopenable - -
+    return 3
+  fi
   [ -n "$out" ] && printf '%s\n' "$out"
 
   # The lock died with the child that held it, so the seam can be fired now —

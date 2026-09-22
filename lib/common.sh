@@ -303,13 +303,21 @@ mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 # flock has -E, busybox flock does not, and the perl path picks its own, so a
 # caller that cares reads 1 and 75 as one set.
 #
-# A lock file that cannot be OPENED is a different condition and must not wear
-# either of those codes: the decision verb's callers read busy as "another
-# decision is in flight" and fall through with no retry, no row and no message,
-# so a switch.lock left unopenable (a decision once run under sudo, a restore
-# with the wrong owner) would disable automatic switching for ever and say
-# nothing. Both backends report EX_NOINPUT (66) for it — flock(1) by way of
-# <sysexits.h>, the perl path by saying so.
+# A lock file that cannot be OPENED must not wear either of those codes: the
+# decision verb's callers read busy as "another decision is in flight" and fall
+# through with no retry, no row and no message, so a switch.lock left unopenable
+# would disable automatic switching for ever and say nothing about it.
+#
+# The two backends do not open the same file the same way, so this is not one
+# condition with one code, and a caller must not be written as though it were.
+# flock(1) opens O_RDONLY|O_CREAT and answers out of <sysexits.h>: 66 when it
+# cannot open an existing file, 73 when it cannot create a missing one
+# (read-only filesystem, no space), 71 on resource exhaustion. The perl path
+# opens for append, which is a stricter test — a read-only or foreign-owned
+# lock file it cannot write is 66 while flock(1) takes the lock and runs. So
+# the perl path, the one macOS takes, is where an unopenable switch.lock
+# actually bites, and 66 is the code it reports for every flavour of it.
+# What every caller needs is the same on both: none of 66, 73 or 71 is busy.
 lock_run() {  # LOCK CMD... -> the command's status, or non-zero if it never ran
   local lock="$1"
   shift
