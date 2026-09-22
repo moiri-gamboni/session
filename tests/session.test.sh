@@ -2758,6 +2758,90 @@ else
     report 1 "$(printf '%s' "$out" | grep -c . )" "cov: ... on exactly one line"
 fi
 
+echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"
+
+if ! have jq; then
+    skip "case 14 [swap]: the swap post-condition" "no jq"
+else
+    # A write that reports success and lands something else is not a swap, and
+    # the post-condition is what makes that visible: it reads .credentials.json
+    # back and compares the
+    # installed claudeAiOauth with the vault entry's — the credential itself, not
+    # the login name, because the name lives in .claude.json, which a concurrent
+    # session rewrites from memory and which this fixture leaves correct on
+    # purpose: a check against it would confirm a swap that did not land.
+    W14s=$(world); VS="$W14s/vault"
+    mklogin "$W14s" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1},"mcpOAuth":{"granola":"keep-me"}}\n' > "$W14s/cfg/.credentials.json"
+    sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account save >/dev/null 2>&1
+    mklogin "$W14s" b@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-b","expiresAt":2},"mcpOAuth":{"granola":"keep-me"}}\n' > "$W14s/cfg/.credentials.json"
+    sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account save >/dev/null 2>&1
+
+    # The control: an untampered swap, so the case below is about the check and
+    # not about the fixture.
+    out=$(sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use a@ 2>&1); rc=$?
+    report 0 "$rc" "case 14 [swap]: an untampered swap exits 0"
+    report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$W14s/cfg/.credentials.json")" \
+        "case 14 [swap]: ... installing the vault entry's credential"
+
+    # A jq that rewrites the one filter the credential swap uses and passes every
+    # other call through: the write succeeds, the wrong token lands.
+    TJ=$(mktemp -d "$TMP/tamperjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'TAMPEREOF'
+args=()
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && \
+        x='.claudeAiOauth = ($v[0].claudeAiOauth | .accessToken = "tok-tampered")'
+    args+=("$x")
+done
+exec "$RJQ" "${args[@]}"
+TAMPEREOF
+    } > "$TJ/jq"
+    chmod +x "$TJ/jq"
+
+    out=$( (sess "$W14s" PATH="$TJ:$PATH" SESSION_ACCOUNTS_DIR="$VS" -- account use b@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a write that lands a different credential exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'did not land' && echo yes || echo no)" \
+        "case 14 [swap]: ... saying the swap was not observed"
+    report no "$(printf '%s' "$out" | grep -qE 'tok-b|tok-tampered' && echo yes || echo no)" \
+        "case 14 [swap]: ... and rendering no token value while saying so"
+    report "b@example.com" "$(jq -r '.oauthAccount.emailAddress' "$W14s/cfg/.claude.json")" \
+        "case 14 [swap]: ... although the identity file names the incoming login (what makes it the wrong witness)"
+
+    # An entry carrying no credential at all installs a null claudeAiOauth, and
+    # null equals null: the check has to refuse the shape, not only a wrong
+    # value, or the blank credential this exists to catch reads as a swap.
+    printf '{"email":"c@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"c@example.com"}}\n' \
+        > "$VS/c@example.com.json"
+    out=$( (sess "$W14s" SESSION_ACCOUNTS_DIR="$VS" -- account use c@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a vault entry carrying no credential exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'did not land' && echo yes || echo no)" \
+        "case 14 [swap]: ... refused by the post-condition rather than announced as a switch"
+
+    # The write-failure arm: nothing is installed and the message names the write.
+    FJ=$(mktemp -d "$TMP/failjq.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'FAILEOF'
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && exit 5
+done
+exec "$RJQ" "$@"
+FAILEOF
+    } > "$FJ/jq"
+    chmod +x "$FJ/jq"
+    cp "$W14s/cfg/.credentials.json" "$TMP/creds.before"
+    out=$( (sess "$W14s" PATH="$FJ:$PATH" SESSION_ACCOUNTS_DIR="$VS" -- account use a@) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [swap]: a credentials write that fails exits 1"
+    report yes "$(printf '%s' "$out" | grep -q 'failed to write credentials' && echo yes || echo no)" \
+        "case 14 [swap]: ... naming the write as what failed"
+    report yes "$(cmp -s "$TMP/creds.before" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
+        "case 14 [swap]: ... leaving the live credentials byte-identical"
+    report "" "$(ls -a "$W14s/cfg" | grep '\.swap\.' || true)" \
+        "case 14 [swap]: ... and no temp file behind"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]

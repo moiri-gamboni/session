@@ -1014,6 +1014,45 @@ acct_fetch_fable() {
   wait
 }
 
+# Install a vaulted login: the whole write sequence and nothing else. It prints
+# nothing on any outcome — the status is the whole answer, so a caller with no
+# human in front of it can use it, and one with a human keeps its own wording.
+#   0  swapped
+#   1  the credentials write failed; nothing was installed
+#   2  the write reported success but the installed credential is not the
+#      vault entry's, so the caller must not treat the login as switched.
+#      The identity file is already written at that point, so it names the
+#      login whose credential did not land: a caller that reports the failure
+#      must not read the live login name back as the truth of what happened.
+acct_swap() {  # VAULTFILE
+  local vf="$1" cfg tmp
+  cfg=$(acct_cfg)
+  acct_save 2>/dev/null || true   # never lose the login being replaced
+  # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
+  # DoneThat, …), which is not account-scoped and must survive the switch.
+  tmp="$cfg/.credentials.swap.$$"
+  jq --slurpfile v "$vf" '.claudeAiOauth = $v[0].claudeAiOauth' "$cfg/.credentials.json" > "$tmp" \
+    && chmod 600 "$tmp" && mv -f "$tmp" "$cfg/.credentials.json" \
+    || { rm -f "$tmp"; return 1; }
+  # Identity too, so usage tracking labels the very next statusline render
+  # correctly. The app re-fetches the profile on its own schedule, so this
+  # is a head start, not the source of truth — and a concurrent session can
+  # briefly clobber it back from memory.
+  tmp="$cfg/.claude.swap.$$"
+  jq --slurpfile v "$vf" '.oauthAccount = $v[0].oauthAccount' "$cfg/.claude.json" > "$tmp" \
+    && mv -f "$tmp" "$cfg/.claude.json" || rm -f "$tmp"
+  # Read the credential back out of the file the swap wrote. Not .claude.json
+  # and not the login name it carries: that file is the one a concurrent session
+  # rewrites from memory, so a name read from it can say "switched" over
+  # credentials that never moved. A boolean comparison, so no token is rendered.
+  # The type test is what keeps the comparison from being vacuous: an entry with
+  # no claudeAiOauth installs null, and null equals null, which is exactly the
+  # blank credential that must never go live unnoticed.
+  jq -e --slurpfile v "$vf" \
+     '(.claudeAiOauth | type) == "object" and .claudeAiOauth == $v[0].claudeAiOauth' \
+     "$cfg/.credentials.json" >/dev/null 2>&1 || return 2
+}
+
 acct_main() {
   local sub="${1:-list}"; shift 2>/dev/null || true
   case "$sub" in
@@ -1034,7 +1073,7 @@ acct_main() {
       printf '\n  switch: session account use <#|name>   (next request, running sessions included)\n'
       ;;
     use)
-      local m="${1:?usage: session account use <#|name>}" vf email cfg tmp
+      local m="${1:?usage: session account use <#|name>}" vf email cfg
       cfg=$(acct_cfg)
       # Where Claude Code keeps credentials in the macOS Keychain there is no
       # .credentials.json to swap. Refused first, before resolving or saving
@@ -1047,20 +1086,11 @@ acct_main() {
       if [ "$email" = "$(acct_live_login)" ]; then
         echo "session account: already on $email"; return 0
       fi
-      acct_save 2>/dev/null || true   # never lose the login being replaced
-      # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
-      # DoneThat, …), which is not account-scoped and must survive the switch.
-      tmp="$cfg/.credentials.swap.$$"
-      jq --slurpfile v "$vf" '.claudeAiOauth = $v[0].claudeAiOauth' "$cfg/.credentials.json" > "$tmp" \
-        && chmod 600 "$tmp" && mv -f "$tmp" "$cfg/.credentials.json" \
-        || { rm -f "$tmp"; echo "session account: failed to write credentials" >&2; return 1; }
-      # Identity too, so usage tracking labels the very next statusline render
-      # correctly. The app re-fetches the profile on its own schedule, so this
-      # is a head start, not the source of truth — and a concurrent session can
-      # briefly clobber it back from memory.
-      tmp="$cfg/.claude.swap.$$"
-      jq --slurpfile v "$vf" '.oauthAccount = $v[0].oauthAccount' "$cfg/.claude.json" > "$tmp" \
-        && mv -f "$tmp" "$cfg/.claude.json" || rm -f "$tmp"
+      acct_swap "$vf"
+      case $? in
+        1) echo "session account: failed to write credentials" >&2; return 1 ;;
+        2) echo "session account: the credential swap did not land — the live credential is not $email's; check $cfg/.credentials.json" >&2; return 1 ;;
+      esac
       # After the swap, never before: a slow endpoint must not stand between a
       # capped session and the login that frees it. The outgoing login's Fable
       # figure stops moving now, so this is the fetch that keeps it right.
