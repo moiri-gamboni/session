@@ -5199,11 +5199,13 @@ else
         printf '{"fable":{"used_percentage":3,"resets_at":%s}}\n' "$MFUT" > "$w/data/fable.a@example.com.json"
         printf '%s\n' "$w"
     }
-    mauto() {  # WORLD STUB SID — one decision, stderr folded in
+    # One decision, stderr folded in. Its output is read with `dkv`, from the
+    # `decide` cases above; the world is this block's own, because what the
+    # mis-filing needs is frozen figures rather than a probed table.
+    mauto() {  # WORLD STUB SID
         sess "$1" PATH="$2:$PATH" SESSION_ACCOUNTS_DIR="$1/vault" SESSION_NOW="$MNOW" \
             SESSION_SWITCH_NOTIFY="$MNOTIFY" -- account auto --trigger cap --sid "$3" 2>&1
     }
-    mkv() { printf '%s\n' "$2" | awk -F= -v k="$1" '$1 == k { print substr($0, length(k) + 2); exit }'; }
     # The seam fires in the background, so poll for it. Counted with awk rather
     # than `grep -c .`, which exits 1 on an empty file: a `|| echo 0` beside it
     # then prints two zeroes, the comparison is not an integer, and the loop
@@ -5227,7 +5229,7 @@ else
     : > "$MNOTE"
     out=$(mauto "$MW1" "$MC1" sid-m1); rc=$?
     report 3 "$rc" "mis-filed: an entry carrying the live credential is held on, never switched to"
-    report 'hold no-candidate' "$(mkv ev "$out") $(mkv reason "$out")" \
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
         "mis-filed: ... there being nothing left to rank once it is screened out"
     report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$MW1/cfg/.credentials.json")" \
         "mis-filed: ... with the live credential where it was"
@@ -5247,13 +5249,31 @@ else
     : > "$MNOTE"
     out=$(mauto "$MW2" "$MC2" sid-m2); rc=$?
     report 0 "$rc" "mis-filed: an entry carrying its own login's credential is still a candidate"
-    report 'switch a@example.com' "$(mkv ev "$out") $(mkv to "$out")" \
+    report 'switch a@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
         "mis-filed: ... and the box moves to it"
     report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$MW2/cfg/.credentials.json")" \
         "mis-filed: ... having installed the credential that was not there before"
     mwait "$MNOTE" 1
     report 1 "$(grep -c . "$MNOTE" 2>/dev/null || true)" \
         "mis-filed: ... and says so, which is the wake a real switch owes a capped session"
+
+    # The screening is silent by construction, and what it screens out is a box
+    # that cannot move: every decision after it holds on no candidate while the
+    # entry stands. `doctor` is where that has to become visible — its existing
+    # vault detector cannot see this shape, the entry's own identity deriving
+    # its filename perfectly well.
+    mdoc() { sess "$1" SESSION_ACCOUNTS_DIR="$1/vault" -- doctor 2>&1; }
+    out=$(mdoc "$MW1")
+    report yes "$(printf '%s\n' "$out" | grep -q 'FAIL *vault .*holds the access token that is installed' && echo yes || echo no)" \
+        "mis-filed: doctor names an entry holding the installed access token under another login's name"
+    report yes "$(printf '%s\n' "$out" | grep -q 'a@example.com.json' && echo yes || echo no)" \
+        "mis-filed: ... naming the entry, the remedy being per file"
+    report yes "$(printf '%s\n' "$out" | grep -q 'session account use' && echo yes || echo no)" \
+        "mis-filed: ... and the verb that makes the two files agree again"
+    # MW2 switched to a@ with a@'s own credential, so a@'s entry now holds the
+    # live token under the live name — which is what the autosave keeps it doing.
+    report no "$(mdoc "$MW2" | grep -q 'holds the access token that is installed' && echo yes || echo no)" \
+        "mis-filed: ... and says nothing of the live login's own entry, which is meant to hold it"
 fi
 
 echo "--- cooldown-refuse: a blank-credential refusal is not a decision to wait behind ---"
