@@ -497,15 +497,21 @@ _acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
 # On the ACCESS TOKEN and not on the whole claudeAiOauth object: the token is
 # what authenticates, so an entry holding the live one moves the box nowhere
 # whatever else it carries, and the live file holds a refresh token an entry
-# saved from an earlier state of it may not. Compared as a boolean, so no token
-# is rendered. The live credentials file is passed in because whether an entry
-# may be switched to is a question about the entry and the machine's current
-# state together.
+# saved from an earlier state of it may not. The live credentials file is
+# passed in because whether an entry may be switched to is a question about the
+# entry and the machine's current state together.
 acct_entry_ok() {  # VAULTFILE LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
-  ! jq -e --slurpfile c "$2" \
-       '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$1" >/dev/null 2>&1
+  ! acct_holds_live_token "$1" "$2"
+}
+# Whether a vault entry holds the access token the credentials file has
+# installed — the one test behind both the screening above and doctor's
+# `vault` line, so the two cannot disagree about which entry is skipped.
+# Compared as a boolean, so no token is rendered.
+acct_holds_live_token() {  # VAULTFILE LIVE_CREDENTIALS
+  jq -e --slurpfile c "$2" \
+     '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$1" >/dev/null 2>&1
 }
 
 # Whether a decision may be taken at all right now.

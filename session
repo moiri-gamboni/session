@@ -1674,12 +1674,9 @@ doctor_main() {
     for f in "$acctdir"/*.json; do
       [ -f "$f" ] || continue
       v=${f##*/}; v=${v%.json}
-      # A boolean comparison, so no token is rendered. Not for the live login's
-      # own entry: that one SHOULD hold the installed credential, which is what
-      # the autosave keeps it doing.
-      if [ "$v" != "$vlive" ] \
-         && jq -e --slurpfile c "$SESSION_CFG/.credentials.json" \
-              '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$f" >/dev/null 2>&1; then
+      # Not for the live login's own entry: that one SHOULD hold the installed
+      # credential, which is what the autosave keeps it doing.
+      if [ "$v" != "$vlive" ] && acct_holds_live_token "$f" "$SESSION_CFG/.credentials.json"; then
         doc FAIL vault "$f holds the access token that is installed, while the live login reads $vlive — one of the two is mislabelled: either .claude.json names a login whose credential is not the one serving requests, or this entry is $vlive's credential filed under another name. The switcher skips the entry either way, and holds on no candidate while it stands; \`session account use\` the login whose credential is genuinely live, and restore the other from $acctdir/.history/"
       fi
     done
