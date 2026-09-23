@@ -50,11 +50,10 @@
 # ranks candidates only, so it passes 1 itself.
 #
 # ── the threshold is an argument ────────────────────────────────────────────
-# "Spent" means at or above a percentage the caller supplies. It is never read
-# from a global here: the caller clamps the warn threshold to 100 (a value
-# above 100 is the documented way to silence the usage advisory, and would
-# otherwise silently mean "no window is ever blocked") and passes the clamped
-# value down, so the clamp has exactly one site.
+# "Spent" means at or above a percentage the caller supplies. The policy never
+# reads it from a global: `_acct_threshold` in section 6 reads the warn
+# threshold, clamps it to 100 and passes the clamped value down, so the clamp
+# has exactly one site, and that is where its reason is given.
 
 # ── 2. constants ──────────────────────────
 # Two intervals, and they are deliberately not one. The cooldown bounds
