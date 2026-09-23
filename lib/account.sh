@@ -451,12 +451,13 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # nowhere and macOS does not ship at all. Firing it in the parent, after the
 # child has exited, neither holds the lock nor delays the decision.
 #
-# This section reads globals (the two knobs, the warn threshold, SESSION_HOME)
-# and calls into `session` for the vault and the swap, so unlike section 3 it
-# runs only inside a `session` process. Two of them reach it: a human typing
-# the verb, and the auto-resume waiter on a cap or auth death. The second has
-# no one reading stderr — on that path stderr is the wake channel — which is
-# why every diagnostic here goes to the audit row and the k=v output instead.
+# This section reads globals (SESSION_AUTO_SWITCH, SESSION_SWITCH_NOTIFY, the
+# warn threshold, SESSION_HOME) and calls into `session` for the vault and the
+# swap, so unlike section 3 it runs only inside a `session` process. Two of
+# them reach it: a human typing the verb, and the auto-resume waiter on a cap
+# or auth death. The second has no one reading stderr — on that path stderr is
+# the wake channel — which is why every diagnostic here goes to the audit row
+# and the k=v output instead.
 
 # The decision's mutex, resolved per call like the log's path so both follow
 # SESSION_DATA wherever a caller puts it.
