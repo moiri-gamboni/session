@@ -1880,6 +1880,14 @@ Lookup (any session, both directions; 8-char table ids work as prefixes):
                                    ↔ id + title; REACH = visible to ListAgents.
                                    --json carries full session ids
 
+Reboot survival (tmux only; `session reboot -h`, `session resume -h`):
+  session reboot [-n] [-y]         snapshot every live interactive session, then
+                                   reboot; -n prints the snapshot and stops, -y
+                                   skips the prompt (needed without a terminal)
+  session resume [--scan [H]]      reopen the snapshotted sessions, one tmux
+                                   window each; --scan takes every session with
+                                   transcript activity in the last H hours instead
+
 Usage attribution (who is burning the shared 5h/weekly caps):
   session usage [ID]               one session's counted $ burn + estimated share
                                    of each window (default: the invoking session)
@@ -1907,7 +1915,10 @@ Time tracking (hook-fed turn boundaries; gaps between turns never count):
                                    (default SESSION_ATTEND_GRACE); sets the tail
                                    with it unless --tail says otherwise
   session time --json              this session's figures as one JSON object
-                                   (attended_s is what a task logger reads)
+                                   (attended_s is what a task logger reads;
+                                   attended_basis "active" = no focus tracking
+                                   here, attended_s is then active_s — README
+                                   "time --json" has the contract)
 
 Accounts (several subscription logins, one config dir; `session account -h`):
   session account                  saved logins + each one's rate-limit headroom
@@ -1933,6 +1944,8 @@ Accounts (several subscription logins, one config dir; `session account -h`):
 Limits & pacing:
   session --compact                one frugal line: date/time + 5h & wk %s; exit 0
   session --guard                  pacing gate for fan-outs: OK=exit 0, PAUSE=exit 3
+                                   (a window whose cached reset has passed is
+                                   unknown and never pauses)
   session --wait [5h|week]         block until that window resets, then exit 0
                                    (a login switch mid-wait also exits: the
                                    switch is the wake-up)
