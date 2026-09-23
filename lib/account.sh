@@ -262,12 +262,16 @@ _acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unkn
 # reset outright, so a consumer must read a non-good candidate's resets as
 # unknown rather than as zero.
 #
-# A LAPSED access token is never sent. Refreshing it rotates credentials that
-# the live login's own sessions may be holding, and nothing needs it: a login's
-# figures only move while that login is in use, so its last reading stays as
-# right as it was. An entry with no readable token at all answers `lapsed` as
-# well: nothing was asked, so nothing is known — `dead` would claim the
-# endpoint rejected a token that was never sent.
+# A LAPSED access token is never sent, and never refreshed here. A refresh
+# goes through Claude Code's own token endpoint, which nothing documents, and
+# spends a single-use refresh token: a new pair lost before it lands in the
+# vault loses that login until its next /login, and on the live login it would
+# rotate the credential every running session holds. The cost is real, not
+# nil: the account behind an entry idle past its token's ~8 h life can still be
+# spent from another device, and its frozen figures miss that. An entry with
+# no readable token at all answers `lapsed` as well: nothing was asked, so
+# nothing is known — `dead` would claim the endpoint rejected a token that was
+# never sent.
 acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5reset TAB wreset TAB freset TAB scoped
   local login="$1" vf="$2" tok c body code row five week fable scoped
   command -v curl >/dev/null 2>&1 || { _acct_probe_blank nocurl; return 0; }
