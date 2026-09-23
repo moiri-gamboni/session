@@ -736,8 +736,9 @@ _acct_decide() {  # TRIGGER SID DRY
       # credential that landed is somebody else's, so nothing downstream may
       # read the live login name back as evidence of what happened.
       2) ev=fail; reason='swap-not-observed'; tier=$livetier ;;
-      # Unreachable: step 4 already refuses an entry that cannot authenticate.
-      # Reaching it means the screening was skipped.
+      # Unreachable: the candidate screening above (acct_entry_ok) already
+      # refuses an entry that cannot authenticate. Reaching it means the
+      # screening was skipped.
       *) ev=fail; reason='swap-refused'; tier=$livetier ;;
     esac
   fi
