@@ -347,7 +347,7 @@ acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … p
 # ── 5. audit log ──────────────────────────
 # Every automatic decision about which login the box runs on leaves one row in
 # `$SESSION_DATA/switch-log.tsv`, and that file is also the switcher's only
-# control state: the cooldown and the failed-switch probation both read it
+# control state: the cooldown and the post-switch probation both read it
 # back.
 #
 # 8 columns, never fewer:

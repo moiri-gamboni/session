@@ -183,7 +183,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` — the store holds sessi
 
 **Retention.** The three live logs keep 8 days so every reader stays fast; older rows move to `archive/` under the same file name, and history is deliberately permanent. The prune runs at most once per 86,400 s behind `.session-log-pruned`, under a lock, and is callable from **both** producers — the statusline render and `session --session-end` — so the logs stay bounded whether or not the statusline is installed. The marker name is the one the pre-port code used, which is what keeps a machine being cut over from pruning immediately on day one or orphaning the old marker. `sessions/` and `panes/` are swept of files older than 8 days in the same pass.
 
-`switch-log.tsv` is exempt, and keeps everything. Counted over the whole recorded history, decisions that survive the cooldown run at about 1,500 rows a year against a 79 MB store, so there is nothing to bound; and each row is the only account of why the box moved off a login, which is a question asked months later or not at all. It is also the switcher's control state — the cooldown and the failed-switch probation are both read back out of it — so a prune would be deleting state, not history.
+`switch-log.tsv` is exempt, and keeps everything. Counted over the whole recorded history, decisions that survive the cooldown run at about 1,500 rows a year against a 79 MB store, so there is nothing to bound; and each row is the only account of why the box moved off a login, which is a question asked months later or not at all. It is also the switcher's control state — the cooldown and the post-switch probation are both read back out of it — so a prune would be deleting state, not history.
 
 ### TSV schemas
 
