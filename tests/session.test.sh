@@ -3477,12 +3477,6 @@ report '- - -' "$(awk -F'\t' 'NR==1{print $3, $4, $7}' "$ALF")" \
 report '8 cooldown sid=s2' "$(al acct_log_last | awk -F'\t' '{print NF, $6, $8}')" \
     "switch-log: ... and the row survives the reader with its later fields unshifted"
 
-: > "$ALF"
-al acct_log refuse a@example.com
-report '8 refuse a@example.com - - - - -' \
-    "$(awk -F'\t' 'NR==1{print NF, $2, $3, $4, $5, $6, $7, $8}' "$ALF")" \
-    "switch-log: a caller that passes fewer arguments than there are columns still writes eight"
-
 # ── acct_log_last ──────────────────────────────────────────────────────────
 : > "$ALF"
 al acct_log hold a@example.com - cap cooldown - 'sid=h1'

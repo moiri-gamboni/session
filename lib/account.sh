@@ -385,9 +385,6 @@ acct_log_file() { printf '%s\n' "$SESSION_DATA/switch-log.tsv"; }
 
 acct_log() {  # EV FROM TO TRIGGER REASON FIGURES DETAIL -> 0 written, non-zero not
   local row arg
-  # A caller with nothing to say for the trailing columns may simply stop; the
-  # row still has to be eight wide.
-  while [ $# -lt 7 ]; do set -- "$@" '-'; done
   row=$(now_epoch)
   for arg in "$@"; do row="$row"$'\t'"${arg:--}"; done
   # The brace group carries the redirect: a redirect that fails is reported
