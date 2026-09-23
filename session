@@ -1237,7 +1237,7 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts]]
 
 To ADD a login, run `/login` in a session — there is no `add` subcommand and
 none is needed: the statusline vaults whatever you log into, within a render.
-`/login` is also non-destructive now, because the login it replaces was itself
+`/login` is also non-destructive, because the login it replaces was itself
 vaulted while live, so `session account use <old>` brings it back with no
 re-authentication. Note both `/login` and `use` are box-wide: every claude here
 shares this config dir, so all running sessions move to the new login too.
