@@ -156,6 +156,14 @@ Once a task folder is found (by either signal), its title and link come from two
 
 Whether the link is clickable is the terminal's business. Claude Code passes OSC 8 through its status line renderer (its ANSI carry-over regex names the sequence). **Under tmux the outer terminal has to be declared capable** — `set -sa terminal-features 'xterm*:hyperlinks'` for a TERM that renders them, such as VS Code's — because tmux forwards OSC 8 only to a client it believes supports it and does not probe for that; without the declaration it strips the sequence and the bare title shows. The declaration reaches clients attached after it is set. A terminal with no support ignores the sequence.
 
+## Reading the figures
+
+**Limits.** `rate_limits` refresh only on an API response, so an idle session — or a rate-limited one, which is exactly when someone checks — keeps reporting the window it last heard about. The windows are account-wide and every session on a login writes that login's cache, so the cache is as fresh as the login's most recently answered session. Once a `resets_at` has passed, the % is marked `?` and no `0h00m` countdown is printed; `--guard` and `--wait guard` treat that window as unknown and do not pause on it. The built-in `/usage` fetches live, so it is the tiebreaker when the two disagree.
+
+**Attribution.** Per-session `$` figures are counted: in-window deltas of each session's cumulative API-equivalent cost from `session-log.tsv`. The estimated % splits the global %-movement observed *while sampling was live* by tracked-`$` share; burn before sampling covered a window stays unattributed. The estimate is an upper bound, and the `$` columns stay exact, when some usage renders no statusline — headless `claude -p` runs, and anything off this machine (claude.ai, another device) — since both inflate the tracked sessions' shares. Cross-model splits assume limit weights track API prices. Right after a reset or a fresh install expect `≈0.0%` until the global % moves; `n/a` means no coverage basis yet. Subagent burn lands in the parent session, which is correct; tmux teammates are tracked individually.
+
+**Time.** An interrupted turn may never get its end event: it shows as *unclosed* and adds no time, so active is a floor. A trailing *open* turn shows its age. Messages queued mid-turn fire extra turn starts and inflate *unclosed* slightly.
+
 ## The data root
 
 Mode 700, files 600, and a `.gitignore` containing `*` — the store holds session ids, titles, working directories and costs, and a clone that ends up inside a repository must not carry them into a commit. Both the installer and the statusline write that `.gitignore`, deliberately: on a machine where the root already exists the statusline's create branch never fires, and on a machine with no statusline the installer is the only writer.
