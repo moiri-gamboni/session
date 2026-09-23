@@ -297,11 +297,11 @@ realpath_of() {
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 # ── Locking ──────────────────────────────────────────────────────────────────
-# A caller treats any non-zero as "somebody else holds it, or the command did
-# not run — skip either way", which is the only distinction the prune makes.
-# The backends do not agree on a code for BUSY and are not made to: util-linux
-# flock has -E, busybox flock does not, and the perl path picks its own, so a
-# caller that cares reads 1 and 75 as one set.
+# The prune treats any non-zero as "somebody else holds it, or the command did
+# not run — skip either way", and needs no finer distinction. The backends do
+# not agree on a code for BUSY and are not made to: util-linux flock has -E,
+# busybox flock does not, and the perl path picks its own, so a caller that
+# has to tell busy from broken reads 1 and 75 as one set.
 #
 # A lock file that cannot be OPENED must not wear either of those codes: the
 # decision verb's callers read busy as "another decision is in flight" and fall
