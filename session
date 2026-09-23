@@ -1228,7 +1228,7 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts]]
                  leaves a row in the data root's switch-log.tsv. Options:
                  --trigger cap|auth|manual (what asked; default manual),
                  --sid SID (the session it is for, recorded on the row),
-                 --dry-run (rank and print, change nothing).
+                 --dry-run (rank and print; swaps and sends nothing).
                  Prints k=v lines. Exits 0 switched, 3 held, 4 refused,
                  5 error; 1 or 75 mean another decision holds the lock.
                  SESSION_AUTO_SWITCH=off in session.conf disables it;

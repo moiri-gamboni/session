@@ -3982,10 +3982,8 @@ else
         "decide: ... and swapping nothing"
     report absent "$([ -e "$WD5/data/switch-log.tsv" ] && echo present || echo absent)" \
         "decide: ... writing no audit row"
-    report "" "$(cd "$WD5/data" && ls | grep -E '^(fable|probe-body)\.' || true)" \
-        "decide: ... and no cache file, although it probed both logins"
-    report "" "$(cd "$WD5/data" && ls -a | grep -E '^\.(probe|ident|dry)\.' || true)" \
-        "decide: ... nor any scratch left behind"
+    report "" "$(cd "$WD5/data" && ls -a | grep -E '^\.probe\.' || true)" \
+        "decide: ... leaving no scratch behind"
     report absent "$([ -s "$DNOTE5" ] && echo present || echo absent)" \
         "decide: ... and sends no notification"
 

@@ -596,7 +596,7 @@ _acct_next_eligible() {  # LIVETIER  (candidate rows on stdin) -> an epoch, or -
 # The decision itself, already under the lock.
 _acct_decide() {  # TRIGGER SID DRY
   local trigger="$1" sid="$2" dry="$3"
-  local thr cfg live now dr="" probeout n=0 vf name fresh star fg
+  local thr cfg live now probeout n=0 vf name fresh star fg
   local state f5 wk fb r5 rw rf sc blocks ctier
   local livestate='-' livetier=2 liveblocks='-' scoped='-'
   local rankrows="" cinfo="" candmap="" figures="" table=""
@@ -648,18 +648,15 @@ _acct_decide() {  # TRIGGER SID DRY
     candmap="$candmap$name$tab$vf$nl"
   done < <(acct_paths)
 
-  # A dry run changes nothing, and the probe legitimately caches what it read,
-  # so its writes go to a scratch root that is removed with them.
-  [ "$dry" = 1 ] && { dr="$SESSION_DATA/.dry.$$"; mkdir -p "$dr" 2>/dev/null || dr=""; }
+  # A dry run probes like any decision, and so refreshes the per-login caches
+  # exactly as `session account list` does; what it never does is swap or
+  # notify.
   probeout=$(
-    # shellcheck disable=SC2030,SC2031  # local to this subshell is the point
-    [ -n "$dr" ] && SESSION_DATA="$dr"
     # The LIVE credentials file, never the vault's copy of it: that is the token
     # actually serving requests, so its windows are the ones being decided on.
     printf '%s\t%s\n' "$live" "$(acct_probe "$live" "$cfg/.credentials.json")"
     printf '%s' "$candmap" | cut -f2 | acct_probe_all
   )
-  [ -n "$dr" ] && rm -rf "$dr"
 
   while IFS=$'\t' read -r name state f5 wk fb r5 rw rf sc; do
     [ -n "$name" ] || continue
@@ -800,9 +797,7 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   # and 73 from flock(1) where the filesystem is read-only rather than the
   # directory unwritable — none of them a decision, and flock(1) prints to
   # stderr besides. The hold below is an outcome a caller can act on and report.
-  # shellcheck disable=SC2031  # the dry-run rebinding is another function's subshell
   mkdir -p "$SESSION_DATA" 2>/dev/null
-  # shellcheck disable=SC2031
   [ -w "$SESSION_DATA" ] || {
     _acct_say hold "$(acct_live_login)" - not-writable - -; return 3; }
 
