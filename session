@@ -1537,12 +1537,13 @@ doctor_main() {
   #     `session account auto` would take the decision lock and write an audit
   #     row for a question nobody asked.
   #
-  #     The ladder is two lists, not one. The mode and the two pendings for a
-  #     missing credential and a second login are the decision verb's own
-  #     refusals, asked the way it asks them. The rest — the notify seam, the
-  #     trigger's wiring, the cache, curl — are the path that has to reach the
-  #     verb at all, and the verb never sees them: it switches perfectly
-  #     happily with a notify path it cannot run, recording notify=off.
+  #     The elif chain below is two lists, not one. The mode and the two
+  #     pendings for a missing credential and a second login are the decision
+  #     verb's own refusals, asked the way it asks them. The rest — the notify
+  #     seam, the trigger's wiring, the cache, curl — are the path that has to
+  #     reach the verb at all, and the verb never sees them: it switches
+  #     perfectly happily with a notify path it cannot run, recording
+  #     notify=off.
   #
   #     The two pendings come BEFORE the trigger's wiring deliberately: a
   #     machine that cannot switch at all yet has nothing wired wrong there,
