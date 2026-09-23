@@ -347,9 +347,8 @@ acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … p
 # ── 5. audit log ──────────────────────────
 # Every automatic decision about which login the box runs on leaves one row in
 # `$SESSION_DATA/switch-log.tsv`, and that file is also the switcher's only
-# control state: the cooldown, the failed-switch probation and the recovery of
-# `next_eligible_at` by a caller that got no output from the decision child all
-# read it back.
+# control state: the cooldown and the failed-switch probation both read it
+# back.
 #
 # 8 columns, never fewer:
 #
@@ -406,10 +405,9 @@ acct_log_last() {  # [EV] -> the newest row, or the newest of that event
 }
 
 # The value of one `k=v` key from the newest row THAT CARRIES IT, which is not
-# the same as the newest row. A refusal and a cooldown hold carry neither
-# `next_eligible=` nor `scoped=`, and a caller recovering either from the log —
-# because the decision child was locked out, or held before it computed
-# anything — would read both as absent if it looked only at the newest row.
+# the same as the newest row. A refusal and a cooldown hold carry no `scoped=`,
+# so `doctor`, which reports the probe's scoped-row count from here, would read
+# it as absent after either if it looked only at the newest row.
 # A key present with the value `-` IS carried: that is a decision saying it
 # computed the figure and found none, which is newer than an older epoch.
 acct_log_key() {  # KEY -> the value, or non-zero if no row carries it

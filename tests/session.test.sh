@@ -3493,10 +3493,9 @@ report yes "$( ( SESSION_DATA="$TMP/no-such-root"; acct_log_last ) >/dev/null 2>
     "switch-log: so does a read with no log at all"
 
 # ── acct_log_key: the newest row THAT CARRIES IT ───────────────────────────
-# A refusal and a cooldown hold carry neither next_eligible= nor scoped=, and
-# a caller that gets no output from the decision child — a busy lock, or that
-# very cooldown — recovers the value from the log rather than re-probing. Read
-# off the newest row alone, both would read as absent.
+# A refusal and a cooldown hold carry neither next_eligible= nor scoped=, so
+# read off the newest row alone both would read as absent — and doctor reads
+# the scoped-row count this way.
 : > "$ALF"
 al acct_log hold a@example.com - cap no-candidate - 'next_eligible=1758000000;scoped=1'
 al acct_log refuse a@example.com - manual blank-credential - 'notify=sent'
