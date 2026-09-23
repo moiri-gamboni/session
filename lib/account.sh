@@ -238,21 +238,6 @@ ACCT_USAGE_JQ='
       ($sc | length) ]
   | @tsv'
 
-# The Fable row alone, in the shape the account table reads back. Kept separate
-# from ACCT_USAGE_JQ because it is a FILE FORMAT, not a parse: anything short of
-# a Fable row with a numeric percent must yield no output and a non-zero status,
-# so the previous figure survives a body that simply does not mention Fable.
-ACCT_FABLE_JQ='
-  if (.limits | type) != "array" then empty else
-    first(.limits[]
-          | select(.kind == "weekly_scoped"
-                   and ((.scope.model.display_name // "") | ascii_downcase | startswith("fable"))
-                   and (.percent | type) == "number"))
-    | { fable: { used_percentage: .percent,
-                 resets_at: ((.resets_at // "") | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z")
-                             | try fromdateiso8601 catch 0) } }
-  end'
-
 _acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unknown
   printf '%s\t-1\t-1\t-1\t0\t0\t0\t%s\n' "$1" "${2:-0}"
 }
@@ -273,7 +258,7 @@ _acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unkn
 # nothing is known — `dead` would claim the endpoint rejected a token that was
 # never sent.
 acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5reset TAB wreset TAB freset TAB scoped
-  local login="$1" vf="$2" tok c body code row five week fable scoped
+  local login="$1" vf="$2" tok c body code row five week fable rf scoped
   command -v curl >/dev/null 2>&1 || { _acct_probe_blank nocurl; return 0; }
   tok=$(jq -r --argjson now "$(now_epoch)" '
       select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60)
@@ -301,7 +286,7 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
     *) rm -f "$body"; _acct_probe_blank unreachable; return 0 ;;
   esac
   row=$(jq -r "$ACCT_USAGE_JQ" "$body" 2>/dev/null)
-  IFS=$'\t' read -r five week fable _ _ _ scoped <<<"$row"
+  IFS=$'\t' read -r five week fable _ _ rf scoped <<<"$row"
   if [ -z "$row" ] || { [ "$five" = -1 ] && [ "$week" = -1 ] && [ "$fable" = -1 ]; }; then
     # The one case worth keeping a body for. This endpoint's shape has already
     # moved once, and a 200 that reads as nothing is the only evidence that
@@ -310,7 +295,14 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
     _acct_probe_blank noshape "${scoped:-0}"
     return 0
   fi
-  jq -ce "$ACCT_FABLE_JQ" "$body" > "$c.tmp.$$" && mv -f "$c.tmp.$$" "$c" || rm -f "$c.tmp.$$"
+  # The Fable file, from the row just read rather than a second parse of the
+  # body. A body with no Fable row with a numeric percent leaves the previous
+  # file in place: the endpoint is undocumented, so a row that is missing is
+  # not evidence the figure went away.
+  if [ "$fable" != -1 ]; then
+    printf '{"fable":{"used_percentage":%s,"resets_at":%s}}\n' "$fable" "$rf" > "$c.tmp.$$" \
+      && mv -f "$c.tmp.$$" "$c" || rm -f "$c.tmp.$$"
+  fi
   # Dropped the moment a body reads again, so the file is always the last
   # response this login gave that nothing could be read from, never an older
   # one — which is the only version of that statement worth acting on.

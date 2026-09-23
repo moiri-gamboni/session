@@ -3679,7 +3679,7 @@ APEOF
     report 8 "$(printf '%s\n' "$r" | awk -F'\t' '{print NF}')" \
         "case 14 [probe]: ... in eight fields, none of them empty"
     report '{"fable":{"used_percentage":89,"resets_at":1790240400}}' "$(cat "$PD/fable.ok@example.com.json" 2>&1)" \
-        "case 14 [probe]: ... and the same body refreshes the Fable cache through the pinned filter"
+        "case 14 [probe]: ... and the same body refreshes the Fable cache to the pinned bytes"
     report no "$([ -e "$PD/probe-body.ok@example.com.json" ] && echo yes || echo no)" \
         "case 14 [probe]: ... while a body that parsed is not kept on disk"
 
