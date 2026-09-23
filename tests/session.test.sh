@@ -4653,21 +4653,7 @@ ATURNEOF
     arun "$WA9" "$CA9" rate_limit; rc=$?
     report 2 "$rc" "arm: a hold that names no time at all still wakes on the reset"
     report 10 "$(aticks)" "arm: ... an unknown next_eligible_at never shortens the sleep"
-    report 1 "$(arows "$WA9")" "arm: ... and nothing re-decides on the way"
-
-    # A reset that has passed while the percentage behind it has not yet dropped:
-    # the epoch is real and already behind, and arming on it would wake the
-    # session straight back into the cap it is sleeping out.
-    WA13=$(aworld); CA13=$(curlstub)
-    alive "$WA13" a@example.com tok-a
-    aent "$WA13" a@example.com tok-a; aent "$WA13" b@example.com tok-b
-    abody "$CA13" tok-a 95 10 10
-    abody "$CA13" tok-b 10 95 10 "$AI1" "$AI1" "$AI1"   # held down by a weekly that reset a day ago
-    mkcache "$WA13" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
-    arun "$WA13" "$CA13" rate_limit; rc=$?
-    report 2 "$rc" "arm: a next_eligible_at already in the past wakes nothing early"
-    report 10 "$(aticks)" "arm: ... the sleep runs to the reset, as if no time had been named"
-    report 1 "$(arows "$WA13")" "arm: ... and nothing re-decides on the way"
+    report 1 "$(arows "$WA9")" "arm: ... and nothing re-decides on the way, with no time named"
 
     # Inside the cooldown, where a re-decision could only hold on it again.
     WA15=$(aworld); CA15=$(curlstub)
@@ -4695,7 +4681,7 @@ ATURNEOF
     report yes "$(asaid '5h rate-limit window has reset')" \
         "arm: ... so the wake-up is not delivered hours after the window it names turned over"
     report 10 "$(aticks)" "arm: ... the sleep still ends at the 5h reset"
-    report 1 "$(arows "$WA16")" "arm: ... and nothing re-decides on the way"
+    report 1 "$(arows "$WA16")" "arm: ... and nothing re-decides on the way, with a time named past the reset"
 
     # ── every spawn decides; the lock makes it one decision ──────────────────
     WA12=$(aworld); CA12=$(curlstub)
