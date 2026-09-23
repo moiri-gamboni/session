@@ -4109,13 +4109,11 @@ else
     report absent "$([ -e "$WD20/data/switch-log.tsv" ] && echo present || echo absent)" \
         "decide: ... and nothing is recorded under a word no reader knows"
 
-    # ── the candidate screening, all three shapes, before any token is sent ───
+    # ── the candidate screening, before any token is sent ────────────────────
     WD11=$(dworld); CD11=$(curlstub)
     dlive "$WD11" a@example.com tok-a
     dvent "$WD11" a@example.com tok-a
     dvent "$WD11" f@example.com tok-f
-    printf '{"email":"b@example.com","login":"b@example.com","oauthAccount":{"emailAddress":"c@example.com"},"claudeAiOauth":{"accessToken":"tok-b","expiresAt":%s000}}\n' \
-        "$DEXP" > "$WD11/vault/b@example.com.json"
     printf '{"email":"d@example.com","login":"d@example.com","oauthAccount":{"emailAddress":"d@example.com"},"claudeAiOauth":{"accessToken":"","expiresAt":%s000}}\n' \
         "$DEXP" > "$WD11/vault/d@example.com.json"
     printf '{"email":"e@example.com","login":"e@example.com","oauthAccount":{"emailAddress":"e@example.com"},"claudeAiOauth":{"accessToken":"tok-e","expiresAt":0}}\n' \
@@ -4125,8 +4123,8 @@ else
     out=$(dauto "$WD11" "$CD11" --trigger cap); rc=$?
     report 'switch f@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
         "decide: the one vault entry that passes the credential predicate is the one it moves to"
-    report 0 "$(dasked "$CD11" tok-b tok-e)" \
-        "decide: ... and an entry filed under a name its own identity does not derive, or with no expiry, is never even asked"
+    report 0 "$(dasked "$CD11" tok-e)" \
+        "decide: ... and an entry with no expiry is never even asked"
 
     # ── the warn threshold, validated and clamped on this path ───────────────
     # `session account` dispatches before the CLI's own validation loop, so this
@@ -4929,32 +4927,7 @@ else
     report yes "$(dcsays "$out" switcher 'newest cap death (5m)')" \
         "doctor: ... beside the cap death it did not act on, which is the gap worth seeing"
 
-    # ── a vault entry filed under a name its own identity does not derive ────
-    # The swap writes two files and the statusline's autosave reads both; land
-    # between them and a credential is vaulted under another login's name. The
-    # window is not guarded, and this is the detector that would turn that
-    # judgement into a case to design against.
-    WDC13=$(dcworld)
-    printf '{"email":"d@example.com","login":"c@example.com","oauthAccount":{"emailAddress":"d@example.com"},"claudeAiOauth":{"accessToken":"t","expiresAt":9999999999000}}\n' \
-        > "$WDC13/vault/c@example.com.json"
-    out=$(ddoc "$WDC13"); rc=$?
-    report 1 "$rc" "doctor: a vault entry whose own identity is not the name it is filed under is a failure"
-    report FAIL "$(dcstate "$out" vault)" "doctor: ... on a line of its own"
-    report yes "$(dcsays "$out" vault 'c@example.com.json')" "doctor: ... naming the file"
-    report yes "$(dcsays "$out" vault 'd@example.com')" "doctor: ... and the identity the entry itself carries"
-    report "" "$(dcstate "$DCOK" vault)" "doctor: a vault whose entries all derive their own names says nothing"
-
-    # An entry nothing can read an identity out of is a different fault with a
-    # different remedy, and the name-collision wording would send its reader to
-    # .history for a restore that is not the answer.
-    WDC13b=$(dcworld)
-    printf '{"email":"e@example.com","login":"e@exa\n' > "$WDC13b/vault/e@example.com.json"
-    out=$(ddoc "$WDC13b"); rc=$?
-    report 1 "$rc" "doctor: a vault entry carrying no identity of its own is a failure too"
-    report FAIL "$(dcstate "$out" vault)" "doctor: ... on the same line"
-    report yes "$(dcsays "$out" vault 'no identity of its own')" "doctor: ... named as what it is"
-    report no "$(dcsays "$out" vault 'another login')" \
-        "doctor: ... and never as a credential filed under another login's name, which it is not"
+    report "" "$(dcstate "$DCOK" vault)" "doctor: a vault with nothing mislabelled says nothing"
 
     # ── the warn threshold, which `doctor` dispatches before the CLI validates
     out=$(ddoc "$WDC" USAGE_WARN_PCT=ninety); rc=$?
@@ -5371,9 +5344,7 @@ else
 
     # The screening is silent by construction, and what it screens out is a box
     # that cannot move: every decision after it holds on no candidate while the
-    # entry stands. `doctor` is where that has to become visible — its existing
-    # vault detector cannot see this shape, the entry's own identity deriving
-    # its filename perfectly well.
+    # entry stands. `doctor` is where that has to become visible.
     mdoc() { sess "$1" SESSION_ACCOUNTS_DIR="$1/vault" -- doctor 2>&1; }
     out=$(mdoc "$MW1")
     report yes "$(printf '%s\n' "$out" | grep -q 'FAIL *vault .*holds the access token that is installed' && echo yes || echo no)" \

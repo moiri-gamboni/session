@@ -480,46 +480,10 @@ _acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
   printf '%s\n' "$t"
 }
 
-# The login name a vault entry's OWN identity derives. It has to be the name the
-# entry is filed under, or the entry is evidence of a credential having been
-# filed under another login's name — and switching to it would put the box on a
-# login nothing chose, with another login's windows ranked as its own.
-#
-# The two can disagree: acct_save reads .claude.json once for the name it files
-# the entry under and again for the identity it stores in it, and a concurrent
-# session rewriting that file between the two reads is the documented way a
-# credential lands under another login's name.
-#
-# Derived by session_login_read rather than by a second copy of the naming rule:
-# that rule has an organisation-seat branch and a sanitising step, and two
-# implementations of it would disagree the first time either moved. The entry's
-# own oauthAccount is written where that function looks for one.
-# Derive a vault entry's own login name, by the one rule that computes it:
-# point SESSION_CFG at a scratch directory holding that entry's oauthAccount
-# and let session_login_read answer. A second implementation in jq would
-# disagree with the first the day either moved — the rule has an
-# organisation-seat branch and a sanitising step.
-#
-# THE STATUS IS NOT A VERDICT ON THE ENTRY. It is non-zero only when the
-# scratch directory could not be made, i.e. when nothing was asked. An entry
-# with no readable oauthAccount answers `unknown` on stdout and exits 0, so a
-# caller's `|| return` never fires for it. That split is deliberate: a reader
-# has to tell "could not ask" from "asked, and this entry has no identity",
-# which are different faults with different remedies.
-acct_entry_name() {  # VAULTFILE -> the derived login name, or `unknown`
-  local d="$SESSION_DATA/.ident.$$"
-  mkdir -p "$d" 2>/dev/null || return 1
-  jq -c '{oauthAccount}' "$1" > "$d/.claude.json" 2>/dev/null
-  # shellcheck disable=SC2034  # session_login_read is what reads it, one frame down
-  ( SESSION_CFG="$d"; session_login_read )
-  rm -rf "$d"
-}
-
-# Whether a vault entry may be switched TO at all. Four shapes are excluded,
-# and the first three are on this machine's record: no token to authenticate
-# with, an expiry of zero (the 2026-09-15 blank, where every key was present and
-# the object held nothing), an identity that does not derive the entry's name,
-# and a credential that is the one already live.
+# Whether a vault entry may be switched TO at all. Three shapes are excluded:
+# no token to authenticate with and an expiry of zero (the 2026-09-15 blank,
+# where every key was present and the object held nothing), both on this
+# machine's record, and a credential that is the one already live.
 #
 # The last is the mis-filed entry the swap's two-file window can produce: the
 # statusline's autosave, which is under no lock, files the incoming credential
@@ -537,12 +501,11 @@ acct_entry_name() {  # VAULTFILE -> the derived login name, or `unknown`
 # is rendered. The live credentials file is passed in because whether an entry
 # may be switched to is a question about the entry and the machine's current
 # state together.
-acct_entry_ok() {  # VAULTFILE NAME LIVE_CREDENTIALS
+acct_entry_ok() {  # VAULTFILE LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
-  jq -e --slurpfile c "$3" \
-     '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$1" >/dev/null 2>&1 && return 1
-  [ "$(acct_entry_name "$1")" = "$2" ]
+  ! jq -e --slurpfile c "$2" \
+       '.claudeAiOauth.accessToken == $c[0].claudeAiOauth.accessToken' "$1" >/dev/null 2>&1
 }
 
 # Whether a decision may be taken at all right now.
@@ -681,7 +644,7 @@ _acct_decide() {  # TRIGGER SID DRY
     # credential already in place buys nothing, and probing it would ask the
     # endpoint twice under one identity.
     { [ -n "$name" ] && [ "$name" != "$live" ]; } || continue
-    acct_entry_ok "$vf" "$name" "$cfg/.credentials.json" || continue
+    acct_entry_ok "$vf" "$cfg/.credentials.json" || continue
     candmap="$candmap$name$tab$vf$nl"
   done < <(acct_paths)
 
