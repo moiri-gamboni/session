@@ -422,7 +422,10 @@ if [ "$settings_ok" = 1 ]; then
         # turns the waiter into a no-op that still sleeps out its whole wait.
         # The timeout below is inert on an async entry — the harness does not
         # enforce it there — and is kept only as a defence should that change.
-        # The Auto-resume section of README.md carries the whole of it.
+        # It is also a unit slip: timeout is in seconds, as the 2 on the
+        # lifecycle entries shows, so 700000 is eight days, not the 700 s
+        # meant. Left as it is: it changes nothing either way, and moving it
+        # would rewrite every installed settings.json and break case 26.
         def wake($e):
             {event:$e, matcher:null,
              entry:{type:"command", command:"bash \($s) --rewake-waiter", timeout:700000,
