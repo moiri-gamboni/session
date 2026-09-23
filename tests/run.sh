@@ -24,7 +24,7 @@
 #   them, so the stock image proves nothing about the installer or the
 #   statusline. busybox `ps` also takes none of the flags the ps fallback uses,
 #   so that branch skips in both legs on Linux; it is Darwin-only (see
-#   README.md). Every leg prints its own counts as it runs, which is why
+#   proc_env in lib/common.sh). Every leg prints its own counts as it runs, which is why
 #   none are quoted here: a count in a comment is a measurement nothing
 #   recomputes, and these went stale twice inside one batch.
 #

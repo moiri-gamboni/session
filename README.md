@@ -18,7 +18,7 @@ $ session
 
 Time is measured per turn from Claude Code's hooks, so the idle gaps between turns never count and headless `claude -p` runs are counted like any other. `session time --json` is a stable contract a task logger can book time against ([below](#time---json--the-contract-a-task-logger-reads)), and `session doctor` checks that an install really produces it.
 
-`session --help` is the flag reference and every verb takes `-h`. This file covers installing, what each figure means and how it is made, what is stored on disk, and what is true only on Linux; `(case N)` names the test that pins a promise.
+`session --help` is the flag reference and every verb takes `-h`. This file covers installing, what each figure means and how it is made, what is stored on disk, and what is true only on Linux.
 
 ## Install
 
@@ -65,11 +65,11 @@ Every step prints `ok`, `skip` or `REFUSE <fact> <remedy>`. **A refusal never st
 
 What it writes into `$CLAUDE_CONFIG_DIR/settings.json`, all as absolute paths into the clone: eight lifecycle hook entries (`UserPromptSubmit --hook`, `Stop --turn-end`, `StopFailure --turn-fail`, `SessionEnd --session-end`, `SubagentStart --subagent-start`, `SubagentStop --subagent-end`, `PostCompact --compact-mark`, and `Notification --perm-mark` under `matcher: "permission_prompt"`), each `bash <clone>/session --<mode> || true` with `timeout: 2`; the two auto-resume entries; and the `statusLine`. Beside the settings file it creates the data root, links the CLI onto `PATH`, and — when any of the five conf-recorded flags is passed — writes `session.conf`. Only two top-level settings keys are ever added: `hooks` and `statusLine`.
 
-**`|| true` on the lifecycle entries is load-bearing and its absence on the rewake pair is too.** A hook command is run through `/bin/sh` (dash on Debian and Ubuntu), so the shell metacharacters are interpreted and `|| true` is POSIX. The rewake pair must not carry it, because **exit 2 is the wake signal**: swallowing it leaves a waiter that sleeps out its whole wait and then wakes nobody. Case 26 in `tests/install.test.sh` asserts both on the command strings.
+**`|| true` on the lifecycle entries is load-bearing and its absence on the rewake pair is too.** A hook command is run through `/bin/sh` (dash on Debian and Ubuntu), so the shell metacharacters are interpreted and `|| true` is POSIX. The rewake pair must not carry it, because **exit 2 is the wake signal**: swallowing it leaves a waiter that sleeps out its whole wait and then wakes nobody.
 
-**A re-run is a byte-identical no-op** (case 27). It identifies its own entries by the clone path inside the command rather than by a naming pattern, so an install from any directory layout replaces rather than duplicates. It additionally drops entries of this CLI's shape whose script no longer exists — a clone that was moved or deleted otherwise leaves hooks that fail on every turn — and leaves another clone's live entries alone.
+**A re-run is a byte-identical no-op**. It identifies its own entries by the clone path inside the command rather than by a naming pattern, so an install from any directory layout replaces rather than duplicates. It additionally drops entries of this CLI's shape whose script no longer exists — a clone that was moved or deleted otherwise leaves hooks that fail on every turn — and leaves another clone's live entries alone.
 
-**Refusals to expect** (case 28): a `statusLine` that is not ours is refused, not replaced, with the exact object to merge by hand printed beneath it; a symlink name already taken is refused unless you pass `--force-link` or `--name`; an unparsable `settings.json` refuses every settings step and is left untouched; an absent one is created as `{}`; and a `settings.json` that changed between the installer's read and its write is refused with the remedy to close Claude Code (which rewrites the file at runtime) and re-run. A `settings.json` that is a symlink — a dotfiles repo, say — is followed: the edit and its backup land at the target, and the link survives.
+**Refusals to expect**: a `statusLine` that is not ours is refused, not replaced, with the exact object to merge by hand printed beneath it; a symlink name already taken is refused unless you pass `--force-link` or `--name`; an unparsable `settings.json` refuses every settings step and is left untouched; an absent one is created as `{}`; and a `settings.json` that changed between the installer's read and its write is refused with the remedy to close Claude Code (which rewrites the file at runtime) and re-run. A `settings.json` that is a symlink — a dotfiles repo, say — is followed: the edit and its backup land at the target, and the link survives.
 
 **`--dry-run` writes nothing at all** (no data root, symlink, `session.conf` or settings file): it prints the `jq -S` diff of the merge, against a virtual `{}` when there is no `settings.json`, and stops before the focus-tracking lines and `doctor`.
 
@@ -104,7 +104,7 @@ session ; session usage
 
 Everything here has been run except the interactive `claude` line, which needs a login. Without it `doctor` reads `pending` on the cache, the turn log, `time --json` and the switcher — the correct answer for a configuration nothing has run against yet, and the reason the next paragraph matters.
 
-**Two prompts, not one.** A session's first render cannot tell whose rate-limit window it is looking at (a fresh session's first payload can still carry another login's), so it writes no cache; the second render does. After a single prompt `session` correctly reports no cache (case 20 in `tests/statusline.test.sh`).
+**Two prompts, not one.** A session's first render cannot tell whose rate-limit window it is looking at (a fresh session's first payload can still carry another login's), so it writes no cache; the second render does. After a single prompt `session` correctly reports no cache.
 
 Then `uninstall.sh --bindir "$BINDIR"`, which should leave the scratch `settings.json` as `{}`.
 
@@ -127,7 +127,7 @@ Then `uninstall.sh --bindir "$BINDIR"`, which should leave the scratch `settings
 
 ## `session doctor`
 
-Eleven checks, each asking whether the thing works *on this machine* and printing the fact it decided on. Four further lines appear only when they have something to report: `session.conf` when that file is broken or ignored, `warn pct` when `USAGE_WARN_PCT` is not a whole number, `credentials` when the live access token is empty, and `vault` when a vaulted entry holds the access token that is currently installed while filed under another login's name. Three states, because "not yet" and "wired wrong" have different remedies: **ok**, **pending** (nothing has produced it yet — usually "interact once"), **FAIL** (wired wrong, and the line says what). Only a FAIL exits 1. Case 19 in `tests/session.test.sh` pins all three; the `doctor:` block at that suite's tail pins check 11 and the `warn pct` and `vault` lines.
+Eleven checks, each asking whether the thing works *on this machine* and printing the fact it decided on. Four further lines appear only when they have something to report: `session.conf` when that file is broken or ignored, `warn pct` when `USAGE_WARN_PCT` is not a whole number, `credentials` when the live access token is empty, and `vault` when a vaulted entry holds the access token that is currently installed while filed under another login's name. Three states, because "not yet" and "wired wrong" have different remedies: **ok**, **pending** (nothing has produced it yet — usually "interact once"), **FAIL** (wired wrong, and the line says what). Only a FAIL exits 1.
 
 1. **data root** — exists, writable, mode exactly 700, and the resolved path with where it can have come from: `from SESSION_DATA_DIR`, adding `which <conf> also sets` when the conf names it too (once the conf is sourced the two are indistinguishable), or the default.
 2. **on PATH** — what `session` on `PATH` actually resolves to, FAIL when it is not this file. Two copies of this CLI on one machine is the failure mode the whole check exists for.
@@ -144,6 +144,8 @@ Eleven checks, each asking whether the thing works *on this machine* and printin
 A fresh install reads:
 
 ```
+-- session doctor -------------------------------------------------
+  code     <clone>
   ok       data root   <root> (mode 700, the default under the config dir)
   ok       on PATH     <bindir>/session
   ok       settings    <config dir>/settings.json parses
@@ -155,6 +157,8 @@ A fresh install reads:
   ok       auto-resume 2 entr(y/ies), asyncRewake armed
   ok       platform    perl present · jq present · tmux present · inotifywait present · flock(1) · /proc
   pending  switcher    no <config dir>/.credentials.json — nothing has logged in here yet, or this Claude Code keeps credentials in the macOS Keychain, which this build cannot swap
+-------------------------------------------------------------------
+  nothing is wired wrong.
 ```
 
 ## Configuration
@@ -238,11 +242,11 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `c` | compaction (`PostCompact`) | `manual` or `auto` |
 | `p` | permission prompt shown (`Notification`) | — |
 
-Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing, with field values `@tsv`-escaped (case 2); `--hook` writes the `s` row even when there is no rate-limit cache yet (case 4).
+Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing, with field values `@tsv`-escaped; `--hook` writes the `s` row even when there is no rate-limit cache yet.
 
 **`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`.
 
-**`session-log.tsv`** — 21 columns, and readers must tolerate shorter lines from older rows: `ts`, `sid`, `cost_usd`, `five%`, `week%`, `five_reset`, `week_reset`, `duration_ms`, `api_duration_ms`, `total_output_tokens`, `total_input_tokens`, `context%`, `cache_read`, `cache_creation`, `cur_input`, `cur_output`, `lines_added`, `lines_removed`, `model_id`, `prompt_id`, `account`. The attribution estimator reads columns 1–8; column 8, the process's cumulative wall clock, distinguishes two processes rendering under one session id (a `--resume` beside a live original), so cost deltas are taken within one process. Column 21 separates two subscription logins, since rate-limit windows are per login. The other columns are logged for later views. A row is appended when the session's cumulative cost moves, plus a 10-minute idle heartbeat (case 21).
+**`session-log.tsv`** — 21 columns, and readers must tolerate shorter lines from older rows: `ts`, `sid`, `cost_usd`, `five%`, `week%`, `five_reset`, `week_reset`, `duration_ms`, `api_duration_ms`, `total_output_tokens`, `total_input_tokens`, `context%`, `cache_read`, `cache_creation`, `cur_input`, `cur_output`, `lines_added`, `lines_removed`, `model_id`, `prompt_id`, `account`. The attribution estimator reads columns 1–8; column 8, the process's cumulative wall clock, distinguishes two processes rendering under one session id (a `--resume` beside a live original), so cost deltas are taken within one process. Column 21 separates two subscription logins, since rate-limit windows are per login. The other columns are logged for later views. A row is appended when the session's cumulative cost moves, plus a 10-minute idle heartbeat.
 
 **`switch-log.tsv`** — 8 columns, `-` where a field does not apply and never an empty one: `ts` (epoch seconds), `ev`, `from`, `to`, `trigger`, `reason`, `figures`, `detail`.
 
@@ -274,13 +278,13 @@ A reader after one of the `detail` keys must take the newest row **that carries 
 
 Only what a reader needs is written; the rest of each source is dropped.
 
-**The cache** is `jq -c '{rate_limits, context_window, model, version}'` of the statusline payload. The payload's `cwd`, `transcript_path`, `workspace`, `session_id`, `cost` and the rest are not stored, since nothing reads them (case 20).
+**The cache** is `jq -c '{rate_limits, context_window, model, version}'` of the statusline payload. The payload's `cwd`, `transcript_path`, `workspace`, `session_id`, `cost` and the rest are not stored, since nothing reads them.
 
-**The snapshot** is `jq -c '{session_name}'`, all that `session name` and the peer lookup read (case 22).
+**The snapshot** is `jq -c '{session_name}'`, all that `session name` and the peer lookup read.
 
-**The Fable file** is `{"fable":{"used_percentage":N,"resets_at":EPOCH}}`, the usage endpoint's one Fable row with its reset in epoch seconds. A response without that row writes nothing; spend, credit balances and the other meters are dropped (case 14 `[fable]`).
+**The Fable file** is `{"fable":{"used_percentage":N,"resets_at":EPOCH}}`, the usage endpoint's one Fable row with its reset in epoch seconds. A response without that row writes nothing; spend, credit balances and the other meters are dropped.
 
-All three are written to a temp file named with the writer's pid in the same directory and moved into place, so a reader never sees a partial file, even when renders on one login overlap. A malformed payload leaves the previous cache byte-identical (case 20).
+All three are written to a temp file named with the writer's pid in the same directory and moved into place, so a reader never sees a partial file, even when renders on one login overlap. A malformed payload leaves the previous cache byte-identical.
 
 ### `time --json` — the contract a task logger reads
 
@@ -294,11 +298,11 @@ Four fields are the contract: `date` is a `%F` string, `attended_s` and `active_
 
 `attended_basis` depends on one thing: whether the **live** focus log has any rows. With focus rows, `attended_s` is focused-tab time, idle-capped at `SESSION_ATTEND_GRACE`. Without them nothing measured attention, so rather than report a zero (which reads as "you were not there") the basis says `active` and `attended_s` equals `active_s`, the turn span. That figure is an upper bound on attention, not a measurement of it: a task logger should book it as an estimate, `~11m`, never `11m04s`.
 
-A machine that had focus tracking but has logged no focus rows for longer than the 8-day retention reports `active` too: its tmux hooks have stopped firing. Case 6 pins the contract, case 7 the spans and the idle cap.
+A machine that had focus tracking but has logged no focus rows for longer than the 8-day retention reports `active` too: its tmux hooks have stopped firing.
 
 ### Reads inside the retention window
 
-`session time` reads the live log alone when the requested day is within the last 7 days **and** the live file's first row predates that day's midnight; otherwise it reads `archive/` too, which is about twice as slow on a large store (case 8).
+`session time` reads the live log alone when the requested day is within the last 7 days **and** the live file's first row predates that day's midnight; otherwise it reads `archive/` too, which is about twice as slow on a large store.
 
 ## Focus tracking
 
@@ -315,7 +319,7 @@ set-hook -g "session-window-changed[0]" "run-shell -b 'session --focus-mark swit
 
 Then `tmux source-file ~/.tmux.conf`. Without them everything else still works, and `attended_basis` says `active`.
 
-The tick logs an activity mark, stamped with the client's actual input time, for every client with input in the last 90 seconds, focused or not; typing and scrolling both count (tmux mouse mode makes wheel events input). Attention stops accruing `SESSION_ATTEND_TAIL` seconds after the last interaction, so a tab left focused on an empty desk does not count (cases 16 and 7). Another scheduler works in place of cron: `--focus-mark tick AGE` sets the recency window, which should be one tick interval plus some slack.
+The tick logs an activity mark, stamped with the client's actual input time, for every client with input in the last 90 seconds, focused or not; typing and scrolling both count (tmux mouse mode makes wheel events input). Attention stops accruing `SESSION_ATTEND_TAIL` seconds after the last interaction, so a tab left focused on an empty desk does not count. Another scheduler works in place of cron: `--focus-mark tick AGE` sets the recency window, which should be one tick interval plus some slack.
 
 `--focus-mark` exits 0 and says nothing on a host without tmux — it runs from a tmux hook and a cron line, neither of which has a reader.
 
@@ -349,17 +353,15 @@ The list is a table:
 - **Anything short of a Fable row with a numeric percent keeps the previous file.** That covers curl failing, an HTTP error, a 200 whose body has no `limits[]` (the endpoint's in-band error shape), and a well-formed `limits[]` with no usable Fable row. The endpoint is undocumented, so a missing row is not treated as evidence that the figure went away.
 - **`n/a` in `FABLE`** means no fetch has ever succeeded for that login.
 
-Case 14 `[fable]` pins all of this against a curl stub, including that the token never appears in curl's argv.
-
-**A login is named by its email, and a seat in a Team or Enterprise organisation by `<email>+<org slug>`** (`me@example.com+example-org`). One email can hold a personal plan and a seat at once, with separate credentials and separate rate-limit windows, so the two must never share a vault entry or a cache. A personal plan (`claude_max`, `claude_pro`, `claude_free`, or no organisation recorded) keeps the bare email. The vault file, the statusline cache and the session log's account column all carry that name. `use` takes a row number, the whole name (which always wins, since a bare email is a prefix of its own seat's name) or a unique case-insensitive substring; rows are numbered in C-collated name order, so a number keeps meaning the same login until an entry is added or removed (case 14).
+**A login is named by its email, and a seat in a Team or Enterprise organisation by `<email>+<org slug>`** (`me@example.com+example-org`). One email can hold a personal plan and a seat at once, with separate credentials and separate rate-limit windows, so the two must never share a vault entry or a cache. A personal plan (`claude_max`, `claude_pro`, `claude_free`, or no organisation recorded) keeps the bare email. The vault file, the statusline cache and the session log's account column all carry that name. `use` takes a row number, the whole name (which always wins, since a bare email is a prefix of its own seat's name) or a unique case-insensitive substring; rows are numbered in C-collated name order, so a number keeps meaning the same login until an entry is added or removed.
 
 **A vault entry that cannot authenticate is never installed.** Before anything is vaulted or written, `use` refuses an entry whose `claudeAiOauth.accessToken` is empty, `null` or absent, naming the login and pointing at `/login` — the remedy is a fresh login, not a retry. Nothing moves: the live credentials and the identity file are left exactly as they were.
 
 **The swap is read back before `use` reports it.** After writing, the installed `claudeAiOauth` is compared with the vault entry's, out of `.credentials.json` rather than out of `.claude.json` — the identity file is a head start for the next statusline render, not the source of truth, and a concurrent session can rewrite it from memory. A mismatch exits 1 with a message naming the file, and neither the confirmation nor the table is printed; the Fable refetch does not run. The comparison is a boolean, so no token value is ever rendered. **`.claude.json` is written before the check**, so after a mismatch it names the login whose credential did not land — `session account list` marks that login `live` until a swap succeeds.
 
-**This is the one platform-bound feature.** It swaps `claudeAiOauth` inside `<config dir>/.credentials.json` and `oauthAccount` inside `<config dir>/.claude.json`, which is where Linux stores them. On macOS they are in the Keychain, the hot-swap property is unverified and probably absent, and building that branch needs a Mac. So on a config dir with no `.credentials.json`, `use` refuses naming the Keychain and pointing here, `save` exits 1 with "nothing to save", and **`session account` still lists the vault with each login's cached headroom**. All three are pinned by case 14 — but by *removing* `.credentials.json`, which simulates the macOS shape rather than testing it. Nothing here has run on a Mac.
+**This is the one platform-bound feature.** It swaps `claudeAiOauth` inside `<config dir>/.credentials.json` and `oauthAccount` inside `<config dir>/.claude.json`, which is where Linux stores them. On macOS they are in the Keychain, the hot-swap property is unverified and probably absent, and building that branch needs a Mac. So on a config dir with no `.credentials.json`, `use` refuses naming the Keychain and pointing here, `save` exits 1 with "nothing to save", and **`session account` still lists the vault with each login's cached headroom**. Nothing here has run on a Mac.
 
-The statusline's autosave calls `<clone>/session account save` whenever the live credentials are newer than the vault entry, and never when the login reads as `unknown` (case 24). It is `|| true`-guarded, so a `statusLine` pointing at a clone whose `session` has gone missing silently saves nothing; `session doctor` check 2 catches that.
+The statusline's autosave calls `<clone>/session account save` whenever the live credentials are newer than the vault entry, and never when the login reads as `unknown`. It is `|| true`-guarded, so a `statusLine` pointing at a clone whose `session` has gone missing silently saves nothing; `session doctor` check 2 catches that.
 
 **A live credential that carries no usable access token is never vaulted.** `save` exits 1, writes the reason to stderr and leaves the existing entry byte-identical. The test is `claudeAiOauth.accessToken` alone: a non-empty one vaults whatever else the object holds, `expiresAt` included; an empty, absent or `null` one is refused, whether `expiresAt` reads 0, is absent, or the other six keys are perfectly well-formed. While the live token is blank, `session doctor` prints a `credentials` FAIL: it names the vault entry to restore with `session account use <login>` when that entry carries a token of its own, and otherwise says no vaulted copy does, since a vault entry can itself be blank.
 
@@ -436,7 +438,7 @@ Write that line with your own editor, never with `sudo`: it changes the file's o
 
 `session reboot` snapshots every live interactive session to the resume queue and reboots (`sudo systemctl reboot`, or `sudo shutdown -r now` where there is no systemctl); `session resume` reopens one tmux window per snapshotted session and clears the queue. `--scan [HOURS]` is the recovery path when no snapshot was taken, reading the transcript store instead. `-n` prints without doing anything.
 
-Both **refuse with a message naming tmux** when tmux is absent (case 15). `session peers` works without tmux (it reads Claude Code's presence registry), and `--focus-mark` is a silent no-op.
+Both **refuse with a message naming tmux** when tmux is absent. `session peers` works without tmux (it reads Claude Code's presence registry), and `--focus-mark` is a silent no-op.
 
 `SESSION_TMUX_MAIN_GUARD`, when set to an executable, runs before `resume` opens windows: a host's own pre-resume check. Running `session resume` automatically at boot needs a service unit, which is the host's business and not this installer's.
 
@@ -446,13 +448,13 @@ Two `asyncRewake` entries, on `UserPromptSubmit` and `StopFailure`, armed by def
 
 **Only the wake-up itself writes to that entry's stderr**, because exit 2 hands stderr to the model as a message. So a configuration the waiter cannot read — a guard spec, `USAGE_WARN_PCT`, an unknown argument — exits 0 there silently and arms nothing. The synchronous `--hook` entry is what surfaces it, refusing every prompt until it is fixed. `session doctor` names a bad warn threshold but not a bad guard spec: it runs before the guard specs are read. One malformed line in `session.conf` reaches every session on the machine.
 
-**The version gate fails closed.** The pair is armed only when `claude --version` reports at least 2.1.233, the build the backgrounding behaviour was verified against, compared as dot-separated integer tuples rather than as strings (`2.1.99` is older than `2.1.233`, which a string comparison gets backwards; case 26 uses exactly that fixture). Below it, and **when there is no `claude` on `PATH` at all**, the pair is refused with a remedy rather than armed blind — a harness that does not background an async hook would run the waiter synchronously on every over-threshold prompt, blocking it there until the window reset. The lifecycle entries still land in every refusal case. A teammate installing from a shell where `claude` is not on `PATH` will hit this; the remedy is to fix `PATH` or pass `--no-rewake`.
+**The version gate fails closed.** The pair is armed only when `claude --version` reports at least 2.1.233, the build the backgrounding behaviour was verified against, compared as dot-separated integer tuples rather than as strings (`2.1.99` is older than `2.1.233`). Below it, and **when there is no `claude` on `PATH` at all**, the pair is refused with a remedy rather than armed blind — a harness that does not background an async hook would run the waiter synchronously on every over-threshold prompt, blocking it there until the window reset. The lifecycle entries still land in every refusal case. A teammate installing from a shell where `claude` is not on `PATH` will hit this; the remedy is to fix `PATH` or pass `--no-rewake`.
 
 **The pair's `timeout` is not enforced** — an `asyncRewake` entry is backgrounded and runs to completion — so **anything in the waiter that can block is bounded inside the script**, by its own sleep arithmetic and guards.
 
 **`rewakeMessage` and `rewakeSummary` are undocumented-but-observed fields.** They are embedded as literals in `install.sh` and match what live entries carried when they were observed. Re-verify them after a Claude Code upgrade.
 
-**Nothing tests the advisory's wording.** At or above the threshold, `session --hook` injects one advisory, the same for every window except a lead sentence naming the window that crossed, telling the model that a cap is no reason to stop, wind down or hold back parallel work because a waiter is armed. It lives at the `line=` assignment in `session`; reread it whenever auto-resume behaviour changes. Case 5 tests only that the sentence promising an armed waiter appears when, and only when, `settings.json` carries a `rewake-waiter` entry with `asyncRewake: true` (checked with `jq -e`, not by grepping).
+**The advisory.** At or above the threshold, `session --hook` injects one advisory, the same for every window except a lead sentence naming the window that crossed, telling the model that a cap is no reason to stop, wind down or hold back parallel work because a waiter is armed. The sentence promising an armed waiter appears only when `settings.json` carries a `rewake-waiter` entry with `asyncRewake: true`.
 
 **A cap death decides before it sleeps.** On `StopFailure` the entry first runs `session account auto` — see [Automatic switching](#automatic-switching) — above everything else: above the arming below, which exits outright when the cache names no future reset, and above the one-waiter-per-session dedup. Every spawn reaches that decision rather than only the one that becomes the waiter, so a session whose waiter is already asleep can still rescue the box; the lock and the cooldown reduce the fan-in to one real decision, and a spawn that finds the lock busy falls through to the ordinary waiter with no retry. If the box moved, the deciding session is woken at once with a message naming both logins, and the sessions that were already asleep are woken by the same config-directory check that already picks up a manual `session account use` — within a second or two where `inotifywait` exists, within fifteen where it does not. That message says what the new login serves: on a move to a tier-1 login it says so in a sentence, because a resumed subagent keeps the model it died on, and a Fable session told only that the cap is gone would retry on Fable and die on the same cap again. An **authentication** death that does not switch then exits without arming anything — no reset lifts an authentication failure, so there is no time to sleep to. A **cap** death that does not switch falls through to the target selection below.
 
@@ -464,26 +466,23 @@ The Fable step is there because that window gates only Fable and no generic rese
 
 ## Platform support
 
-The CLI, the statusline and the suite are bash 3.2 clean and use no GNU-only tool without a fallback, because macOS ships bash 3.2, BSD `date` and `stat`, no `/proc` and no `flock(1)`. Case 1 greps every shipped script for bash 4/5 constructs, and case 13 for host names and hardcoded home paths. Everything has run on Linux; the macOS branches below are written but have not run on a Mac.
+Everything has run on Linux. The CLI and the statusline are written for macOS too — bash 3.2, BSD `date` and `stat`, no `/proc`, no `flock(1)` — but the macOS branches have not run on a Mac.
 
-- **Dates.** All day-boundary maths goes through perl `POSIX::mktime`/`strftime` rather than `date -d`, so 23- and 25-hour DST days come out right (case 11, against GNU `date` in three zones). Where a DST transition falls at midnight, that local midnight does not exist; GNU `date` errors and this still answers, but the libc picks the direction (glibc forward, musl back), so on a musl host `session time --date <that day>` starts an hour early in those zones. That is a known limitation, not a bug.
-- **`--date` accepts** `YYYY-MM-DD` and `yesterday`. Free text (`3 days ago`) is passed to GNU `date` where it exists (probed by parsing a relative expression, since busybox `date` accepts `-d` and parses nothing relative) and **refused with the list of accepted shapes** elsewhere, rather than answered with a wrong day.
-- **`session time` refuses a day it cannot resolve** (no perl, say) rather than reading an empty boundary as epoch 0 and reporting the whole log as today.
-- **Process inspection** reads `/proc` where it exists and falls back to `ps`. `proc_ppid` and `proc_cmdline` run natively on both paths and are tested on both. **`proc_env`'s fallback is `ps -Eww -o command=`, which is Darwin-only and has never executed anywhere**: Linux procps rejects `-E` and busybox `ps` takes none of the flags, so its case prints `skip` in every leg. On a Mac where that read cannot see the ancestor, `session whoami` degrades to a clean refusal when `CLAUDE_CODE_SESSION_ID` is absent.
-- **Locking** uses `flock(1)` where it exists and perl `flock` otherwise. The perl path sets `$^F=10`, which is load-bearing: perl sets `FD_CLOEXEC` on descriptors above `$^F` (default 2), so without it the lock is dropped by the `exec` and there is no mutual exclusion at all — a failure that looks exactly like success. Case 12 pins it by showing the second caller exit 75 while the lock is held. Busy is 75 wherever the backend can say so; busybox `flock` has no `-E` and exits 1, and callers treat any non-zero as "skip". **A lock file that cannot be opened is not busy**: `session account auto` reports it as a `lock-unopenable` hold. The perl path (macOS) meets it on any lock file this user cannot write, where `flock(1)` would still take the lock.
-- **`stat`** goes through `mtime_of`, which tries `stat -c %Y` then BSD `stat -f %m`. The BSD branch, like `ps -Eww`, has not run on a real Mac.
+- **Dates.** Day boundaries go through perl, so 23- and 25-hour DST days come out right. Where a DST transition falls at midnight, that local midnight does not exist and the libc picks the direction (glibc forward, musl back), so on a musl host `session time --date <that day>` starts an hour early in those zones.
+- **`--date` accepts** `YYYY-MM-DD` and `yesterday`. Free text (`3 days ago`) is passed to GNU `date` where it exists and **refused with the list of accepted shapes** elsewhere, rather than answered with a wrong day.
+- **`session time` refuses a day it cannot resolve** (no perl, say) rather than reporting the whole log as today.
+- **Process inspection** reads `/proc` where it exists and falls back to `ps`. On a Mac where that cannot see the session's ancestor, `session whoami` refuses cleanly unless `CLAUDE_CODE_SESSION_ID` is set.
+- **Locking** uses `flock(1)` where it exists and perl otherwise. On the perl path (macOS), a `switch.lock` this user cannot write makes `session account auto` hold with `lock-unopenable` rather than decide.
 - **`curl` is optional**, used only by `session account`: to fetch the `FABLE` column, and to probe each login's windows for an automatic switch. Without it every login lists its last fetched figure, or `n/a`, and a decision still runs — on those frozen figures rather than on what the endpoint says now.
-- **The statusline hard-requires `jq`** — it is a jq program with a shell around it. Its whole suite skips without one, which is why the stock `bash:3.2` image proves nothing about it and the enriched image is the leg that matters.
+- **The statusline requires `jq`**, and so does the installer.
 
 ## Tests
 
 ```
-bash tests/run.sh
+bash tests/run.sh [--require-3.2]
 ```
 
-Three suites, run natively and then under `docker run bash:3.2` when docker is present — the closest thing here to macOS's `/bin/bash`, and what catches a bash-4-only construct the host's bash 5 accepts silently. The runner prints per-suite counts for both legs and exits non-zero if any run fails. `--require-3.2` turns a skipped container leg into a failure — the flag for an acceptance run, since without it a machine with no docker image passes having tested one shell — and `SESSION_TEST_IMAGE=session-tests:bash3.2` selects the enriched image whose recipe the runner's header carries (the header deliberately carries no case counts: a count in a comment is a measurement nothing recomputes); the stock `bash:3.2` image is Alpine with no perl, no jq, no timezone database, no GNU date and no GNU find, so a large share of cases skip there with their reason printed.
-
-The skips are deliberate: without tzdata every zone reads as UTC and busybox `date` parses nothing relative, so a date comparison there would be two identical mistakes agreeing. The suite probes its oracle before trusting it.
+Three suites, run natively and again under `docker run bash:3.2` when docker is present, the nearest thing here to macOS's `/bin/bash`. `--require-3.2` fails the run when that second leg could not run. `CLAUDE.md` has the rest.
 
 ## Removal
 
@@ -491,6 +490,6 @@ The skips are deliberate: without tzdata every zone reads as UTC and busybox `da
 uninstall.sh [--bindir DIR] [--name NAME]
 ```
 
-Removes every hook entry of this CLI's shape (another clone's included), the `statusLine` when it is ours, and the symlink when the name resolves to this clone; when nothing of ours is at `--bindir` it also checks what the name resolves to on `PATH`. A foreign `statusLine`, a symlink pointing elsewhere and every other setting are left as they are, and a second run changes nothing (case 29).
+Removes every hook entry of this CLI's shape (another clone's included), the `statusLine` when it is ours, and the symlink when the name resolves to this clone; when nothing of ours is at `--bindir` it also checks what the name resolves to on `PATH`. A foreign `statusLine`, a symlink pointing elsewhere and every other setting are left as they are, and a second run changes nothing.
 
 **The data root and `session.conf` stay.** The data root is your recorded history (the `rm -rf` line is printed, not run), and `session.conf` describes the machine, which a reinstall wants.
