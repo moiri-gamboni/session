@@ -362,8 +362,8 @@ acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … p
 #   trigger  cap | auth | manual
 #   figures  `login=5h/wk/fb` joined by `;`, `*` marking a probe-fresh figure
 #   detail   a `k=v;` bag over sid= http= tier= next_eligible= scoped= notify=.
-#            There is no `recov=`: recovery_at was cut from the design, and the
-#            waiter's own sleep target already is it.
+#            There is no `recov=`: the waiter's own sleep target already is the
+#            recovery time.
 #
 # NO FIELD IS EVER EMPTY. The writer substitutes `-` for every empty argument
 # rather than trusting its call sites, because a reader that reached for `read`
