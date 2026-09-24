@@ -544,7 +544,9 @@ EOF
     pid=$(jq -r '.pid' <<<"$rec")
     [ "$pid" -gt 0 ] 2>/dev/null || continue
     kill -0 "$pid" 2>/dev/null || continue
-    IFS=$'\t' read -r sid pname pstatus ptmux sock < <(jq -r '[.sessionId,.name,.status,.tmux,.sock]|@tsv' <<<"$rec")
+    # Split on the unit separator, not a tab: tab is IFS whitespace, so an empty
+    # field (no tmux, no socket) would collapse and shift every later one left.
+    IFS=$'\037' read -r sid pname pstatus ptmux sock < <(jq -r '[.sessionId,.name,.status,.tmux,.sock]|map(.//""|tostring)|join("\u001f")' <<<"$rec")
     reach=no; [ -n "$sock" ] && [ -S "$sock" ] && reach=yes
     title=$(session_title "$sid")
     this=""; [ -n "$mysid" ] && [ "$sid" = "$mysid" ] && this=" ←this"
