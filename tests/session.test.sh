@@ -1174,6 +1174,24 @@ else
     report "work-2a" "$(printf '%s' "$out" | jq -r '.[0].name')" "case 15: ... and its cross-session address"
     report "false" "$(printf '%s' "$out" | jq -r '.[0].reachable')" \
         "case 15: ... with REACH false when the messaging socket is missing"
+    report "" "$(printf '%s' "$out" | jq -r '.[0].branch')" \
+        "case 15: ... and an empty branch when its cwd is not a git repo"
+    if have git; then
+        G15="$TMP/g15"
+        git init -q -b worktree-demo "$G15"
+        # Empty tmux and socket ahead of the cwd: the fields must not shift.
+        printf '{"pid":%d,"sessionId":"%s","name":"work-2a","status":"idle","tmux":"","messagingSocketPath":"","kind":"interactive","cwd":"%s","updatedAt":2}\n' \
+            "$$" "$UUID" "$G15" > "$W15/cfg/sessions/$$.json"
+        out=$(sess "$W15" -- peers --json)
+        report worktree-demo "$(printf '%s' "$out" | jq -r '.[0].branch')" \
+            "case 15: ... the git branch checked out in its cwd"
+        report "" "$(printf '%s' "$out" | jq -r '.[0].tmux')" \
+            "case 15: ... empty fields before it do not shift it"
+        report yes "$(sess "$W15" -- peers | grep -q 'worktree-demo' && echo yes || echo no)" \
+            "case 15: ... shown in the table too"
+    else
+        skip "case 15: peers branch" "no git"
+    fi
 
     # A dead pid's leftover record is skipped, never deleted.
     printf '{"pid":2147480000,"sessionId":"%s","name":"ghost","status":"idle","tmux":"","messagingSocketPath":"","kind":"interactive","updatedAt":1}\n' \

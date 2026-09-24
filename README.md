@@ -115,7 +115,7 @@ Then `uninstall.sh --bindir "$BINDIR"`, which should leave the scratch `settings
 | `session` | the overview above: id, title, the 5-hour and weekly used % with reset countdowns, context fill, this session's share |
 | `session whoami [--id\|--name\|--json]` | this session's id and title, correct across concurrent tmux panes |
 | `session name <id-prefix>` · `session id <title-substring>` | another session's title from its id, or its id from its title |
-| `session peers` | live sessions with the address `ListAgents` shows and `SendMessage` takes |
+| `session peers [--json]` | live sessions with the address `ListAgents` shows and `SendMessage` takes, and the git branch each one's working directory has checked out: which session owns a branch |
 | `session usage [--all]` | counted `$` burn and estimated share of each window, for this session or every one ([how](#reading-the-figures)) |
 | `session time [--all] [--yesterday \| --date D] [--json]` | turns, active, attended and watched time ([`--json`](#time---json--the-contract-a-task-logger-reads)) |
 | `session --guard` · `session --wait guard` | pacing gate for multi-agent jobs: exit 0 go, 3 pause; the wait blocks until the guard would pass |

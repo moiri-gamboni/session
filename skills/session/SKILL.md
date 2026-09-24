@@ -28,7 +28,7 @@ $ session
 | `session` | the overview above |
 | `session whoami [--id\|--name]` | this session's id and title, correct across concurrent tmux panes; `agent <dir> -r "$(session whoami --id)"` resumes it |
 | `session name <id-prefix>` · `session id <title-substring>` | another session's title from its id, or its id from its title |
-| `session peers` | live sessions: the `ListAgents` name (`SendMessage`'s `to:`) beside id and title. REACH `no` = registered but invisible to `ListAgents`; restart that session |
+| `session peers` | live sessions: the `ListAgents` name (`SendMessage`'s `to:`) beside id, title and git branch, so `session peers \| grep <branch>` finds the session that owns a branch or worktree. REACH `no` = registered but invisible to `ListAgents`; restart that session |
 | `session usage [--all]` | counted `$` burn and estimated share of each cap, for this session or every one |
 | `session time [--all] [--yesterday]` | turns, active, attended and watched time |
 | `session account` · `session account use <row>` | saved logins with their headroom; switch login |

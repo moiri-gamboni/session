@@ -27,7 +27,7 @@
 #                     title index for a title)
 #   session peers [--json]  live sessions on this box: cross-session address
 #                     (ListAgents name / SendMessage `to:`) ↔ session id +
-#                     title, with messaging-socket reachability
+#                     title + git branch, with messaging-socket reachability
 #   session account [list|use <name>|save|rm <name>]  several subscription
 #                     logins out of one config dir: list them with each one's
 #                     rate-limit headroom (the question you switch on), or swap
@@ -518,7 +518,7 @@ case "${1:-}" in name|id) lookup_main "$@" ;; esac
 # session just being absent. Dead pids' leftover records are skipped, never
 # deleted (the registry is Claude Code's, not ours).
 peers_main() {
-  local arg=${1:-} regdir mysid f rec pid sock reach sid pname pstatus ptmux title this rows=""
+  local arg=${1:-} regdir mysid f rec pid sock reach sid pname pstatus ptmux pcwd branch title this rows=""
   case "$arg" in
     ""|--json) ;;
     -h|--help)
@@ -531,6 +531,8 @@ Live Claude Code sessions on this box, one per row:
   SESSION  8-char session-id prefix (feeds `session name`, `agent <dir> -r`, …)
   REACH    yes = messaging socket live, ListAgents shows it; no = registered
            without a socket — invisible to ListAgents until that session restarts
+  BRANCH   git branch checked out in the session's working directory, e.g. the
+           worktree branch an `agent` launch put it on; - (--json: "") if none
 --json prints the same rows with full session ids.
 EOF
       exit 0 ;;
@@ -540,28 +542,33 @@ EOF
   mysid=$(resolve_sid || true)
   for f in "$regdir"/*.json; do
     [ -e "$f" ] || break
-    rec=$(jq -c '{pid,sessionId,name,status,tmux,sock:(.messagingSocketPath//"")}' "$f" 2>/dev/null) || continue
+    rec=$(jq -c '{pid,sessionId,name,status,tmux,sock:(.messagingSocketPath//""),cwd:(.cwd//"")}' "$f" 2>/dev/null) || continue
     pid=$(jq -r '.pid' <<<"$rec")
     [ "$pid" -gt 0 ] 2>/dev/null || continue
     kill -0 "$pid" 2>/dev/null || continue
     # Split on the unit separator, not a tab: tab is IFS whitespace, so an empty
     # field (no tmux, no socket) would collapse and shift every later one left.
-    IFS=$'\037' read -r sid pname pstatus ptmux sock < <(jq -r '[.sessionId,.name,.status,.tmux,.sock]|map(.//""|tostring)|join("\u001f")' <<<"$rec")
+    IFS=$'\037' read -r sid pname pstatus ptmux sock pcwd < <(jq -r '[.sessionId,.name,.status,.tmux,.sock,.cwd]|map(.//""|tostring)|join("\u001f")' <<<"$rec")
     reach=no; [ -n "$sock" ] && [ -S "$sock" ] && reach=yes
+    # Read live rather than stored: a session can switch branches after it
+    # registers. A cwd outside a repo, a detached HEAD or no git at all leaves
+    # it empty; stderr is captured only so the "not a git repository" line
+    # never reaches the table.
+    branch=$(git -C "$pcwd" symbolic-ref --short -q HEAD 2>&1) || branch=""
     title=$(session_title "$sid")
     this=""; [ -n "$mysid" ] && [ "$sid" = "$mysid" ] && this=" ←this"
-    rows+="$pname	$sid	$pstatus	$reach	$ptmux	${title:-<untitled>}$this"$'\n'
+    rows+="$pname	$sid	$pstatus	$reach	$ptmux	$branch	${title:-<untitled>}$this"$'\n'
   done
   [ -n "$rows" ] || { echo "session peers: no live sessions registered under $regdir" >&2; exit 1; }
   if [ "$arg" = --json ]; then
     printf '%s' "$rows" | jq -Rn \
       '[inputs | split("\t") | {name: .[0], session_id: .[1], status: .[2],
-        reachable: (.[3]=="yes"), tmux: .[4], title: (.[5]|sub(" ←this$";""))}]'
+        reachable: (.[3]=="yes"), tmux: .[4], branch: .[5], title: (.[6]|sub(" ←this$";""))}]'
   else
     # `column -t` squeezes repeated delimiters, so an empty field (a session
     # that has not written `status` yet) would shift every later column left;
     # fill the blanks first.
-    { printf 'NAME\tSESSION\tSTATUS\tREACH\tTMUX\tTITLE\n'
+    { printf 'NAME\tSESSION\tSTATUS\tREACH\tTMUX\tBRANCH\tTITLE\n'
       printf '%s' "$rows" | awk -F'\t' -v OFS='\t' \
         '{ $2=substr($2,1,8); for (i = 1; i <= NF; i++) if ($i == "") $i="-"; print }'
     } | column -t -s'	'
@@ -1883,7 +1890,8 @@ Lookup (any session, both directions; 8-char table ids work as prefixes):
                                    matches print "id<TAB>name" lines instead)
   session peers [--json]           live sessions on this box: cross-session
                                    address (ListAgents name = SendMessage `to:`)
-                                   ↔ id + title; REACH = visible to ListAgents.
+                                   ↔ id + title + branch; REACH = visible to
+                                   ListAgents.
                                    --json carries full session ids
 
 Reboot survival (tmux only; `session reboot -h`, `session resume -h`):
