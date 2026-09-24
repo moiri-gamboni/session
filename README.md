@@ -340,7 +340,7 @@ The list is a table:
 
 | Column | Content |
 |---|---|
-| `5H`, `RESET` | the 5-hour window's used % and time to its reset; `~0%` and `?` once that reset has passed |
+| `5H`, `RESET` | the 5-hour window's used % and time to its reset; `~0%` and `?` once that reset has passed, or once a cache that carried no 5-hour window is older than five hours |
 | `WEEK`, `RESET` | the all-models weekly window's used % and time to its reset; `~0%` and a `~` countdown once it has passed |
 | `FABLE` | Fable's weekly cap, used %; `~0%` once its reset has passed. It resets with `WEEK`, so it has no countdown column |
 | `AGE` | the age of the row's oldest figure: `now` under two minutes, then `Nm`, `Nh`, `Nd` |
