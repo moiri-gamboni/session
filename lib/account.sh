@@ -15,8 +15,8 @@
 # it), so anything a test has to drive in-process has to sit beside the policy
 # rather than in the CLI.
 #
-# bash 3.2 clean, like the rest of the shipped tree: macOS ships 3.2 and the
-# suite runs a leg under `docker run bash:3.2`.
+# bash 3.2 clean, like the rest of the shipped tree: macOS ships 3.2, and the
+# suite's case 1 lints for the constructs it lacks.
 #
 # ── the capability ladder ───────────────────────────────────────────────────
 # The three rate-limit windows are not interchangeable. The 5-hour and weekly

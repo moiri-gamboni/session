@@ -479,10 +479,10 @@ Everything has run on Linux. The CLI and the statusline are written for macOS to
 ## Tests
 
 ```
-bash tests/run.sh [--require-3.2]
+bash tests/run.sh
 ```
 
-Three suites, run natively and again under `docker run bash:3.2` when docker is present, the nearest thing here to macOS's `/bin/bash`. `--require-3.2` fails the run when that second leg could not run. `CLAUDE.md` has the rest.
+Three suites, run with this machine's bash; the summary at the end says which passed. That the scripts stay bash 3.2 clean is checked by a lint in the suite, not by a second shell. `CLAUDE.md` has the rest.
 
 ## Removal
 

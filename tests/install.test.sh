@@ -8,9 +8,7 @@
 # the installer against a live Claude Code configuration.
 #
 # jq is a hard dependency of the installer, so this whole suite skips where jq is
-# absent — the stock bash:3.2 image (see run.sh). What still covers the installer
-# under bash 3.2 there is session.test.sh cases 1 and 13, whose glob includes
-# install.sh and uninstall.sh.
+# absent. session.test.sh cases 1 and 13 lint install.sh and uninstall.sh too.
 #
 # Note what case 26 pins by asserting exit 0: the installer's last step runs
 # `session doctor`, which does not exist until the CLI unit lands, so in a
@@ -57,11 +55,8 @@ cleanup() {
 trap cleanup EXIT
 
 # Every case installs from a COPY of the session directory, not from the
-# checkout. Two reasons, both load-bearing: the installer refuses a directory the
-# running uid does not own, and under `docker run bash:3.2` the bind-mounted
-# checkout belongs to the host user while the container runs as root — against
-# the checkout every case there would refuse and prove nothing. Installing from a
-# copy the running user just made keeps that leg real. It also means no fixture
+# checkout: the installer refuses a directory the running uid does not own, and a
+# copy the running user just made is always its own. It also means no fixture
 # can write through a symlink into a shipped file.
 # The copy keeps the real shape — a directory named `session` holding the CLI —
 # because the batch contract's ownership regex (`/session/session --`) reads the
@@ -110,7 +105,7 @@ SHIPPED_BEFORE=$(shipped_sums)
 mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
 
 # A case that makes a fixture fail by taking a permission bit away proves
-# nothing where the bits do not bite — the container leg runs as root, which
+# nothing where the bits do not bite — a run as root
 # reads a mode-000 file and writes into a mode-500 directory. Those cases say so
 # rather than passing, or failing, for the wrong reason.
 perms_bite() { [ "$(id -u)" != 0 ]; }

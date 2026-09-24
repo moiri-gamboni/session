@@ -10,8 +10,7 @@
 # Everything here is bash 3.2 clean — none of the bash 4/5 constructs the suite's
 # case 1 greps for (this file is one of the files it greps, so they are not named
 # here) — and free of GNU-only tools outside a named fallback, because macOS ships
-# bash 3.2, BSD date, BSD stat, no /proc and no flock(1). The suite runs under
-# `docker run bash:3.2`; see tests/run.sh.
+# bash 3.2, BSD date, BSD stat, no /proc and no flock(1).
 
 umask 077
 # `cd` consults CDPATH for any operand that does not start with / or . — and

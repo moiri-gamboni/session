@@ -10,10 +10,7 @@
 # write the real usage store, `jq` is a stub on PATH where a case counts its
 # calls, and every fixture lives under mktemp with a trap.
 #
-# Cases that need a tool the host lacks print `skip` and say which tool. Under
-# `docker run bash:3.2` (see run.sh) that is perl and jq: the date layer, the
-# perl lock and the login cases skip there, and what runs is the bash-3.2
-# compatibility of everything else.
+# Cases that need a tool the host lacks print `skip` and say which tool.
 set -uo pipefail
 
 SUITE=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -71,8 +68,8 @@ for f in $shipped; do
     report ok "$r" "case 1: bash -n ${f#$SDIR/}"
 done
 
-# A shell linter's bash mode flags none of these (probed), so the grep plus
-# the bash:3.2 container run is the whole tripwire. $EPOCHSECONDS is bash 5.0,
+# A shell linter's bash mode flags none of these (probed), so this grep is the
+# whole tripwire. $EPOCHSECONDS is bash 5.0,
 # mapfile/readarray and declare -A are bash 4.0, ${v,,} is 4.0, |& is 4.0 and
 # ;;& is 4.0 — every one of them silently does the wrong thing on macOS's 3.2.
 TRIPWIRE='\$EPOCHSECONDS|\bmapfile\b|\breadarray\b|declare -A|\$\{[A-Za-z_][A-Za-z0-9_]*,,|\|&|;;&'
@@ -1671,7 +1668,7 @@ ASCEOF
     # know that program. And `bash -c "sleep 30"` under the rename execs sleep
     # straight away (bash's single-command optimisation), taking the new argv[0]
     # with it. A second command defeats the optimisation, so the renamed bash is
-    # what stays alive. Verified in both legs before being relied on.
+    # what stays alive. Verified before being relied on.
     bash -c "exec -a rewake-waiter bash -c 'sleep 30; :'" &
     OWNER=$!
     sleep 1

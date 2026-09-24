@@ -18,8 +18,7 @@
 # for a reason that is not the one under test.
 #
 # jq is required by every case (the statusline is a jq program with a shell
-# around it); without it the whole suite skips, which is what happens in the
-# stock bash:3.2 image. See tests/run.sh for the image that carries it.
+# around it); without it the whole suite skips.
 set -uo pipefail
 umask 022
 

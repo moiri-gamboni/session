@@ -5,16 +5,13 @@
 ## Commands
 
 ```
-bash tests/run.sh                  # every suite, natively and under docker bash:3.2
-bash tests/run.sh --require-3.2    # acceptance: a skipped 3.2 leg fails the run
-bash tests/session.test.sh         # one suite, this machine's bash only
+bash tests/run.sh                  # every suite
+bash tests/session.test.sh         # one suite
 ```
-
-The enriched test image (`SESSION_TEST_IMAGE=session-tests:bash3.2`) and what the stock image skips are in `tests/run.sh`'s header.
 
 ## Tests
 
-- **Branches that have never run:** `proc_env`'s `ps -Eww` fallback (Darwin-only; its case skips in every leg), `mtime_of`'s BSD `stat -f %m`, and the macOS Keychain shape of `session account`, which the suite simulates by removing `.credentials.json` rather than testing it.
+- **Branches that have never run:** `proc_env`'s `ps -Eww` fallback (Darwin-only; its case always skips), `mtime_of`'s BSD `stat -f %m`, and the macOS Keychain shape of `session account`, which the suite simulates by removing `.credentials.json` rather than testing it.
 - **The README cites no test cases.** To find the test behind a promise, grep the suites for the behaviour.
 - **Nothing tests the ⚠ advisory's wording.** It lives at the `line=` assignment in `session`; reread it whenever auto-resume behaviour changes. The suite checks only that the sentence promising an armed waiter appears when, and only when, `settings.json` carries a `rewake-waiter` entry with `asyncRewake: true`.
 - **Sourcing `lib/common.sh` rebinds `SESSION_DATA`** from `SESSION_DATA_DIR`, `session.conf` and the defaults, so a scratch script that sets `SESSION_DATA` and then removes it deletes the machine's real data root. Clean up scratch by a literal path, never by that variable.
