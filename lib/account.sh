@@ -50,10 +50,8 @@
 # ranks candidates only, so it passes 1 itself.
 #
 # ── the threshold is an argument ────────────────────────────────────────────
-# "Spent" means at or above a percentage the caller supplies. The policy never
-# reads it from a global: `_acct_threshold` in section 6 reads the warn
-# threshold, clamps it to 100 and passes the clamped value down, so the clamp
-# has exactly one site, and that is where its reason is given.
+# "Spent" means at or above a percentage the caller supplies, so the policy is
+# testable at any threshold; the decision in section 6 passes ACCT_SPENT_PCT.
 
 # ── 2. constants ──────────────────────────
 # Two intervals, and they are deliberately not one. The cooldown bounds
@@ -75,6 +73,12 @@
 # hold: the median switch costs 1,457 cache-creation tokens.
 ACCT_COOLDOWN_S=900
 ACCT_PROBATION_S=600
+
+# A window counts as spent only when it is capped. A login at 90% of its week
+# still has hours of work in it, and switching away from one, or refusing to
+# switch to one, would strand that. This is deliberately not USAGE_WARN_PCT,
+# which decides when a session is warned, not when a login is out.
+ACCT_SPENT_PCT=100
 
 # ── 3. pure selector ──────────────────────
 
@@ -175,8 +179,8 @@ acct_rank() {  # THRESHOLD  (rows on stdin) -> the winning login, or nothing
     # zero-padded because the key is compared as bytes: unpadded, 10 would beat
     # 9 on the first digit. Three digits is enough — the tier digit sorts
     # first, so two rows only meet here when they are on the same rung, and on
-    # rungs 1 and 2 every window that counts is below the threshold, which the
-    # caller has clamped to 100.
+    # rungs 1 and 2 every window that counts is below the threshold, which is
+    # never above 100.
     worst=$f5
     [ "$wk" -gt "$worst" ] && worst=$wk
     if [ "$tier" = 2 ]; then
@@ -450,8 +454,8 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # nowhere and macOS does not ship at all. Firing it in the parent, after the
 # child has exited, neither holds the lock nor delays the decision.
 #
-# This section reads globals (SESSION_AUTO_SWITCH, SESSION_SWITCH_NOTIFY, the
-# warn threshold, SESSION_HOME) and calls into `session` for the vault and the
+# This section reads globals (SESSION_AUTO_SWITCH, SESSION_SWITCH_NOTIFY,
+# SESSION_HOME) and calls into `session` for the vault and the
 # swap, so unlike section 3 it runs only inside a `session` process. Two of
 # them reach it: a human typing the verb, and the auto-resume waiter on a cap
 # or auth death. The second has no one reading stderr — on that path stderr is
@@ -461,24 +465,6 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # The decision's mutex, resolved per call like the log's path so both follow
 # SESSION_DATA wherever a caller puts it.
 acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
-
-# The percentage at or above which a window counts as spent. Read here and
-# passed down as an argument, so the clamp has exactly one site. Above 100 is
-# the documented way to silence the usage advisory; left unclamped it would
-# also mean "no window is ever blocked" and quietly disable the switcher for
-# anyone who had quieted the hook. `session account` dispatches before the
-# CLI's own validation loop runs, so the validation lives here as well — a
-# threshold that is not a number is a refusal, not a threshold of nothing, and
-# an unset one is no different. The default is declared once, by the CLI above
-# that dispatch; a second copy of the figure here would be the drift the one
-# declaration exists to prevent.
-_acct_threshold() {  # -> 0..100, or non-zero when the variable is unusable
-  local t="${USAGE_WARN_PCT:-}"
-  case "$t" in ''|*[!0-9]*) return 1 ;; esac
-  t=$(( 10#$t ))   # digits are not yet a number: a leading zero reads as octal
-  [ "$t" -gt 100 ] && t=100
-  printf '%s\n' "$t"
-}
 
 # Whether a vault entry may be switched TO at all. Three shapes are excluded:
 # no token to authenticate with and an expiry of zero (the 2026-09-15 blank,
@@ -616,9 +602,7 @@ _acct_decide() {  # TRIGGER SID DRY
     *)  echo "session account auto: SESSION_AUTO_SWITCH is '${SESSION_AUTO_SWITCH:-}' — it takes on or off" >&2
         _acct_say refuse - - bad-mode - -; return 4 ;;
   esac
-  thr=$(_acct_threshold) || {
-    echo "session account auto: invalid USAGE_WARN_PCT='${USAGE_WARN_PCT:-}' (use a whole number of percent)" >&2
-    _acct_say fail - - bad-threshold - -; return 5; }
+  thr=$ACCT_SPENT_PCT
   cfg=$(acct_cfg)
   [ -s "$cfg/.credentials.json" ] || {
     echo "session account auto: this Claude Code stores credentials in the macOS Keychain, which this build cannot swap; see README.md" >&2

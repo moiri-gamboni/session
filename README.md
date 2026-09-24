@@ -262,11 +262,11 @@ Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to
 | `ev` | `reason` |
 |---|---|
 | `switch` | `climbed` — the target stood strictly higher on the capability ladder |
-| `hold` | `cooldown` (another decision ran within 900 s) · `live-clean` (the live login came back verified under threshold on every window, so the death was transient) · `no-candidate` (nothing stood higher) |
+| `hold` | `cooldown` (another decision ran within 900 s) · `live-clean` (the live login came back verified under 100% on every window, so the death was transient) · `no-candidate` (nothing stood higher) |
 | `fail` | `swap-write-failed` · `swap-not-observed` (the write returned but what landed is not the target's credential) · `swap-refused` (the entry cannot authenticate — candidate screening excludes such an entry, so a row carrying this means something upstream of the swap changed) |
 | `refuse` | `blank-credential` — a save rather than a decision: the live access token was empty and the vault entry was left alone |
 
-The decision verb's own refusals (`off`, `bad-mode`, `no-credentials`, `too-few-logins`), its `not-writable` and `lock-unopenable` holds and its argument errors (`bad-threshold`, `bad-trigger`, `bad-option`) reach its `k=v` output and never this file: each returns before the cooldown gate, `not-writable` is the case where there is nowhere to write, and `lock-unopenable` is one where no decision was taken to record.
+The decision verb's own refusals (`off`, `bad-mode`, `no-credentials`, `too-few-logins`), its `not-writable` and `lock-unopenable` holds and its argument errors (`bad-trigger`, `bad-option`) reach its `k=v` output and never this file: each returns before the cooldown gate, `not-writable` is the case where there is nowhere to write, and `lock-unopenable` is one where no decision was taken to record.
 
 `trigger` is `cap`, `auth` or `manual`. `figures` is `login=5h/wk/fb` per login, joined by `;`, with `*` marking a figure verified against the usage endpoint rather than read from a cache. `detail` is a `k=v;` bag over `sid=`, `http=`, `tier=`, `next_eligible=`, `scoped=` and `notify=`. There is no `dead` event and no `recov=` key.
 
@@ -375,7 +375,7 @@ One decision, box-wide, taken under `switch.lock` in the data root, about which 
 
 Four conditions refuse before any network call and before anything is written: `SESSION_AUTO_SWITCH` recorded `off`, `SESSION_AUTO_SWITCH` holding a word that is neither `on` nor `off`, no `.credentials.json` to swap, and fewer than two vaulted logins.
 
-**A switch has to climb a capability ladder.** The 5-hour and weekly windows gate every model; the Fable weekly gates only Fable. So each login sits on one of three rungs, decided by which of its windows are at or above `USAGE_WARN_PCT`:
+**A switch has to climb a capability ladder.** The 5-hour and weekly windows gate every model; the Fable weekly gates only Fable. So each login sits on one of three rungs, decided by which of its windows are spent, i.e. at 100% (not at `USAGE_WARN_PCT`, which only decides when a session is warned — a login at 90% of its week still has work in it):
 
 | Tier | Blocked | What that login serves |
 |---|---|---|
