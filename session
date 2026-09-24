@@ -1039,15 +1039,19 @@ acct_row() {
                                             (.rate_limits.five_hour.resets_at//0),
                                             (.rate_limits.seven_day.resets_at//0)]|@tsv' "$c")
     f="${f%%.*}"; w="${w%%.*}"
+    oldest=$(( now - $(mtime_of "$c") ))
     if (( rf > now )); then
       l5=$(( rf - now )); (( l5 > FIVE_WINDOW )) && l5=$FIVE_WINDOW
       f5=$(hm "$l5")
     else
       f5="?"; (( rf > 0 )) && f="~0"        # rf==0: no reset data at all, but the % is current
+      # No 5h window in a cache older than the window itself: whatever was open
+      # then has closed, so the figure is known to be 0, exactly as for a passed
+      # reset. Younger, one may have opened since, and it stays unknown.
+      (( f == -1 && oldest > FIVE_WINDOW )) && f="~0"
     fi
     five="$(acct_pct "$f")${tab}$f5"
     week=$(acct_week "$w" "$rw" "$now")
-    oldest=$(( now - $(mtime_of "$c") ))
   fi
   fc=$(session_cache_path "$1" fable); fp=""
   [ -s "$fc" ] && IFS=$'\t' read -r fp fr < <(jq -r '[(.fable.used_percentage // -1), (.fable.resets_at // 0)] | @tsv' "$fc")

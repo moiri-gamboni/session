@@ -4049,6 +4049,33 @@ else
         "decide: ... with no star on any figure, because nothing was verified"
     report nocurl "$(ddet http "$DLOG9")" "decide: ... and the row says why"
 
+    # ── a lapsed candidate whose cache carries no 5h window at all ────────────
+    # The statusline skips the 5h segment when the payload has none, so a login
+    # last rendered with no open 5-hour window caches only its weekly. Once
+    # that cache is older than the window itself, no 5-hour window from then
+    # can still be open: the figure is known to be 0, as for a passed reset.
+    # Younger than that, it stays unknown and the candidate fails closed.
+    for age in 21600 3600; do
+        WS=$(dworld); CS=$(curlstub)
+        dlive "$WS" a@example.com tok-a
+        dvent "$WS" a@example.com tok-a
+        dvent "$WS" b@example.com tok-b "$(( DNOW - 3600 ))000"      # lapsed: never probed
+        dbody "$CS" tok-a 100 10 10
+        printf '{"rate_limits":{"seven_day":{"used_percentage":5,"resets_at":%s}}}\n' "$DFUT" \
+            > "$WS/data/last-status.b@example.com.json"
+        printf '{"fable":{"used_percentage":5,"resets_at":%s}}\n' "$DFUT" > "$WS/data/fable.b@example.com.json"
+        touch -d "@$(( DREAL - age ))" "$WS/data/last-status.b@example.com.json" "$WS/data/fable.b@example.com.json"
+        out=$(dauto "$WS" "$CS" --trigger cap)
+        if [ "$age" = 21600 ]; then
+            report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+                "decide: a lapsed candidate cached with no 5h window, six hours ago, is not blocked on it"
+            report 0 "$(dasked "$CS" tok-b)" "decide: ... and its lapsed token was never sent"
+        else
+            report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+                "decide: ... but an hour ago that window may still be open, so it fails closed"
+        fi
+    done
+
     WD10=$(dworld); CD10=$(curlstub); DLOG10="$WD10/data/switch-log.tsv"
     dlive "$WD10" a@example.com tok-a
     dvent "$WD10" a@example.com tok-a; dvent "$WD10" b@example.com tok-b
