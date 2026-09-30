@@ -866,8 +866,8 @@ acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/nu
 # parsed is a different fault, and reading it as blank would misname it.
 acct_token_blank() { jq -e '(.claudeAiOauth.accessToken // "") == ""' "$1" >/dev/null 2>&1; }
 
-# Record a refused blank credential, and — unless the caller silences it — tell
-# a human, once per login per cooldown.
+# Record a refused blank credential at most once per login per cooldown, and —
+# unless the caller silences it — tell a human once per outage.
 #
 # The rate limit is not decoration. The refusal below returns BEFORE the vault
 # entry's touch — deliberately, since touching would mark a blank as captured —
@@ -889,26 +889,45 @@ acct_token_blank() { jq -e '(.claudeAiOauth.accessToken // "") == ""' "$1" >/dev
 # independent timers, the window is one `awk` wide, and the bound that matters
 # — not one push per render — holds either way. A mutex would put a lock on the
 # statusline's per-render path to save an occasional duplicate.
+#
+# One push per OUTAGE, not per row: the rows keep coming every cooldown while
+# the token stays blank, and 2026-09-29 sent 67 identical pushes overnight. An
+# outage is a run of this login's refusal rows each within two cooldowns of the
+# one before; a longer gap means the login worked in between or nothing
+# rendered, and a shorter recovery is folded into the outage around it. The
+# push goes out on the first row of an outage that has not yet sent one, so an
+# outage opened by a silent row (a swap's save) is still announced once.
 acct_refuse_blank() {  # LOGIN VAULTFILE [no-notify]
-  local last notify="${SESSION_SWITCH_NOTIFY:-}" fired=off msg
-  # The newest refusal OF THIS LOGIN, not the newest refusal: `use` vaults the
-  # outgoing login, so a human switching entries during an outage puts another
-  # login's row in between, and reading only the last row would reopen this
-  # login's window every time that happened.
-  last=$(awk -F'\t' -v l="$1" '$2 == "refuse" && $3 == l { ts = $1 } END { print ts + 0 }' \
-           "$(acct_log_file)" 2>/dev/null)
-  [ "${last:-0}" -gt 0 ] && [ $(( $(now_epoch) - last )) -lt "$ACCT_COOLDOWN_S" ] && return 0
+  local last sent now notify="${SESSION_SWITCH_NOTIFY:-}" fired=off msg
+  now=$(now_epoch)
+  # This login's rows only, not the newest refusal: `use` vaults the outgoing
+  # login, so a human switching entries during an outage puts another login's
+  # row in between, and reading only the last row would reopen this login's
+  # window every time that happened.
+  read -r last sent < <(awk -F'\t' -v l="$1" -v gap=$(( 2 * ACCT_COOLDOWN_S )) -v now="$now" '
+      $2 == "refuse" && $3 == l {
+        if (ts && $1 - ts > gap) sent = 0
+        ts = $1; if ($8 == "notify=sent") sent = 1
+      }
+      END { if (ts && now - ts > gap) sent = 0; print ts + 0, sent + 0 }' \
+      "$(acct_log_file)" 2>/dev/null)
+  [ "${last:-0}" -gt 0 ] && [ $(( now - last )) -lt "$ACCT_COOLDOWN_S" ] && return 0
   [ "${3:-}" = no-notify ] && notify=""
+  [ "${sent:-0}" = 1 ] && notify=""
   [ -n "$notify" ] && [ -x "$notify" ] || notify=""
   [ -n "$notify" ] && fired=sent
   acct_log refuse "$1" - manual blank-credential - "notify=$fired" || return 0
   [ -n "$notify" ] || return 0
-  msg="session account: not vaulting $1 — its live access token is empty."
-  if [ -s "$2" ]; then
-    msg="$msg The vaulted copy at $2 is untouched; \`session account use\` reinstalls it."
+  msg="$1 is signed out: Claude Code left it without an access token, so requests on this machine fail."
+  if acct_token_ok "$2" && acct_signin_ended "$2"; then
+    msg="$1 is signed out: its sign-in expired on $(jq -r '.claudeAiOauth.refreshTokenExpiresAt / 1000 | floor | strftime("%Y-%m-%d %H:%M UTC")' "$2"), so Claude Code could not renew it and requests on this machine fail. Run /login to sign in again, or \`session account use\` another saved login meanwhile."
+  elif acct_token_ok "$2"; then
+    msg="$msg \`session account use $1\` reinstalls its saved copy; if that fails too, run /login."
   else
-    msg="$msg There is no vaulted copy of this login to restore from."
+    msg="$msg There is no saved copy to fall back on: run /login."
   fi
+  # The phone hook (session-switch-notify.sh on the box that ships one) raises
+  # the priority of a message containing " is signed out: ", so keep that phrase.
   ( "$notify" "$msg" >/dev/null 2>&1 & )
 }
 
@@ -1172,7 +1191,9 @@ acct_main() {
         return 1; }
       vf=$(acct_resolve "$m") || return 1
       email=$(acct_name_of "$vf")
-      if [ "$email" = "$(acct_live_login)" ]; then
+      # On the live login with a blank token, reinstalling its saved copy is the
+      # restore doctor and the sign-out push advise, so it goes ahead.
+      if [ "$email" = "$(acct_live_login)" ] && ! acct_token_blank "$cfg/.credentials.json"; then
         echo "session account: already on $email"; return 0
       fi
       acct_swap "$vf"

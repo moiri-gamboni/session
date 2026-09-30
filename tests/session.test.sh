@@ -3125,6 +3125,14 @@ else
     report yes "$(printf '%s' "$out" | grep -qF -- "$VFBC" && echo yes || echo no)" \
         "case 14 [blank]: ... naming the vault entry it is preserving"
 
+    # The restore doctor and the push advise is `use` on the login that is
+    # still named live, so it must not stop at "already on".
+    out=$(sess "$WBC" SESSION_ACCOUNTS_DIR="$VBC" -- account use a@example.com 2>&1); rc=$?
+    report 0 "$rc" "case 14 [blank]: use on the live login while its token is blank exits 0"
+    report "$(jq -r '.claudeAiOauth.accessToken' "$VFBC")" "$(jq -r '.claudeAiOauth.accessToken' "$WBC/cfg/.credentials.json")" \
+        "case 14 [blank]: ... and reinstalls the saved copy rather than saying it is already on it"
+    blank "$WBC" '"expiresAt":0,'
+
     # The same blank with nothing vaulted for that login: there is no copy to
     # restore from, and saying so is the whole content of the report.
     WBC2=$(world); chmod 700 "$WBC2/data"; mklogin "$WBC2" c@example.com
@@ -3592,10 +3600,10 @@ else
     alwait 1
     report 1 "$(grep -c . "$ALNOTE" 2>/dev/null || true)" \
         "switch-log [refusal]: the notify seam is called once"
-    report yes "$(grep -q 'a@example.com' "$ALNOTE" && echo yes || echo no)" \
-        "switch-log [refusal]: ... naming the login"
-    report yes "$(grep -qF "$VAL/a@example.com.json" "$ALNOTE" && echo yes || echo no)" \
-        "switch-log [refusal]: ... and the vault entry being preserved"
+    report yes "$(grep -q 'a@example.com is signed out' "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: ... saying in plain words which login stopped working"
+    report yes "$(grep -qF 'session account use a@example.com' "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: ... and the command that reinstalls its saved copy"
 
     # The refusal returns before the vault entry's touch, deliberately — a
     # touch would mark a blank as captured — so the statusline forks this save
@@ -3607,10 +3615,19 @@ else
     alwait 2
     report 2 "$(grep -c . "$ALOG")" \
         "switch-log [refusal]: ... and at the cooldown, not merely past it, the state is recorded again"
-    report 2 "$(grep -c . "$ALNOTE")" \
-        "switch-log [refusal]: ... one notification per row and no more"
+    report 1 "$(grep -c . "$ALNOTE")" \
+        "switch-log [refusal]: ... but the outage is already announced, so nothing is pushed again"
+    report 'notify=off' "$(awk -F'\t' 'END{print $8}' "$ALOG")" \
+        "switch-log [refusal]: ... and the row says so"
     report refuse "$(awk -F'\t' 'END{print $2}' "$ALOG")" \
         "switch-log [refusal]: both rows are refusals"
+    # A gap of more than two cooldowns with no refusal means the login worked in
+    # between (or nothing rendered), so the next refusal is a new outage.
+    alsave 4701
+    alwait 2
+    report 2 "$(grep -c . "$ALNOTE")" \
+        "switch-log [refusal]: a refusal after a gap of more than two cooldowns is a new outage, announced once"
+    ALOG_ROWS=$(grep -c . "$ALOG")
 
     report 0 "$(grep -c 'tok-secret-a' "$ALOG" || true)" \
         "switch-log [refusal]: no token value reaches the log"
@@ -3631,12 +3648,41 @@ else
     # OUTGOING login, and a human switching entries during an outage is exactly
     # when that interleaving happens.
     sess "$WAL2" SESSION_ACCOUNTS_DIR="$VAL2" SESSION_DATA_DIR="$WAL/data" \
-        SESSION_NOW=2950 -- account save >/dev/null 2>&1
-    report 3 "$(grep -c . "$ALOG")" \
+        SESSION_NOW=4750 -- account save >/dev/null 2>&1
+    report $(( ALOG_ROWS + 1 )) "$(grep -c . "$ALOG")" \
         "switch-log [refusal]: another login's first refusal is recorded beside this one's"
-    alsave 3000
-    report 3 "$(grep -c . "$ALOG")" \
+    alsave 4800
+    report $(( ALOG_ROWS + 1 )) "$(grep -c . "$ALOG")" \
         "switch-log [refusal]: ... and does not reopen the first login's cooldown"
+
+    # A saved copy whose sign-in has ended (access token and refresh token both
+    # past their expiry) cannot be reinstalled, so the push must not offer it.
+    WAL3=$(world); VAL3="$WAL3/vault"; mkdir -p "$VAL3"
+    mklogin "$WAL3" d@example.com
+    printf '{"login":"d@example.com","claudeAiOauth":{"accessToken":"tok-d","expiresAt":1500000,"refreshTokenExpiresAt":1000000}}\n' \
+        > "$VAL3/d@example.com.json"
+    printf '{"claudeAiOauth":{"accessToken":""},"mcpOAuth":{}}\n' > "$WAL3/cfg/.credentials.json"
+    ALNOTE="$TMP/alog-notified-3"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$ALNOTE" > "$ALNOTIFY"
+    sess "$WAL3" SESSION_ACCOUNTS_DIR="$VAL3" SESSION_SWITCH_NOTIFY="$ALNOTIFY" \
+        SESSION_NOW=3000 -- account save >/dev/null 2>&1
+    alwait 1
+    report yes "$(grep -q '/login' "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: a login whose saved sign-in has ended is sent to /login"
+    report no "$(grep -qF 'session account use d@example.com' "$ALNOTE" && echo yes || echo no)" \
+        "switch-log [refusal]: ... and not to its dead saved copy"
+
+    # An outage opened by a silent row (a swap's save of the outgoing login)
+    # has sent nothing yet, so the first autosave refusal after it pushes.
+    printf '2000\trefuse\td@example.com\t-\tmanual\tblank-credential\t-\tnotify=off\n' \
+        > "$WAL3/data/switch-log.tsv"
+    ALNOTE="$TMP/alog-notified-4"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$ALNOTE" > "$ALNOTIFY"
+    sess "$WAL3" SESSION_ACCOUNTS_DIR="$VAL3" SESSION_SWITCH_NOTIFY="$ALNOTIFY" \
+        SESSION_NOW=2950 -- account save >/dev/null 2>&1
+    alwait 1
+    report 1 "$(grep -c . "$ALNOTE" 2>/dev/null || true)" \
+        "switch-log [refusal]: an outage a silent row opened is still announced, once"
 fi
 
 echo "--- case 14 [probe]: the status-aware usage probe ---"
@@ -5062,7 +5108,7 @@ else
     swait "$SNOTE" 2
     report 1 "$(grep -c . "$SNOTE" 2>/dev/null || true)" \
         "swap-save: the switch is still announced, from outside the lock"
-    report no "$(grep -q 'not vaulting' "$SNOTE" && echo yes || echo no)" \
+    report no "$(grep -q 'is signed out' "$SNOTE" && echo yes || echo no)" \
         "swap-save: ... and the refusal beneath it announces nothing at all"
 
     # ── the swap's other caller, where no lock is involved at all ────────────
