@@ -5007,9 +5007,9 @@ else
         printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0},"mcpOAuth":{"granola":"keep-me"}}\n' \
             > "$w/cfg/.credentials.json"
         svent "$w" a@example.com tok-a; svent "$w" b@example.com tok-b
-        # An empty token is never sent, so the live login probes lapsed and is
-        # ranked on the statusline cache instead — which is what puts a spent
-        # five-hour window under it and makes the candidate admissible.
+        # A blank live token already serves nothing (see blank-live), so this
+        # spent cache is not what makes the candidate admissible; it only keeps
+        # the world looking like a capped one.
         mkcache "$w" a@example.com 100 10 $(( n + 600 )) $(( n + 6000 ))
         printf '%s\n' "$w"
     }
@@ -5417,6 +5417,75 @@ else
         "cooldown-refuse: ... the refusal being another producer's row, not a decision to wait behind"
     report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WCR/cfg/.credentials.json")" \
         "cooldown-refuse: ... so the box reaches the login that can serve it"
+fi
+
+echo "--- blank-live: an empty live access token serves nothing, whatever the cache says ---"
+
+# The 2026-09-29 outage: Claude Code could not renew the live login and left an
+# empty access token, while that login's statusline cache still read clean. A
+# blank token is never sent, so the probe says `lapsed`, and read like the
+# network-down case the live login stayed tier 2 and nothing could climb above
+# it — the box sat on a login that could not authenticate all night.
+if ! have jq || ! have perl; then
+    skip "blank-live: a blank live token is dead" "needs jq and perl"
+else
+    DCLOCK=$DNOW; DNOTIFY=""
+    WBL=$(dworld); CBL=$(curlstub); DLOGBL="$WBL/data/switch-log.tsv"
+    dlive "$WBL" a@example.com tok-a
+    printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0},"mcpOAuth":{}}\n' \
+        > "$WBL/cfg/.credentials.json"
+    dvent "$WBL" a@example.com tok-a; dvent "$WBL" b@example.com tok-b
+    mkcache "$WBL" a@example.com 3 40 "$DE1" "$DE1"
+    printf '{"fable":{"used_percentage":20,"resets_at":%s}}\n' "$DE1" > "$WBL/data/fable.a@example.com.json"
+    dbody "$CBL" tok-b 10 10 10
+    out=$(dauto "$WBL" "$CBL" --trigger auth --sid sid-bl); rc=$?
+    report 0 "$rc" "blank-live: a decision on a blank live token switches"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "blank-live: ... to the login that can serve, although the dead one's cache reads clean"
+    # The swap's save of the outgoing (blank) login writes its refusal row first,
+    # so the decision is row 2.
+    report 'refuse switch' "$(awk -F'\t' '{ printf "%s%s", sep, $2; sep = " " }' "$DLOGBL")" \
+        "blank-live: ... the swap's refusal to vault the blank row first, then the decision"
+    report blank "$(ddet http "$DLOGBL" 2)" \
+        "blank-live: ... and the decision row says the live token was blank"
+fi
+
+echo "--- ended-entry: a vault entry whose sign-in has ended is never a candidate ---"
+
+# Claude Code renews an expired access token with the refresh token, but the
+# refresh token carries a fixed end (`refreshTokenExpiresAt`) that renewal does
+# not move. Once both are past, installing the entry only reproduces the blank
+# credential; the login needs a fresh /login.
+if ! have jq || ! have perl; then
+    skip "ended-entry: an ended sign-in is screened out" "needs jq and perl"
+else
+    DCLOCK=$DNOW; DNOTIFY=""
+    eworld() {  # REFRESH_END_EPOCH -> a world with one candidate whose access token has expired and whose refresh end is REFRESH_END_EPOCH
+        local w; w=$(dworld)
+        dlive "$w" a@example.com tok-a
+        dvent "$w" a@example.com tok-a
+        printf '{"email":"b@example.com","login":"b@example.com","oauthAccount":{"emailAddress":"b@example.com"},"claudeAiOauth":{"accessToken":"tok-b","expiresAt":%s000,"refreshTokenExpiresAt":%s000}}\n' \
+            $(( DNOW - 3600 )) "$1" > "$w/vault/b@example.com.json"
+        mkcache "$w" b@example.com 1 1 "$DE1" "$DE1"
+        printf '{"fable":{"used_percentage":1,"resets_at":%s}}\n' "$DE1" > "$w/data/fable.b@example.com.json"
+        printf '%s\n' "$w"
+    }
+    edead() {  # STUB — the live token rejected
+        printf '401' > "$1/status.tok-a"
+        printf '%s\n' '{"type":"error","error":{"type":"authentication_error"}}' > "$1/body.tok-a"
+    }
+    WEE=$(eworld $(( DNOW - 60 ))); CEE=$(curlstub); edead "$CEE"
+    out=$(dauto "$WEE" "$CEE" --trigger auth); rc=$?
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "ended-entry: an entry past both its access and refresh expiry is not switched to"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WEE/cfg/.credentials.json")" \
+        "ended-entry: ... and nothing is installed"
+
+    # The control: an expired access token alone is what Claude Code renews.
+    WEO=$(eworld $(( DNOW + 86400 ))); CEO=$(curlstub); edead "$CEO"
+    out=$(dauto "$WEO" "$CEO" --trigger auth)
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "ended-entry: an entry whose access token expired but whose refresh token has not is still a candidate"
 fi
 
 echo "--- next-eligible: a candidate's Fable reset promotes it only above a Fable-only live login ---"

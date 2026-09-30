@@ -466,10 +466,11 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # SESSION_DATA wherever a caller puts it.
 acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 
-# Whether a vault entry may be switched TO at all. Three shapes are excluded:
+# Whether a vault entry may be switched TO at all. Four shapes are excluded:
 # no token to authenticate with and an expiry of zero (the 2026-09-15 blank,
 # where every key was present and the object held nothing), both on this
-# machine's record, and a credential that is the one already live.
+# machine's record, a sign-in that has ended (acct_signin_ended), and a
+# credential that is the one already live.
 #
 # The last is the mis-filed entry the swap's two-file window can produce: the
 # statusline's autosave, which is under no lock, files the incoming credential
@@ -489,7 +490,21 @@ acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 acct_entry_ok() {  # VAULTFILE LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
+  ! acct_signin_ended "$1" || return 1
   ! acct_holds_live_token "$1" "$2"
+}
+# Whether a credential can no longer be renewed: its access token has expired
+# and so has its refresh token. `refreshTokenExpiresAt` is a fixed end set at
+# /login that renewal does not move (every vault entry and its .history copies
+# carry the same value across weeks of renewals), and on 2026-09-29 a login
+# 3.5 h past it had its renewal fail and its live access token blanked. Such an
+# entry installed only reproduces that blank. An absent or zero end is unknown
+# and never reads as ended.
+acct_signin_ended() {  # CREDENTIALS_OR_VAULTFILE
+  jq -e --argjson now "$(now_epoch)" '
+      (.claudeAiOauth.refreshTokenExpiresAt // 0) as $r
+      | $r > 0 and $r / 1000 <= $now
+        and (.claudeAiOauth.expiresAt // 0) / 1000 <= $now' "$1" >/dev/null 2>&1
 }
 # Whether a vault entry holds the access token the credentials file has
 # installed — the one test behind both the screening above and doctor's
@@ -651,15 +666,22 @@ _acct_decide() {  # TRIGGER SID DRY
   while IFS=$'\t' read -r name state f5 wk fb r5 rw rf sc; do
     [ -n "$name" ] || continue
     n=$(( n + 1 ))
+    # A blank live token probes `lapsed` (nothing is sent), but unlike an
+    # unreadable login it is known to serve nothing: Claude Code writes it when
+    # a renewal fails. Read as the network-down case, the live login would be
+    # ranked on its pre-outage cache (often tier 2), and nothing could stand
+    # strictly above it.
+    [ "$n" = 1 ] && [ "$state" = lapsed ] && acct_token_blank "$cfg/.credentials.json" && state=blank
     if [ "$state" = good ]; then
       fresh=probe; star='*'
       if [ "$scoped" = - ] || [ "$sc" -gt "$scoped" ]; then scoped=$sc; fi
     else
       fresh=frozen; star=''
-      # A credential the endpoint REJECTED gets no frozen fallback. Its cached
+      # A credential the endpoint REJECTED, or a live one with no token at all,
+      # gets no frozen fallback. Its cached
       # figures may look excellent, and ranking a dead credential on them is
       # precisely how one goes live.
-      if [ "$state" != dead ]; then
+      if [ "$state" != dead ] && [ "$state" != blank ]; then
         IFS=$'\t' read -r f5 _ wk _ fb _ <<<"$(acct_row "$name")"
         f5=$(acct_num "$f5"); wk=$(acct_num "$wk"); fb=$(acct_num "$fb")
       fi
@@ -669,11 +691,11 @@ _acct_decide() {  # TRIGGER SID DRY
     figures="${figures:+$figures;}$name=$fg$star"
     if [ "$n" = 1 ]; then
       livestate=$state
-      if [ "$state" = dead ]; then
-        # The token serving every request is rejected, so this login serves
-        # nothing whatever a cache from before the rejection still says. This
-        # is the authentication-failure case, and it is the one the record
-        # shows is worth the whole feature.
+      if [ "$state" = dead ] || [ "$state" = blank ]; then
+        # The token serving every request is rejected or gone, so this login
+        # serves nothing whatever a cache from before still says. This is the
+        # authentication-failure case, and it is the one the record shows is
+        # worth the whole feature.
         liveblocks=5h,week,fable
       else
         # UNKNOWN_BLOCKS=0: a live login that is merely unreadable is the
