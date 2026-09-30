@@ -3156,6 +3156,69 @@ else
         "case 14 [blank]: ... and is not called a working copy"
 fi
 
+echo "--- case 14 [expiry]: a sign-in's end is announced before it arrives ---"
+
+# `refreshTokenExpiresAt` is a fixed end that renewal does not move; past it
+# the login stops working until a fresh /login. `account expiry --notify` warns
+# once two days ahead and once six hours ahead, per login and per end.
+if ! have jq || ! have perl; then
+    skip "case 14 [expiry]" "needs jq and perl"
+else
+    XN=1790000000
+    WX=$(world); VX="$WX/vault"; mkdir -p "$VX"; chmod 700 "$WX/data"
+    mklogin "$WX" a@example.com
+    xent() {  # LOGIN REFRESH_END_EPOCH|- — a vault entry
+        local r=""; [ "$2" = - ] || r=",\"refreshTokenExpiresAt\":${2}000"
+        printf '{"login":"%s","email":"%s","claudeAiOauth":{"accessToken":"tok-%s","expiresAt":%s000%s}}\n' \
+            "$1" "$1" "$1" $(( XN + 3600 )) "$r" > "$VX/$1.json"
+    }
+    xent a@example.com $(( XN + 10 * 86400 ))
+    xent b@example.com $(( XN + 47 * 3600 ))
+    xent c@example.com $(( XN - 3600 ))
+    xent d@example.com -
+    XNOTE="$TMP/expiry-notified"; XNOTIFY="$TMP/expiry-notify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$XNOTE" > "$XNOTIFY"; chmod 755 "$XNOTIFY"
+    xrun() {  # EPOCH [args] — one expiry run
+        local t=$1; shift
+        sess "$WX" SESSION_ACCOUNTS_DIR="$VX" SESSION_SWITCH_NOTIFY="$XNOTIFY" SESSION_NOW="$t" \
+            -- account expiry "$@" 2>&1
+    }
+    xwait() {  # LINES
+        local n=0 have
+        while have=$(grep -c . "$XNOTE" 2>/dev/null); [ "${have:-0}" -lt "$1" ] && [ "$n" -lt 25 ]; do
+            sleep 0.2 2>/dev/null || sleep 1; n=$(( n + 1 ))
+        done
+    }
+
+    out=$(xrun "$XN"); rc=$?
+    report 0 "$rc" "case 14 [expiry]: the listing exits 0"
+    report yes "$(printf '%s\n' "$out" | grep 'b@example.com' | grep -q '1d23h' && echo yes || echo no)" \
+        "case 14 [expiry]: ... showing how long each sign-in has left"
+    report yes "$(printf '%s\n' "$out" | grep 'c@example.com' | grep -q 'ended' && echo yes || echo no)" \
+        "case 14 [expiry]: ... an ended one as ended"
+    report yes "$(printf '%s\n' "$out" | grep 'd@example.com' | grep -q 'unknown' && echo yes || echo no)" \
+        "case 14 [expiry]: ... and one with no recorded end as unknown"
+    report no "$([ -e "$XNOTE" ] && echo yes || echo no)" \
+        "case 14 [expiry]: ... and pushes nothing without --notify"
+
+    xrun "$XN" --notify >/dev/null; xwait 1
+    report 1 "$(grep -c . "$XNOTE" 2>/dev/null || true)" \
+        "case 14 [expiry]: --notify pushes once, for the one login inside two days"
+    report yes "$(grep 'b@example.com' "$XNOTE" | grep -q '/login' && echo yes || echo no)" \
+        "case 14 [expiry]: ... naming it and the /login that renews it"
+    xrun $(( XN + 3600 )) --notify >/dev/null; sleep 1
+    report 1 "$(grep -c . "$XNOTE")" "case 14 [expiry]: an hour later it does not repeat"
+    xrun $(( XN + 42 * 3600 )) --notify >/dev/null; xwait 2
+    report 2 "$(grep -c . "$XNOTE")" "case 14 [expiry]: inside six hours it warns a second time"
+    xrun $(( XN + 43 * 3600 )) --notify >/dev/null; sleep 1
+    report 2 "$(grep -c . "$XNOTE")" "case 14 [expiry]: ... and only once"
+
+    # A fresh /login gives the login a new end, which is announced afresh.
+    xent b@example.com $(( XN + 44 * 3600 + 40 * 3600 ))
+    xrun $(( XN + 44 * 3600 )) --notify >/dev/null; xwait 3
+    report 3 "$(grep -c . "$XNOTE")" "case 14 [expiry]: a new sign-in end is warned about again"
+fi
+
 echo "--- case 20: the pure selector ---"
 
 # Pure functions: no files, no clock, no network, nothing read from a global.

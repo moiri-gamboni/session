@@ -966,6 +966,57 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
     && chmod 600 "$acctdir/.save.$$" && mv -f "$acctdir/.save.$$" "$vf"
 }
 
+# Each saved login's sign-in end, and with --notify a push ahead of it.
+# `refreshTokenExpiresAt` is fixed at /login and renewal does not move it (see
+# acct_signin_ended); past it the login stops working until a fresh /login, so
+# the only useful warning is one that arrives before. Two stages, each pushed
+# once per login per end: two days ahead, and six hours ahead. A login first
+# seen inside six hours gets the six-hour push alone. The record is
+# signin-warned.tsv in the data root (login, end, stage), keyed by the end so a
+# fresh /login, which sets a new one, is warned about afresh.
+ACCT_WARN_STAGES="172800:2d 21600:6h"   # seconds ahead:label, loosest first
+acct_expiry() {  # [--notify]
+  local notify="" vf name end now left stage secs label due wf live hint msg
+  [ "${1:-}" = --notify ] && notify="${SESSION_SWITCH_NOTIFY:-}"
+  [ -n "$notify" ] && [ -x "$notify" ] || notify=""
+  [ -n "$(acct_paths)" ] || { echo "session account: no saved logins yet at $acctdir" >&2; return 1; }
+  now=$(now_epoch); wf="$SESSION_DATA/signin-warned.tsv"; live=$(acct_live_login)
+  while IFS= read -r vf; do
+    [ -n "$vf" ] || continue
+    name=$(acct_name_of "$vf")
+    end=$(jq -r '(.claudeAiOauth.refreshTokenExpiresAt // 0) / 1000 | floor' "$vf" 2>/dev/null)
+    case "$end" in ''|*[!0-9]*|0) printf '  %-42s sign-in end unknown\n' "$name"; continue ;; esac
+    left=$(( end - now ))
+    if [ "$left" -le 0 ]; then
+      printf '  %-42s ended %s — /login to use it again\n' "$name" "$(fmt_epoch "$end" '%Y-%m-%d %H:%M %Z')"
+      continue
+    fi
+    if [ "$left" -ge 86400 ]; then
+      label=$(printf '%dd%dh' $(( left / 86400 )) $(( left % 86400 / 3600 )))
+    else
+      label=$(hm "$left")
+    fi
+    printf '  %-42s ends %s (in %s)\n' "$name" "$(fmt_epoch "$end" '%Y-%m-%d %H:%M %Z')" "$label"
+    [ -n "$notify" ] || continue
+    # The tightest stage already due; the looser ones are recorded with it, so
+    # a login first seen inside six hours is not also sent the two-day push.
+    due=""
+    for stage in $ACCT_WARN_STAGES; do
+      secs=${stage%%:*}; [ "$left" -le "$secs" ] && due=${stage#*:}
+    done
+    [ -n "$due" ] || continue
+    awk -F'\t' -v l="$name" -v e="$end" -v s="$due" '$1 == l && $2 == e && $3 == s { f = 1 } END { exit !f }' \
+      "$wf" 2>/dev/null && continue
+    for stage in $ACCT_WARN_STAGES; do
+      secs=${stage%%:*}; [ "$left" -le "$secs" ] && printf '%s\t%s\t%s\n' "$name" "$end" "${stage#*:}" >> "$wf"
+    done
+    hint=""
+    [ "$name" = "$live" ] || hint=" It is not the live login, so /login switches this machine to it; \`session account use\` moves back afterwards."
+    msg="$name's sign-in ends $(fmt_epoch "$end" '%a %d %b %H:%M %Z') (in $label). After that Claude Code cannot renew it and it stops working, so run /login with that account before then.$hint"
+    ( "$notify" "$msg" >/dev/null 2>&1 & )
+  done < <(acct_paths)
+}
+
 # Vault entries in name order (C collation), which is what the list numbers:
 # a stable order, so the number beside a login means the same login next time.
 # Sorted on the name, not the filename: with the extension on, `+` (the
@@ -1220,6 +1271,9 @@ acct_main() {
     auto)
       acct_auto "$@"
       ;;
+    expiry)
+      acct_expiry "$@"
+      ;;
     save)
       # acct_save says on stderr why it refused; a second, guessed reason here
       # would contradict it.
@@ -1234,7 +1288,7 @@ acct_main() {
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: session account [list | use <#|name> | save | rm <name> | auto [opts]]
+Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | expiry [--notify]]
   list           saved logins, numbered in name order, each with its rate-limit
                  headroom and reset countdowns (default). A non-live login's snapshot ages from
                  the moment you switch away; once a window's reset passes, its
@@ -1271,6 +1325,11 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts]]
                  SESSION_AUTO_SWITCH=off in session.conf disables it;
                  SESSION_SWITCH_NOTIFY=<path> names an executable run with one
                  message whenever the box moves
+  expiry         each saved login's sign-in end (refreshTokenExpiresAt, set at
+                 /login and not moved by renewal; past it the login needs a
+                 fresh /login). --notify also pushes through
+                 SESSION_SWITCH_NOTIFY two days and six hours ahead, once each
+                 per login and sign-in; run it from cron (hourly is plenty)
 
 To ADD a login, run `/login` in a session — there is no `add` subcommand and
 none is needed: the statusline vaults whatever you log into, within a render.
@@ -1280,7 +1339,7 @@ re-authentication. Note both `/login` and `use` are box-wide: every claude here
 shares this config dir, so all running sessions move to the new login too.
 EOF
       ;;
-    *) echo "session account: unknown subcommand '$sub' (list|use|save|rm|auto)" >&2; return 2 ;;
+    *) echo "session account: unknown subcommand '$sub' (list|use|save|rm|auto|expiry)" >&2; return 2 ;;
   esac
 }
 [ "${1:-}" = account ] && { shift; acct_main "$@"; exit $?; }
@@ -1979,6 +2038,8 @@ Accounts (several subscription logins, one config dir; `session account -h`):
                                    itself; SESSION_AUTO_SWITCH=off in session.conf
                                    turns that off. `session account -h` has the
                                    options, the exit codes and the k=v output
+  session account expiry [--notify] each saved login's sign-in end; --notify pushes
+                                   two days and six hours ahead (run it from cron)
   Adding a login = run /login in a session; it is vaulted automatically, and the
   login it replaces is kept, so switching back never needs re-authenticating.
 
