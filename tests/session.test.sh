@@ -227,6 +227,18 @@ if have jq; then
     printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_enterprise","organizationUuid":"0123abcd-0000"}}\n' > "$TEAMCFG/.claude.json"
     report "me@example.com+0123abcd-0000" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$TEAMCFG")" \
         "an organisation with no name falls back to its uuid"
+    # Claude Code sometimes writes the profile without organizationType (or with
+    # it null). An empty field must stay empty rather than shift the name into
+    # its slot.
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":null,"organizationName":"Me Myself","organizationUuid":"0123abcd-0000","seatTier":null}}\n' > "$TEAMCFG/.claude.json"
+    report "me@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$TEAMCFG")" \
+        "a null organisation type with no seat keeps the bare email"
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationUuid":"0123abcd-0000"}}\n' > "$TEAMCFG/.claude.json"
+    report "me@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$TEAMCFG")" \
+        "... and so does one with neither a name nor a seat"
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":null,"organizationName":"Example Org","seatTier":"team_standard"}}\n' > "$TEAMCFG/.claude.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$TEAMCFG")" \
+        "a null organisation type with a seat tier still names the seat"
 else
     skip "session_login: same email, two organisations" "no jq"
 fi

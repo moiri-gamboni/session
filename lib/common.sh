@@ -103,13 +103,23 @@ SESSION_NOW="${SESSION_NOW:-}"
 # and separate rate-limit windows — keyed by email alone, `/login` into the
 # seat overwrote the plan's vault entry and the two logins' windows landed in
 # one cache (2026-09-15). A consumer organisation (claude_max, claude_pro,
-# claude_free, or none recorded) keeps the bare email, so every login vaulted
-# before this rule keeps its name. One jq call, whatever the shape.
-session_login_read() {  # unmemoised: `session account` and the mid-wait flip check
-  local e t n s   # re-read the live value inside one process
-  IFS=$'\t' read -r e t n < <(jq -r '.oauthAccount
-      | [(.emailAddress // ""), (.organizationType // ""), (.organizationName // .organizationUuid // "")]
-      | @tsv' "$SESSION_CFG/.claude.json" 2>/dev/null || true) || true
+# claude_free, or none recorded and no seat tier) keeps the bare email, so
+# every login vaulted before this rule keeps its name. One jq call, whatever
+# the shape.
+#
+# Claude Code sometimes rewrites the profile without organizationType (dropping
+# the rate-limit tiers with it), so the type falls back to the seat tier, which
+# only a Team or Enterprise seat carries. The fields are split on the unit
+# separator, not a tab: tab is IFS whitespace, so an empty type would collapse
+# and the next field (the organisation name, or its uuid) would take its slot,
+# filing one login under a second name.
+session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and the
+  local e t n s       # mid-wait flip check re-read the live value inside one process
+  IFS=$'\037' read -r e t n < <(jq -r '.oauthAccount
+      | [(.emailAddress // ""),
+         (.organizationType // (if (.seatTier // "") != "" then "seat" else "" end)),
+         (.organizationName // .organizationUuid // "")]
+      | join("\u001f")' "${1:-$SESSION_CFG/.claude.json}" 2>/dev/null || true) || true
   [ -n "$e" ] || { printf 'unknown\n'; return 0; }
   case "$t" in
     ""|claude_max|claude_pro|claude_free) ;;
