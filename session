@@ -934,10 +934,33 @@ acct_refuse_blank() {  # LOGIN VAULTFILE [no-notify]
 # Copy the live login into the vault. Idempotent: an unchanged entry is only
 # touched (the mtime is the autosave's "already captured" marker).
 acct_save() {  # [no-notify] — record a refusal without pushing it
-  local cfg login vf now
-  cfg=$(acct_cfg); login=$(acct_live_login)
+  local cfg login vf now ident
+  cfg=$(acct_cfg)
+  # The identity is read ONCE, and the name and the stored oauthAccount both
+  # come from that read: two reads straddling a swap's identity write filed the
+  # incoming seat's profile and credential under the outgoing plan's name.
+  ident="$acctdir/.ident.$$"
+  mkdir -p "$acctdir" && chmod 700 "$acctdir"
+  jq '{oauthAccount}' "$cfg/.claude.json" > "$ident" 2>/dev/null || : > "$ident"
+  login=$(session_login_read "$ident")
   [ "$login" != unknown ] && [ -s "$cfg/.credentials.json" ] || {
+    rm -f "$ident"
     echo "session account: nothing to save (no live login found)" >&2; return 1; }
+  # A swap writes the credential before the identity, so a save between the two
+  # sees one login's identity beside the other's credential. The credential's
+  # subscriptionType names its plan (max, team, ...) and the identity's
+  # organizationType the same plan as claude_<type>; when both are present and
+  # disagree, nothing is vaulted and the next render saves the settled pair.
+  # Two logins on the same plan type pass this check — the screening by live
+  # token and doctor's `vault` line are what catch that shape.
+  if ! jq -e --slurpfile i "$ident" '
+        (.claudeAiOauth.subscriptionType // "") as $s
+        | ($i[0].oauthAccount.organizationType // "") as $t
+        | $s == "" or $t == "" or $t == "claude_\($s)"' "$cfg/.credentials.json" >/dev/null 2>&1; then
+    rm -f "$ident"
+    echo "session account: not saving $login — the live credential's plan does not match its identity's, which is a swap caught between its two writes" >&2
+    return 1
+  fi
   # A blank credential is not a credential. Five times in two months the live
   # file has held a structurally perfect claudeAiOauth object — every key
   # present, every type right — whose accessToken was the empty string, and once
@@ -946,24 +969,25 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
   # copy the recovery needs, so the save is refused instead.
   acct_token_ok "$cfg/.credentials.json" || {
     echo "session account: not saving $login — its live accessToken is empty, and vaulting that would destroy the last working copy of this login" >&2
+    rm -f "$ident"
     acct_refuse_blank "$login" "$acctdir/$login.json" "${1:-}"
     return 1; }
-  mkdir -p "$acctdir" && chmod 700 "$acctdir"
   vf="$acctdir/$login.json"; now=$(date +%s)
   if [ -s "$vf" ]; then
     if jq -e --slurpfile v "$vf" '.claudeAiOauth == $v[0].claudeAiOauth' "$cfg/.credentials.json" >/dev/null 2>&1; then
-      touch "$vf"; return 0
+      rm -f "$ident"; touch "$vf"; return 0
     fi
     mkdir -p "$acctdir/.history" && chmod 700 "$acctdir/.history"
     cp -p "$vf" "$acctdir/.history/$login.$now.json"
   fi
   # `email` stays the raw address; `login` is the name the entry is filed under.
-  jq -n --slurpfile c "$cfg/.credentials.json" --slurpfile j "$cfg/.claude.json" \
+  jq -n --slurpfile c "$cfg/.credentials.json" --slurpfile j "$ident" \
         --arg l "$login" --argjson t "$now" \
     '{email: ($j[0].oauthAccount.emailAddress // $l), login: $l,
       oauthAccount: $j[0].oauthAccount, claudeAiOauth: $c[0].claudeAiOauth, saved_at: $t}' \
     > "$acctdir/.save.$$" 2>/dev/null \
     && chmod 600 "$acctdir/.save.$$" && mv -f "$acctdir/.save.$$" "$vf"
+  local rc=$?; rm -f "$ident"; return "$rc"
 }
 
 # Each saved login's sign-in end, and with --notify a push ahead of it.

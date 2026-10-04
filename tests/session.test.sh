@@ -1020,6 +1020,23 @@ else
         "case 14 [same email]: list shows both logins"
     report "me@example.com+example-org" "$(printf '%s\n' "$out" | awk '$1 == "live" { print $3 }')" \
         "case 14 [same email]: ... marking the seat as live, in the first column"
+    # A swap writes the credential before the identity, so a save landing
+    # between the two reads one login's identity beside the other's credential.
+    # The credential's subscription type names its plan; one that contradicts
+    # the identity's organisation type is not vaulted under that identity.
+    W14m=$(world); V3="$W14m/vault"
+    mklogin "$W14m" me@example.com
+    jq '.oauthAccount.organizationType = "claude_max"' "$W14m/cfg/.claude.json" > "$W14m/cfg/.cj" && mv "$W14m/cfg/.cj" "$W14m/cfg/.claude.json"
+    printf '{"claudeAiOauth":{"accessToken":"tok-team","subscriptionType":"team"}}\n' > "$W14m/cfg/.credentials.json"
+    out=$(sess "$W14m" SESSION_ACCOUNTS_DIR="$V3" -- account save 2>&1); rc=$?
+    report 1 "$rc" "case 14 [mid-swap]: a team credential beside a Max identity is not saved"
+    report no "$([ -e "$V3/me@example.com.json" ] && echo yes || echo no)" \
+        "case 14 [mid-swap]: ... leaving the Max plan's name unwritten"
+    printf '{"claudeAiOauth":{"accessToken":"tok-max","subscriptionType":"max"}}\n' > "$W14m/cfg/.credentials.json"
+    out=$(sess "$W14m" SESSION_ACCOUNTS_DIR="$V3" -- account save 2>&1); rc=$?
+    report "0 tok-max" "$rc $(jq -r '.claudeAiOauth.accessToken' "$V3/me@example.com.json")" \
+        "case 14 [mid-swap]: ... while a Max credential beside it is"
+
     out=$( (sess "$W14b" SESSION_ACCOUNTS_DIR="$V2" -- account use me@example >/dev/null) 2>&1 ); rc=$?
     report 1 "$rc" "case 14 [same email]: a substring both names contain is ambiguous"
     report yes "$(printf '%s' "$out" | grep -q 'matches 2 logins' && echo yes || echo no)" \
