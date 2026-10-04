@@ -5511,6 +5511,34 @@ else
     # live token under the live name — which is what the autosave keeps it doing.
     report no "$(mdoc "$MW2" | grep -q 'holds the access token that is installed' && echo yes || echo no)" \
         "mis-filed: ... and says nothing of the live login's own entry, which is meant to hold it"
+
+    # A second vault entry for the live account in the live organisation, under
+    # another name and with an older token of its own, is the same rate-limit
+    # pool: switching to it leaves the box on the same capped seat, with a
+    # credential whose refresh token the live copy's renewal has already spent.
+    msorg() {  # FILE EMAIL ORG — replace FILE's oauthAccount with just EMAIL and ORG
+        jq --arg e "$2" --arg o "$3" '.oauthAccount = {emailAddress: $e, organizationUuid: $o}' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+    }
+    MW3=$(mworld); MC3=$(curlstub)
+    msorg "$MW3/cfg/.claude.json" b@example.com org-1
+    mvent "$MW3" a@example.com tok-old
+    msorg "$MW3/vault/a@example.com.json" b@example.com org-1
+    printf '000' > "$MC3/status.tok-b"; printf '000' > "$MC3/status.tok-old"
+    : > "$MNOTE"
+    out=$(mauto "$MW3" "$MC3" sid-m3); rc=$?
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "same seat: an entry for the live account in the live organisation is not a switch target"
+    report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$MW3/cfg/.credentials.json")" \
+        "same seat: ... with the live credential where it was"
+    # The same account in another organisation is another seat, with its own limits.
+    MW4=$(mworld); MC4=$(curlstub)
+    msorg "$MW4/cfg/.claude.json" b@example.com org-1
+    mvent "$MW4" a@example.com tok-old
+    msorg "$MW4/vault/a@example.com.json" b@example.com org-2
+    printf '000' > "$MC4/status.tok-b"; printf '000' > "$MC4/status.tok-old"
+    out=$(mauto "$MW4" "$MC4" sid-m4); rc=$?
+    report 'switch a@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "same seat: ... while the same account in another organisation still is"
 fi
 
 echo "--- cooldown-refuse: a blank-credential refusal is not a decision to wait behind ---"

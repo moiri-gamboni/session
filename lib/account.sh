@@ -466,11 +466,12 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # SESSION_DATA wherever a caller puts it.
 acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 
-# Whether a vault entry may be switched TO at all. Four shapes are excluded:
+# Whether a vault entry may be switched TO at all. Five shapes are excluded:
 # no token to authenticate with and an expiry of zero (the 2026-09-15 blank,
 # where every key was present and the object held nothing), both on this
-# machine's record, a sign-in that has ended (acct_signin_ended), and a
-# credential that is the one already live.
+# machine's record, a sign-in that has ended (acct_signin_ended), the live seat
+# under another name (acct_same_seat), and a credential that is the one already
+# live.
 #
 # The last is the mis-filed entry the swap's two-file window can produce: the
 # statusline's autosave, which is under no lock, files the incoming credential
@@ -485,13 +486,27 @@ acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 # what authenticates, so an entry holding the live one moves the box nowhere
 # whatever else it carries, and the live file holds a refresh token an entry
 # saved from an earlier state of it may not. The live credentials file is
-# passed in because whether an entry may be switched to is a question about the
-# entry and the machine's current state together.
+# passed in, and the live identity read from the config dir, because whether an
+# entry may be switched to is a question about the entry and the machine's
+# current state together.
 acct_entry_ok() {  # VAULTFILE LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
   ! acct_signin_ended "$1" || return 1
+  ! acct_same_seat "$1" "$(acct_cfg)/.claude.json" || return 1
   ! acct_holds_live_token "$1" "$2"
+}
+# Whether a vault entry is the live account in the live organisation filed under
+# another name. Limits belong to the seat, so switching to it gains nothing, and
+# its credential is usually an older copy of the live one, whose refresh token
+# the live copy's renewal has already spent: installed, Claude Code blanks it
+# and every session dies on authentication. An identity missing either field never matches.
+acct_same_seat() {  # VAULTFILE LIVE_IDENTITY
+  jq -e --slurpfile j "$2" '
+      (.oauthAccount // {}) as $v | ($j[0].oauthAccount // {}) as $l
+      | ($v.organizationUuid // "") != "" and ($v.emailAddress // "") != ""
+        and $v.organizationUuid == $l.organizationUuid
+        and $v.emailAddress == $l.emailAddress' "$1" >/dev/null 2>&1
 }
 # Whether a credential can no longer be renewed: its access token has expired
 # and so has its refresh token. `refreshTokenExpiresAt` is a fixed end set at
