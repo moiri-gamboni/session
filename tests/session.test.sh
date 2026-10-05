@@ -1229,6 +1229,27 @@ else
     report yes "$([ -e "$W15/cfg/sessions/2147480000.json" ] && echo yes || echo no)" \
         "case 15: ... and left on disk (the registry is Claude Code's)"
 
+    # A window whose session was moved to the background keeps a live socket, but
+    # ListAgents hides it: REACH names its job, live or retired, never "yes".
+    SOCK15="$TMP/s15.sock"
+    cp "$W15/cfg/sessions/$$.json" "$TMP/rec15.json"
+    perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die' "$SOCK15"
+    printf '{"pid":%d,"sessionId":"%s","name":"window","status":"idle","tmux":"","messagingSocketPath":"%s","kind":"interactive","parkedJobId":"abcd1234","updatedAt":2}\n' \
+        "$$" "$UUID" "$SOCK15" > "$W15/cfg/sessions/$$.json"
+    report "ended:abcd1234" "$(sess "$W15" -- peers --json | jq -r '.[] | select(.name=="window") | .reach')" \
+        "case 15: a parked window whose job has retired reads ended:<job>"
+    printf '{"pid":%d,"sessionId":"%s","name":"job","status":"idle","tmux":"","messagingSocketPath":"%s","kind":"bg","jobId":"abcd1234","updatedAt":2}\n' \
+        "$PPID" "$UUID2" "$SOCK15" > "$W15/cfg/sessions/$PPID.json"
+    out=$(sess "$W15" -- peers --json)
+    report "job:abcd1234" "$(printf '%s' "$out" | jq -r '.[] | select(.name=="window") | .reach')" \
+        "case 15: ... and job:<job> while that job is live"
+    report "false" "$(printf '%s' "$out" | jq -r '.[] | select(.name=="window") | .reachable')" \
+        "case 15: ... reachable false either way"
+    report "yes" "$(printf '%s' "$out" | jq -r '.[] | select(.name=="job") | .reach')" \
+        "case 15: ... while the job itself reads yes"
+    rm -f "$W15/cfg/sessions/$PPID.json" "$SOCK15"
+    mv "$TMP/rec15.json" "$W15/cfg/sessions/$$.json"
+
     NOTMUX=$(minipath tmux)
     # What needs tmux is opening the windows, so a real resume refuses; the dry
     # runs and -h touch no tmux and answer without it (see the S2 block).
