@@ -1401,6 +1401,32 @@ BSDDATE
     sess "$W16" PATH="$BSDD:$FT16:$PATH" -- --focus-mark in pts/9 >/dev/null 2>&1
     report yes "$(awk -F'\t' 'NR==1{print $1}' "$W16/data/focus-log.tsv" | grep -qE '^[0-9]{10}\.[0-9]{3}$' && echo yes || echo no)" \
         "case 16: the millisecond stamp survives a date(1) without %N"
+
+    # A background session (a /fork, a launched job) runs in a daemon process
+    # with no TMUX_PANE, so its statusline never writes the pane map. The pane
+    # you look at runs `claude attach <job id>`: focus on it resolves through the
+    # registry to that session, and the map is written for the readers' fallback.
+    BGSID=22222222-2222-2222-2222-222222222222
+    printf '{"pid":%s,"sessionId":"%s","jobId":"22222222","kind":"bg"}\n' "$$" "$BGSID" > "$W16/cfg/sessions/bg.json"
+    printf '#!/bin/sh\nsleep 30\n' > "$FT16/claude"; chmod +x "$FT16/claude"
+    "$FT16/claude" attach 22222222 &
+    ATT16=$!
+    sleep 0.3
+    printf 'vsc-44\t%%44\t%s\n' "$ATT16" > "$FT16/clients_pane"
+    printf '%s\n' "$UUID" > "$W16/data/panes/44"   # stale: an earlier session's pane
+    : > "$W16/data/focus-log.tsv"
+    sess "$W16" PATH="$FT16:$PATH" -- --focus-mark in pts/18 >/dev/null 2>&1
+    report "in	pts/18	vsc-44	%44	$BGSID" \
+        "$(awk -F'\t' 'NR==1{print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6}' "$W16/data/focus-log.tsv")" \
+        "case 16 [attach]: focus on a pane running claude attach is credited to that background session"
+    report "$BGSID" "$(cat "$W16/data/panes/44")" \
+        "case 16 [attach]: ... and the pane map now names it"
+    : > "$W16/data/focus-log.tsv"
+    printf 'pts/18\tvsc-44\t%%44\t%s\t%s\n' "$(date +%s)" "$ATT16" > "$FT16/clients_tick"
+    sess "$W16" PATH="$FT16:$PATH" -- --focus-mark tick >/dev/null 2>&1
+    report "act	$BGSID" "$(awk -F'\t' 'NR==1{print $2 "\t" $6}' "$W16/data/focus-log.tsv")" \
+        "case 16 [attach]: a tick on that pane is credited the same way"
+    kill "$ATT16" 2>/dev/null; wait "$ATT16" 2>/dev/null
 fi
 
 

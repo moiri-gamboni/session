@@ -1863,8 +1863,24 @@ if [ "${1:-}" = --focus-mark ]; then
   # per client, so what it reports is the session/pane THAT client is viewing;
   # display-message -c does NOT scope format expansion (verified: every -c
   # returns the globally-current client's pane), so it cannot be used here.
+  # A pane running `claude attach <id>` is a window onto a background session
+  # (a /fork, a launched job). That session runs in a daemon process without
+  # TMUX_PANE, so its statusline never maps the pane: resolve <id> through the
+  # session registry instead. Echoes the session id, or nothing.
+  attach_sid() {
+    local ppid="${1:-}" args id f
+    [ "$ppid" -gt 0 ] 2>/dev/null || return 0
+    args=$(ps -o args= -p "$ppid" 2>/dev/null) || return 0
+    case " $args" in *[/\ ]claude\ attach\ *) ;; *) return 0 ;; esac
+    id=${args##*claude attach }; id=${id%% *}
+    [ -n "$id" ] || return 0
+    for f in "$SESSION_CFG/sessions"/*.json; do
+      [ -e "$f" ] || break
+      jq -r --arg id "$id" 'select(.jobId == $id or ((.sessionId // "") | startswith($id))) | .sessionId' "$f" 2>/dev/null
+    done | awk 'NF { print; exit }'
+  }
   flog_row() {
-    local ev="$1" cl="${2:--}" ts="${3:-}" sess="${4:-}" pn="${5:-}" sid="-"
+    local ev="$1" cl="${2:--}" ts="${3:-}" sess="${4:-}" pn="${5:-}" ppid="${6:-}" sid="-" asid
     [ -n "$ts" ] || ts=$(epoch_ms)
     # epoch_ms is the one perl call on this path, and a host with tmux and
     # without perl would otherwise write a row stamped with nothing. Every
@@ -1876,12 +1892,19 @@ if [ "${1:-}" = --focus-mark ]; then
     if { [ -z "$sess" ] || [ -z "$pn" ]; } && [ "$cl" != "-" ]; then
       # quiet: the client is already gone on detach, and list-clients then
       # prints nothing (empty sess/pn below) rather than a row
-      IFS=$'\t' read -r sess pn < <(tmux list-clients -f "#{==:#{client_name},$cl}" \
-        -F "#{client_session}"$'\t'"#{pane_id}" 2>/dev/null) || true
+      IFS=$'\t' read -r sess pn ppid < <(tmux list-clients -f "#{==:#{client_name},$cl}" \
+        -F "#{client_session}"$'\t'"#{pane_id}"$'\t'"#{pane_pid}" 2>/dev/null) || true
     fi
     [ -n "$sess" ] || sess="-"
     [ -n "$pn" ] || pn="-"
     [ "$pn" != "-" ] && [ -s "$panedir/${pn#%}" ] && sid=$(cat "$panedir/${pn#%}")
+    # The attach client wins over the map, which can still name a session that
+    # used to run in this pane; the map is rewritten so the readers agree.
+    asid=$(attach_sid "$ppid")
+    if [ -n "$asid" ] && [ "$pn" != "-" ]; then
+      [ "$asid" = "$sid" ] || { mkdir -p "$panedir" && printf '%s' "$asid" > "$panedir/${pn#%}"; }
+      sid="$asid"
+    fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$ev" "$cl" "$sess" "$pn" "${sid:--}" >> "$flog"
   }
   case "$ev" in
@@ -1922,9 +1945,9 @@ if [ "${1:-}" = --focus-mark ]; then
     # client_activity six times a minute.
     tick)
       nowi=$(date +%s); maxage="${3:-90}"
-      fmt=$'#{client_name}\t#{client_session}\t#{pane_id}\t#{client_activity}'
-      tmux list-clients -F "$fmt" 2>/dev/null | while IFS=$'\t' read -r c s p a; do
-        [ -n "$a" ] && [ $(( nowi - a )) -lt "$maxage" ] && flog_row act "$c" "$a" "$s" "$p"
+      fmt=$'#{client_name}\t#{client_session}\t#{pane_id}\t#{client_activity}\t#{pane_pid}'
+      tmux list-clients -F "$fmt" 2>/dev/null | while IFS=$'\t' read -r c s p a pp; do
+        [ -n "$a" ] && [ $(( nowi - a )) -lt "$maxage" ] && flog_row act "$c" "$a" "$s" "$p" "$pp"
       done ;;
   esac
   exit 0
