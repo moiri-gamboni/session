@@ -615,9 +615,10 @@ echo "--- the task segment ---"
 #
 # CROSS-LANGUAGE CONTRACT. `tasks/.sync/session-task.json` is written by
 # tasksync's `Store.mark_session_task` (tasksync/tasksync/store.py): one record
-# per session id, `{slug, at}`. The render reads `slug`. If that file moves or
-# its shape changes, this fixture is the place that has to move with it — the
-# pointer cases below are what fail when the two sides disagree.
+# per session id, `{slug, at}`. The render reads `slug`, and `at` (epoch seconds)
+# to choose between workspaces when SESSION_TASK_WORKSPACES lists more. If that
+# file moves or its shape changes, this fixture is the place that has to move
+# with it — the pointer cases below are what fail when the two sides disagree.
 WS="$TMP/ws"; mkdir -p "$WS/tasks/.sync"
 TSLUG="2026-08-26-bias-adjustment-for-incomplete-judging-partial-pooling-acros"
 TURL="https://app.notion.com/p/Bias-adjustment-aa000000000000000000000000000000"
@@ -708,14 +709,48 @@ seg_bad=$(render "$PT2" SESSION_DATA_DIR="$DT")
 report yes "$(yesno has "$seg_bad" 'tkns')" "task: a malformed pointer file still renders the line"
 report no  "$(yesno has "$seg_bad" ']8;;')" "task: ... with no link invented"
 
-# Outside any workspace nothing is shown: the walk from the cwd is the only way
-# to a pointer, and no environment variable stands in for it — not even the one
-# an earlier build read (its name is spelled in two pieces so that this file
-# itself carries no reference to it).
+# Outside any workspace nothing is shown unless SESSION_TASK_WORKSPACES lists
+# workspaces to read the pointer from: no other environment variable does what
+# it does — not even the one an earlier build read (its name is spelled in two
+# pieces so that this file itself carries no reference to it).
 pointer "$TSLUG"
 PT3="$TMP/pt3.json"; at_cwd "$FH" "$PT3"
 seg_out=$(render "$PT3" SESSION_DATA_DIR="$DT" "AP""ART_WORKSPACE=$WS")
-report no "$(yesno has "$seg_out" ']8;;')" "task: outside any workspace nothing is shown, whatever the environment names"
+report no "$(yesno has "$seg_out" ']8;;')" "task: outside any workspace nothing is shown, whatever other variable the environment names"
+
+# A session whose task lives in another workspace than the one it works in (or
+# in none): each listed workspace's pointer is read beside the one above the
+# cwd, and the most recent record for this session wins, wherever it is listed.
+# A listed path that is no workspace is skipped, and another session's newer
+# record is not this session's.
+WS2="$TMP/ws2"; W2SLUG="2026-10-06-a-second-store-task"
+mkdir -p "$WS2/tasks/.sync" "$WS2/tasks/$W2SLUG"
+printf -- '---\nstatus: "Done"\n---\n\n# A task in the second store\n' > "$WS2/tasks/$W2SLUG/task.md"
+pointer2() {  # AT — $SID's pointer in the second workspace, recorded at AT, beside a later one of another session
+    jq -n --arg k "$SID" --arg s "$W2SLUG" --argjson t "$1" \
+        '{($k): {slug: $s, at: $t}, "another-session": {slug: "elsewhere", at: ($t + 3600)}}' \
+        > "$WS2/tasks/.sync/session-task.json"
+}
+pointer2 $(( NOW - 60 ))
+seg_cfg=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$TMP/nowhere:$WS:$WS2")
+report yes "$(yesno has "$seg_cfg" "$LINK")" "task: outside every workspace, a listed workspace's pointer names the task"
+report no  "$(yesno has "$seg_cfg" 'second store')" "task: ... the most recent one winning though an older one is listed after it"
+pointer2 $(( NOW + 60 ))
+seg_cfg2=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2:$WS")
+report yes "$(yesno has "$seg_cfg2" ' · A task in the second store')" "task: ... and though an older one is listed before it"
+seg_cfg3=$(render "$PT2" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2")
+report yes "$(yesno has "$seg_cfg3" ' · A task in the second store')" "task: inside a workspace, a newer pointer in a listed one wins over its own"
+seg_cfg4=$(render "$PT1" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2")
+report yes "$(yesno has "$seg_cfg4" "$LINK")" "task: ... while a cwd inside a task folder still wins over every pointer"
+pointer2 $(( NOW - 60 ))
+seg_cfg5=$(render "$PT2" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2")
+report yes "$(yesno has "$seg_cfg5" "$LINK")" "task: ... and an older listed pointer loses to the workspace's own"
+seg_glob=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$TMP/ws*")
+report yes "$(yesno has "$seg_glob" "$LINK")" "task: a glob entry expands to the workspaces it matches"
+pointer2 $(( NOW + 60 ))
+seg_glob2=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$TMP/ws*")
+report yes "$(yesno has "$seg_glob2" ' · A task in the second store')" "task: ... every one of them"
+rm -rf "$WS2"
 
 # The pointer names a folder, never a path: a slug carrying "/" or starting with
 # "." must not resolve a folder outside tasks/ — the file is plain JSON on disk,

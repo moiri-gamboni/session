@@ -1068,18 +1068,21 @@ report "85" "$(conf_value "$CWT/session.conf" USAGE_WARN_PCT)" \
 report 1 "$(grep -c '^USAGE_WARN_PCT=' "$CWT/session.conf")" \
     "warn-thr: ... exactly once"
 
-echo "--- hand-set knobs: the switcher's two lines survive a re-run as well ---"
+echo "--- hand-set knobs: the switcher's two lines and the task workspaces survive a re-run as well ---"
 
 # The switcher's rollback is one hand-appended line, in the plain form the
 # README gives, so a re-run carrying any flag must not silently re-arm it.
 printf 'SESSION_AUTO_SWITCH=off\n' >> "$CWT/session.conf"
 printf 'SESSION_SWITCH_NOTIFY="${SESSION_SWITCH_NOTIFY:-/tmp/notify-wt.sh}"\n' >> "$CWT/session.conf"
+printf 'SESSION_TASK_WORKSPACES="${SESSION_TASK_WORKSPACES:-/tmp/ws-a:/tmp/ws-b}"\n' >> "$CWT/session.conf"
 out=$(inst "$CWT" --bindir "$BWT" --attend-grace 600); rc=$?
 report 0 "$rc" "hand-set knobs: a re-run carrying another flag exits 0"
 report "off" "$(conf_value "$CWT/session.conf" SESSION_AUTO_SWITCH)" \
     "hand-set knobs: ... and a switcher turned off stays off"
 report "/tmp/notify-wt.sh" "$(conf_value "$CWT/session.conf" SESSION_SWITCH_NOTIFY)" \
     "hand-set knobs: ... with its notify target still recorded"
+report "/tmp/ws-a:/tmp/ws-b" "$(conf_value "$CWT/session.conf" SESSION_TASK_WORKSPACES)" \
+    "hand-set knobs: ... and the status line's task workspaces too"
 
 report "$SHIPPED_BEFORE" "$(shipped_sums)" "the suite modified none of the shipped files in the checkout"
 

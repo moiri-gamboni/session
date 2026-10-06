@@ -84,6 +84,10 @@ SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-on}"
 # nothing is sent; the two callers are the only ones, and each covers an event
 # the other cannot observe.
 SESSION_SWITCH_NOTIFY="${SESSION_SWITCH_NOTIFY:-}"
+# Colon-separated task workspaces (each a folder holding tasks/.sync, or a glob
+# matching several) whose session-task pointer the statusline reads beside the
+# one above the working directory. Empty: only that one is read.
+SESSION_TASK_WORKSPACES="${SESSION_TASK_WORKSPACES:-}"
 # The live logs keep 8 days (covering the 7-day window); the floor is the day
 # below that, inside which a read needs the live file only.
 SESSION_LIVE_DAYS=8

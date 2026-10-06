@@ -294,13 +294,13 @@ session_nondefault_cfg && _atag=" · ${_cfg##*/}"
 #     one fact about the session that no later verb changes;
 #   • `tasks/.sync/session-task.json`, keyed by session id: the task the
 #     session last created, promoted, drafted, beat on or adopted (tasksync's
-#     `mark_session_task`). --fyi beats stamp it like any other, so a drive-by
-#     note on another task shows that task until the next beat here. A slug
-#     whose folder is gone is skipped, not shown.
-# The workspace is the nearest ancestor of the cwd carrying `tasks/.sync` (the
-# beat reminder's rule): a session inside the checkout that is on a task shows
-# which; one outside every workspace, or that never touched a task, shows
-# nothing. The title is the row's
+#     `mark_session_task`), read in the workspace above the cwd and in each one
+#     SESSION_TASK_WORKSPACES lists, the latest `at` winning. --fyi beats stamp
+#     it like any other, so a drive-by note on another task shows that task
+#     until the next beat here. A slug whose folder is gone is skipped, not shown.
+# The workspace above the cwd is its nearest ancestor carrying `tasks/.sync`
+# (the beat reminder's rule). A session in no workspace and with none listed,
+# or that never touched a task, shows nothing. The title is the row's
 # (identity.json; a draft has none, so its task.md H1), cut to its headline
 # before ": ", " — " or " - " when that headline is a phrase of its own (12+
 # characters), then clipped to 40 at a word boundary with an ellipsis.
@@ -320,16 +320,36 @@ if [ -n "$_wsroot" ]; then
   case "$_cwd" in
     "$_wsroot"/tasks/*) _slug=${_cwd#"$_wsroot"/tasks/}; _slug=${_slug%%/*} ;;
   esac
-  _mk="$_wsroot/tasks/.sync/session-task.json"
-  if [ -z "$_slug" ] && [ "$_sid" != "-" ] && [ -s "$_mk" ]; then
-    _slug=$(jq -r --arg s "$_sid" '.[$s].slug // empty' "$_mk")
-  fi
-  # A slug is one folder name under tasks/: a pointer carrying a path (tasksync
-  # never writes one, but the file is plain JSON on disk) must not resolve a
-  # folder outside the tree, and a vanished folder is not a task.
-  case "$_slug" in */*|.*) _slug="" ;; esac
-  [ -n "$_slug" ] && [ ! -d "$_wsroot/tasks/$_slug" ] && _slug=""
 fi
+# No task folder around the cwd: this session's pointer in the workspace above
+# the cwd and in each one SESSION_TASK_WORKSPACES lists, the latest `at` winning
+# and the workspace above the cwd winning a tie. A session that also logs in
+# another workspace thus shows where it beat last. The list's entries are left
+# unquoted so a glob (`$HOME/work/*`) expands to every folder it matches; a
+# match that holds no pointer, like an unmatched pattern, is skipped.
+_pick() {  # WORKSPACE
+  local mk="$1/tasks/.sync/session-task.json" rec at
+  [ -n "$1" ] && [ -s "$mk" ] || return 0
+  rec=$(jq -r --arg s "$_sid" '.[$s] | select(.slug) | "\(.at // 0 | floor) \(.slug)"' "$mk")
+  at=${rec%% *}
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$at" -gt "$_best" ]; then _best=$at; _slug=${rec#* }; _wsroot=$1; fi
+}
+if [ -z "$_slug" ] && [ "$_sid" != "-" ]; then
+  _best=-1
+  _pick "$_wsroot"
+  _ifs=$IFS; IFS=:
+  for _w in $SESSION_TASK_WORKSPACES; do
+    IFS=$_ifs
+    _pick "$_w"
+  done
+  IFS=$_ifs
+fi
+# A slug is one folder name under tasks/: a pointer carrying a path (tasksync
+# never writes one, but the file is plain JSON on disk) must not resolve a
+# folder outside the tree, and a vanished folder is not a task.
+case "$_slug" in */*|.*) _slug="" ;; esac
+[ -n "$_slug" ] && [ ! -d "$_wsroot/tasks/$_slug" ] && _slug=""
 if [ -n "$_slug" ]; then
   _short='def short($n):
     (if test(": | — | - ") then split(": | — | - "; "")[0] else . end) as $h
