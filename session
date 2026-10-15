@@ -1208,12 +1208,12 @@ acct_print_row() {  # MARKER NUMBER LOGIN
 # `list` is not, and a login the probe could not read keeps its last figure.
 acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 
-# Install a vaulted login: the whole write sequence (credential, identity, and on
-# success the switch marker) and nothing else. It prints nothing on any outcome
-# but a marker it could not write — the status is the whole answer, so a caller
-# with no human in front of it can use it, and one with a human keeps its own
+# Install a vaulted login: the whole write sequence (credential, identity, then
+# the switch marker) and nothing else. It prints nothing on any outcome but a
+# marker it could not write — the status is the whole answer, so a caller with
+# no human in front of it can use it, and one with a human keeps its own
 # wording.
-#   0  swapped
+#   0  swapped (whether or not the best-effort switch marker was written)
 #   1  the credentials write failed; nothing was installed
 #   2  the write reported success but the installed credential is not the
 #      vault entry's, so the caller must not treat the login as switched.
@@ -1257,17 +1257,15 @@ acct_swap() {  # VAULTFILE
   # credentials that never moved. A boolean comparison, so no token is rendered.
   jq -e --slurpfile v "$vf" '.claudeAiOauth == $v[0].claudeAiOauth' \
      "$cfg/.credentials.json" >/dev/null 2>&1 || return 2
-  # Tell the running sessions, which the token swap alone does not fully move.
-  # Each fetched its claude.ai connectors when it started, from the login live
-  # then, and every login has its own connector ids; after a swap a session
-  # keeps calling the old login's ids with the new token, the connector proxy
-  # answers 404, and Claude Code reads that as an expired MCP session on every
-  # call until the session ends. The plugin's hooks module
-  # (hooks/reload-on-switch.ts) watches this file and runs /reload-plugins,
-  # which fetches the list again from the live login. Written only after the
-  # read-back above: a refused or unobserved swap moved no session. Not
-  # .claude.json, which a running session rewrites from memory with the login
-  # it started on. A failed write leaves the swap done and is said on stderr.
+  # Tell the running sessions: the plugin's hooks module
+  # (hooks/reload-on-switch.ts, which says why) runs /reload-plugins when this
+  # file's mtime moves, because a token swap alone leaves each session's
+  # claude.ai connectors on the old login's ids. The name inside is for a
+  # person. Written only after the read-back above: a refused or unobserved swap
+  # moved no session. Best-effort: a failed write leaves the swap done and
+  # reaches stderr, which `use` shows and the automatic path discards. It
+  # follows a successful write of .credentials.json into this same directory,
+  # so it is not expected to fail.
   acct_name_of "$vf" > "$cfg/.session-login-switch" || true
 }
 

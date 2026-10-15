@@ -38,7 +38,7 @@ git clone <this repository> ~/code/session
 
 Pass `--bindir DIR` when `~/.local/bin` is not on your `PATH` (the installer prints the `export PATH` line when the directory it linked into is not). Pass `--data-dir DIR` when the usage store should live somewhere other than `<config dir>/session-usage`; on a machine that already has a store from an earlier install, point it there and nothing moves. Add `--primary-cfg PATH` when this machine's usual `CLAUDE_CONFIG_DIR` is not `~/.claude`, or every render will be tagged as a secondary login. `--main-guard`, `--attend-grace` and `--attend-tail` are rarely needed; the [Configuration](#configuration) table says what each moves. These flags are recorded in `<config dir>/session.conf`, so a later re-run without them keeps the values.
 
-**3. Install the plugin for the skill.** The clone carries the code and the hook entries; the plugin carries only the `/session:session` skill that tells a session when to run it. Neither step implies the other.
+**3. Install the plugin.** The clone carries the code and the hook entries; the plugin carries the `/session:session` skill that tells a session when to run it, and the hooks module that makes running sessions follow a login switch ([Running sessions after a switch](#running-sessions-after-a-switch)). Neither step implies the other.
 
 ```
 claude plugin marketplace add <this repository>
@@ -53,7 +53,7 @@ Until the first turn has been logged, `session time --json` exits 1 with `sessio
 
 ### What the installer changes
 
-The installer refuses to run from a Claude Code plugin cache (`plugins/cache/`) or from a directory you do not own. `settings.json` keeps the path it is given, and a plugin-cache path is replaced on every `claude plugin update`, which would leave every hook pointing at a directory that no longer exists; a plugin cannot set `statusLine` either. That is why the code comes from a clone and the plugin carries only the skill.
+The installer refuses to run from a Claude Code plugin cache (`plugins/cache/`) or from a directory you do not own. `settings.json` keeps the path it is given, and a plugin-cache path is replaced on every `claude plugin update`, which would leave every hook pointing at a directory that no longer exists; a plugin cannot set `statusLine` either. That is why the code comes from a clone and the plugin carries only the skill and that hooks module.
 
 ```
 install.sh [--bindir DIR] [--name NAME] [--force-link] [--dry-run] [--no-rewake]
@@ -371,6 +371,17 @@ The statusline's autosave calls `<clone>/session account save` whenever the live
 
 **A credential is never vaulted under an identity on another plan.** A swap writes the credential before the identity, so a save between the two would file one login's credential under the other's name. The save reads the identity once, names the entry and stores its profile from that one read, and refuses (exit 1, nothing written) when the credential's `subscriptionType` (`max`, `team`, …) and the identity's `organizationType` (`claude_max`, `claude_team`, …) are both present and disagree; the next render saves the settled pair.
 
+### Running sessions after a switch
+
+The token swap reaches every running session on its next request, but a session fetches its claude.ai connectors (Gmail, Calendar, Slack, …) once, when it starts, and each login has its own connector ids. Left alone, a session keeps calling the previous login's, and every connector call fails with `MCP server "claude.ai <name>" session expired` until the session restarts.
+
+So once a swap has been read back, `use` and the [automatic switcher](#automatic-switching) write the new login's name to `<config dir>/.session-login-switch` (never on a refused or failed swap), and the plugin's hooks module, which checks that file every few seconds in each session, runs `/reload-plugins` there when it changes. The session then fetches its connector list again from the live login and moves each connector to the new login's id.
+
+- The reload waits until the session is idle, so a turn under way at the switch keeps failing its connector calls until it ends.
+- It is a whole `/reload-plugins`: the session's plugins, skills, agents and hooks are reloaded. Background shells and subagents keep running through it; whether a subagent already running at the switch gets the new connectors is untested.
+- A session gets the new login's connectors. One connected at claude.ai only on the previous login stops working in it, and one only the new login has appears, so connecting the same set on every login makes a switch invisible.
+- It needs the plugin ([Install](#install), step 3). Without it, `/reload-plugins` typed in each session does the same. A session started before the plugin was installed or updated picks the module up at its next start or `/reload-plugins`.
+
 ### Automatic switching
 
 ```
@@ -488,7 +499,7 @@ Everything has run on Linux. The CLI and the statusline are written for macOS to
 bash tests/run.sh
 ```
 
-Three suites, run with this machine's bash; the summary at the end says which passed. That the scripts stay bash 3.2 clean is checked by a lint in the suite, not by a second shell. `CLAUDE.md` has the rest.
+Four suites, run with this machine's bash; the summary at the end says which passed. `plugin.test.sh` validates the plugin and runs the hooks module's own tests through `claude plugin test`, so it skips where there is no `claude` on `PATH`. That the scripts stay bash 3.2 clean is checked by a lint in the suite, not by a second shell. `CLAUDE.md` has the rest.
 
 ## Removal
 
