@@ -3024,6 +3024,11 @@ else
     report 0 "$rc" "case 14 [swap]: an untampered swap exits 0"
     report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$W14s/cfg/.credentials.json")" \
         "case 14 [swap]: ... installing the vault entry's credential"
+    report "a@example.com" "$(cat "$W14s/cfg/.session-login-switch" 2>&1)" \
+        "case 14 [swap]: ... and leaving the switch marker the plugin's hooks module watches, naming the login moved to"
+    # Removed, so every refusal below can show it wrote none: a failed or refused
+    # swap moved no session, so no session may reload over it.
+    rm -f "$W14s/cfg/.session-login-switch"
 
     # A jq that rewrites the one filter the credential swap uses and passes every
     # other call through: the write succeeds, the wrong token lands.
@@ -3118,6 +3123,8 @@ FAILEOF
         "case 14 [swap]: ... naming that login too"
     report yes "$(cmp -s "$TMP/creds.before.dead" "$W14s/cfg/.credentials.json" && echo yes || echo no)" \
         "case 14 [swap]: ... and installing nothing"
+    report no "$([ -e "$W14s/cfg/.session-login-switch" ] && echo yes || echo no)" \
+        "case 14 [swap]: none of the refused or unobserved swaps above left a switch marker"
 fi
 
 echo "--- case 14 [blank credential]: an empty accessToken is never vaulted ---"
@@ -4076,6 +4083,9 @@ else
         "decide: ... leaving mcpOAuth, which is not account-scoped, alone"
     report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$WD1/cfg/.claude.json")" \
         "decide: ... and moved the identity with it"
+    report b@example.com "$(cat "$WD1/cfg/.session-login-switch" 2>&1)" \
+        "decide: ... and left the switch marker naming the login moved to"
+    rm -f "$WD1/cfg/.session-login-switch"   # so the holds below can show they write none
     report 1 "$(grep -c . "$DLOG1")" "decide: one decision leaves exactly one audit row"
     report 'switch a@example.com b@example.com cap climbed' \
         "$(awk -F'\t' 'NR==1{print $2, $3, $4, $5, $6}' "$DLOG1")" \
@@ -4115,6 +4125,8 @@ else
     report "" "$(ddet tier "$DLOG1" 3)" "decide: ... with no tier and no figures, because it probed nothing"
     report tok-b "$(jq -r '.claudeAiOauth.accessToken' "$WD1/cfg/.credentials.json")" \
         "decide: ... and swapping nothing"
+    report no "$([ -e "$WD1/cfg/.session-login-switch" ] && echo yes || echo no)" \
+        "decide: neither hold above left a switch marker"
 
     DCLOCK=$(( DNOW + ACCT_COOLDOWN_S + 61 ))
     out=$(dauto "$WD1" "$CD1" --trigger cap --sid sid-4); rc=$?
