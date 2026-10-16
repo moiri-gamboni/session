@@ -170,7 +170,7 @@ Everything is one environment variable with a default, declared once: the `SESSI
 | `SESSION_DATA_DIR` | `<config dir>/session-usage` | the data root, and with it every log, cache, snapshot and archive |
 | `SESSION_ACCOUNTS_DIR` | `<config dir>/accounts` | the credential vault |
 | `SESSION_RESUME_QUEUE` | `<root>/resume-queue.tsv` | the reboot snapshot |
-| `SESSION_ATTEND_GRACE` | `600` | the bridge: seconds of silence between two interactions still counted as one working stretch |
+| `SESSION_ATTEND_GRACE` | `600` | the bridge: seconds of silence between two interactions still counted as one working stretch; also how recent a tmux client's input must be for [the compaction hold](#the-compaction-hold) to count the session as attended |
 | `SESSION_ATTEND_TAIL` | the bridge's value | seconds of attention credited after the last interaction of a stretch |
 | `SESSION_TMUX_MAIN_GUARD` | unset | a script `session resume` runs before it opens windows |
 | `SESSION_AUTO_SWITCH` | `on` | whether a cap or authentication death may move the box to another vaulted login by itself. `on` or `off` and nothing else: any other value is refused rather than guessed at, and every decision refuses until it is corrected |
@@ -215,7 +215,8 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
 | `fable.<login>.json` | that login's Fable weekly cap, fetched by `session account` |
 | `probe-body.<login>.json` | the raw usage-endpoint response of the last probe of that login from which no rate-limit window could be read; removed as soon as one can |
-| `sessions/<sid>.json` | `{"session_name": …}` — the session's title |
+| `sessions/<sid>.json` | `{"session_name": …, "context_window_size": …}` — the session's title and its model's context window in tokens |
+| `sessions/<sid>.hold` | empty; present while [the compaction hold](#the-compaction-hold) stands, removed by the next `PostCompact` or prompt |
 | `sessions/<sid>.cost` | dedup state for the sample log: content is the last logged cost, mtime the last sample time |
 | `sessions/<sid>[.p<pane>].limits` | the rate-limit tuple this session last saw, and which login owns it |
 | `panes/<pane-id>` | the tmux pane → session id map, so a focus row can name the session |
@@ -243,9 +244,10 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `x` | session end (`SessionEnd`) | the reason |
 | `a` / `z` | subagent start / stop | the agent type; `agent_id` pairs them |
 | `c` | compaction (`PostCompact`) | `manual` or `auto` |
+| `h` | decision of the [compaction hold](#the-compaction-hold) (`PreCompact`) | `hold`, or `allow-` and `manual`, `unattended`, `subagent`, `room` or `unknown` |
 | `p` | permission prompt shown (`Notification`) | — |
 
-Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing, with field values `@tsv`-escaped; `--hook` writes the `s` row even when there is no rate-limit cache yet.
+Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing (`--compact-gate` prints its block on a hold), with field values `@tsv`-escaped; `--hook` writes the `s` row even when there is no rate-limit cache yet.
 
 **`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`.
 
@@ -283,7 +285,7 @@ Only what a reader needs is written; the rest of each source is dropped.
 
 **The cache** is `jq -c '{rate_limits, context_window, model, version}'` of the statusline payload. The payload's `cwd`, `transcript_path`, `workspace`, `session_id`, `cost` and the rest are not stored, since nothing reads them.
 
-**The snapshot** is `jq -c '{session_name}'`, all that `session name` and the peer lookup read.
+**The snapshot** is `jq -c '{session_name, context_window_size: .context_window.context_window_size}'`, all that `session name`, the peer lookup and the compaction hold read.
 
 **The Fable file** is `{"fable":{"used_percentage":N,"resets_at":EPOCH}}`, the usage endpoint's one Fable row with its reset in epoch seconds. A response without that row writes nothing; spend, credit balances and the other meters are dropped.
 
@@ -325,6 +327,23 @@ Then `tmux source-file ~/.tmux.conf`. Without them everything else still works, 
 The tick logs an activity mark, stamped with the client's actual input time, for every client with input in the last 90 seconds, focused or not; typing and scrolling both count (tmux mouse mode makes wheel events input). Attention stops accruing `SESSION_ATTEND_TAIL` seconds after the last interaction, so a tab left focused on an empty desk does not count. Another scheduler works in place of cron: `--focus-mark tick AGE` sets the recency window, which should be one tick interval plus some slack.
 
 `--focus-mark` exits 0 and says nothing on a host without tmux — it runs from a tmux hook and a cron line, neither of which has a reader.
+
+## The compaction hold
+
+`PreCompact --compact-gate` holds an automatic compaction while someone is attending the session, so that its first half can be compacted through the rewind menu (`Esc Esc`, pick a message, **Summarize up to here**) instead of the whole conversation being summarised. Claude Code runs the hook before every request once the context is past the auto-compact threshold, and the gate decides each time. Each decision appends one `h` row to the turn log, whose detail is the verdict:
+
+| Verdict | When |
+|---|---|
+| `hold` | the trigger is `auto`; a tmux client viewing the session's pane had input within `SESSION_ATTEND_GRACE` seconds; no subagent of the session is running; room is left |
+| `allow-manual` | the trigger is anything but `auto`: `/compact` and both rewind-menu summaries arrive as `manual` |
+| `allow-unattended` | no tmux client viewing the pane had input within the bridge, `TMUX_PANE` is unset, or there is no tmux |
+| `allow-subagent` | the turn log shows a subagent of this session started less than two hours ago and not stopped (a subagent's compaction carries the parent's session id and no agent field) |
+| `allow-room` | the context is within 3,000 tokens of the point where Claude Code refuses a request outright, the model's window minus 23,000 |
+| `allow-unknown` | the session's snapshot has no `context_window_size` (the statusLine writes it), or the transcript holds no request |
+
+The context is the last request's usage in the transcript (input, cache read, cache creation and output tokens) plus the bytes of the user and attachment rows appended since (except the `prompt_snapshot` attachment, a copy of the system prompt and tools), at three bytes a token. A hold prints `{"decision":"block","reason":…}`; an allow prints nothing. The mode always exits 0, and the installed entry ends in `|| true`, so an error in the gate lets the compaction run.
+
+Claude Code shows a blocked compaction nowhere, so a hold also sends its reason to the typing client with `tmux display-message` and writes `sessions/<sid>.hold`, which the status line renders as a leading `⏸ compaction held (Esc Esc, Summarize up to here)` until the next `PostCompact` or the next prompt removes it; a request that is held again writes it again. Attendance is read from tmux at the moment of the decision, not from `focus-log.tsv`, whose activity marks land up to a minute late. A session that is not in a tmux pane (a background session, `claude -p`) is never held.
 
 ## Accounts
 

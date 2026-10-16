@@ -6039,6 +6039,184 @@ report 5000 "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible
 report - "$(printf 'x\t5h,fable\t1000\t0\t5000\tgood\n' | _acct_next_eligible 2)" \
     "next-eligible: ... and nothing stands above tier 2, so no reset promotes anything"
 
+
+echo "--- case 27: --compact-gate holds an auto compaction only while you are there to act on it ---"
+
+# PreCompact fires before every API request once the context passes the
+# auto-compact threshold, so the gate is asked again each time. Claude Code
+# refuses a request outright (a synthetic "Prompt is too long") once the context
+# reaches window - 23,000, and a refusal is what a hold must never cause: it
+# holds only while the context, with what the last tool results added, stays
+# 3,000 short of that. Attendance is input within the bridge (SESSION_ATTEND_GRACE),
+# not the tail: the fixtures set the tail to 10 s and the bridge to 300 s.
+if ! have jq; then
+    skip "case 27: compact gate" "no jq"
+else
+    W27=$(world)
+    FT27=$(mktemp -d "$TMP/ft27.XXXXXX")
+    cat > "$FT27/tmux" <<FAKETMUX27
+#!/bin/sh
+printf '%s\n' "\$*" >> "$FT27/log"
+case "\${1:-}" in
+  list-clients) [ -s "$FT27/clients" ] && cat "$FT27/clients" ;;
+esac
+exit 0
+FAKETMUX27
+    chmod +x "$FT27/tmux"
+    NOW27=$(date +%s)
+    TR27="$W27/transcript.jsonl"
+    # The PreCompact payload as captured from Claude Code 2.1.301.
+    PAYLOAD27=$(printf '{"session_id":"%s","transcript_path":"%s","cwd":"/w","prompt_id":"p1","hook_event_name":"PreCompact","trigger":"auto","custom_instructions":null}' "$UUID" "$TR27")
+
+    # A transcript whose last request carried TOTAL tokens of context, then a
+    # tool result of TAIL bytes that no request has measured yet. The row shapes
+    # are the captured ones, trimmed: a real assistant row with its usage, and
+    # the synthetic error row Claude Code writes when it refuses a request.
+    mk27() {  # TOTAL [TAIL_BYTES] [synthetic]
+        local total=$1 tail=${2:-0}
+        printf '{"type":"user","isSidechain":false,"message":{"role":"user","content":"go"}}\n' > "$TR27"
+        jq -cn --argjson t "$total" '{type:"assistant",isSidechain:false,
+            message:{model:"claude-opus-5-5",role:"assistant",content:[{type:"text",text:"ok"}],
+              usage:{input_tokens:10,cache_creation_input_tokens:1000,cache_read_input_tokens:($t-1510),output_tokens:500}}}' >> "$TR27"
+        if [ "$tail" -gt 0 ]; then
+            jq -cn --argjson n "$tail" '{type:"user",isSidechain:false,message:{role:"user",
+                content:[{type:"tool_result",tool_use_id:"t1",content:("x" * ($n - 120))}]}}' >> "$TR27"
+        fi
+        if [ "${3:-}" = synthetic ]; then
+            printf '{"type":"assistant","isSidechain":false,"error":"invalid_request","isApiErrorMessage":true,"message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Prompt is too long"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}\n' >> "$TR27"
+        fi
+    }
+    win27() { printf '{"session_name":"t","context_window_size":%s}\n' "$1" > "$W27/data/sessions/$UUID.json"; }
+    # clients27 PANE SECONDS_AGO [CLIENT]: the one tmux client and its last input
+    clients27() { printf '%s\t%s\t%s\n' "$1" "$(( NOW27 - $2 ))" "${3:-pts/9}" > "$FT27/clients"; }
+    reset27() {
+        : > "$W27/data/turn-log.tsv"; : > "$FT27/log"; rm -f "$W27/data/sessions/$UUID.hold"
+        win27 1000000; mk27 970000; clients27 %14 3
+    }
+    gate27() {  # [VAR=VAL ...] — payload on stdin via $PAYLOAD27
+        printf '%s' "$PAYLOAD27" | sess "$W27" PATH="$FT27:$PATH" TMUX_PANE=%14 SESSION_NOW="$NOW27" \
+            SESSION_ATTEND_TAIL=10 SESSION_ATTEND_GRACE=300 "$@" -- --compact-gate 2>/dev/null
+    }
+    row27() { awk -F'\t' 'END{print $3 "\t" $5 "\t" $4}' "$W27/data/turn-log.tsv"; }
+
+    # The hold.
+    reset27
+    out=$(gate27); rc=$?
+    report 0 "$rc" "case 27 [hold]: exits 0"
+    report block "$(printf '%s' "$out" | jq -r '.decision')" "case 27 [hold]: an attended auto compaction with room left is blocked"
+    reason=$(printf '%s' "$out" | jq -r '.reason')
+    report yes "$(case "$reason" in *"97%"*"Summarize up to here"*) echo yes ;; *) echo no ;; esac)" \
+        "case 27 [hold]: the reason names the context fill and the rewind-menu way out"
+    report "h	hold	p1" "$(row27)" "case 27 [hold]: one turn-log row per decision, with the prompt id"
+    report 6 "$(awk -F'\t' 'END{print NF}' "$W27/data/turn-log.tsv")" "case 27 [hold]: ... of six columns"
+    report present "$([ -e "$W27/data/sessions/$UUID.hold" ] && echo present || echo absent)" \
+        "case 27 [hold]: the status line's hold marker is written"
+    report yes "$(grep -q 'display-message -c pts/9 .*Summarize up to here' "$FT27/log" && echo yes || echo no)" \
+        "case 27 [hold]: the client that is typing is told on its tmux status line"
+
+    # Not auto, or nobody there, or no room: the compaction proceeds as it would.
+    reset27
+    out=$(printf '%s' "$PAYLOAD27" | sed 's/"auto"/"manual"/' \
+          | sess "$W27" PATH="$FT27:$PATH" TMUX_PANE=%14 SESSION_NOW="$NOW27" SESSION_ATTEND_GRACE=300 -- --compact-gate 2>/dev/null)
+    report "" "$out" "case 27 [manual]: a manual compaction (the rewind menu's included) is never blocked"
+    report "h	allow-manual	p1" "$(row27)" "case 27 [manual]: ... and the row says so"
+    report absent "$([ -e "$W27/data/sessions/$UUID.hold" ] && echo present || echo absent)" "case 27 [manual]: ... leaving no marker"
+
+    reset27; clients27 %14 300
+    report block "$(gate27 | jq -r '.decision')" "case 27 [attended]: input exactly SESSION_ATTEND_GRACE seconds ago still counts"
+    reset27; clients27 %14 100
+    report block "$(gate27 | jq -r '.decision')" "case 27 [attended]: ... and so does input long past SESSION_ATTEND_TAIL"
+    reset27; clients27 %14 301
+    out=$(gate27)
+    report "" "$out" "case 27 [unattended]: input one second past the bridge is not attended"
+    report "h	allow-unattended	p1" "$(row27)" "case 27 [unattended]: ... and the row says so"
+    reset27; clients27 %15 1
+    report "" "$(gate27)" "case 27 [unattended]: a client typing in another pane is not attention on this one"
+    reset27
+    report "" "$(gate27 TMUX_PANE=)" "case 27 [unattended]: outside tmux nobody is attending"
+    reset27
+    report "" "$(printf '%s' "$PAYLOAD27" | sess "$W27" PATH="$(minipath tmux)" TMUX_PANE=%14 SESSION_NOW="$NOW27" -- --compact-gate 2>/dev/null)" \
+        "case 27 [unattended]: a host without tmux has no one to hold for"
+    report "h	allow-unattended	p1" "$(row27)" "case 27 [unattended]: ... and the row says so"
+
+    reset27; mk27 975000
+    out=$(gate27)
+    report "" "$out" "case 27 [room]: 1,000 past window-26,000 the compaction is let through"
+    report "h	allow-room	p1" "$(row27)" "case 27 [room]: ... and the row says so"
+    reset27; mk27 973000
+    report block "$(gate27 | jq -r '.decision')" "case 27 [room]: 1,000 short of it is still held"
+    reset27; mk27 950000 60000
+    report block "$(gate27 | jq -r '.decision')" "case 27 [room]: a tool result the last request has not seen counts against the room (60 KB ~ 20k tokens: held)"
+    reset27; mk27 950000 120000
+    report "h	allow-room	p1" "$(gate27 >/dev/null; row27)" "case 27 [room]: ... and 120 KB ~ 40k tokens: let through"
+    reset27; mk27 950000 74000
+    report "h	allow-room	p1" "$(gate27 >/dev/null; row27)" "case 27 [room]: a 74 KB tool result counts three bytes a token (24k), where four would leave room (18k)"
+    # The transcript also stores a copy of the system prompt and tools as an
+    # attachment (prompt_snapshot, 111 KB in the capture); the request carries
+    # that from its cache, so it is not context the last tool result added.
+    reset27
+    jq -cn '{type:"attachment",isSidechain:false,attachment:{type:"prompt_snapshot",systemPrompt:["x" * 60000],tools:[{name:"Agent",description:("y" * 50000)}]}}' >> "$TR27"
+    report block "$(gate27 | jq -r '.decision')" "case 27 [room]: a prompt_snapshot attachment after the last request adds nothing"
+    reset27
+    jq -cn '{type:"attachment",isSidechain:false,attachment:{type:"deferred_tools_delta",addedLines:[("z" * 120000)]}}' >> "$TR27"
+    report "h	allow-room	p1" "$(gate27 >/dev/null; row27)" "case 27 [room]: ... while any other attachment (reminder text the next request sends) does"
+    reset27; mk27 950000 1200000
+    report "" "$(gate27)" "case 27 [room]: a tool result larger than the 1 MB of transcript the gate reads is let through"
+    reset27; mk27 970000 0 synthetic
+    report block "$(gate27 | jq -r '.decision')" "case 27 [room]: the zero-usage 'Prompt is too long' row does not reset the count"
+    reset27; win27 200000; mk27 175000
+    report "h	allow-room	p1" "$(gate27 >/dev/null; row27)" "case 27 [room]: the window is the session's own (a 200k model leaves room at 174k, not 974k)"
+
+    # A subagent's compaction arrives with the parent's session id and no agent field.
+    reset27
+    printf '%s\t%s\ta\t-\tExplore\tag1\n' "$(( NOW27 - 60 ))" "$UUID" >> "$W27/data/turn-log.tsv"
+    out=$(gate27)
+    report "" "$out" "case 27 [subagent]: while a subagent of this session is running, its compaction is let through"
+    report "a	Explore	ag1" "$(awk -F'\t' 'NR==1{print $3 "\t" $5 "\t" $6}' "$W27/data/turn-log.tsv")" "case 27 [subagent]: (the fixture row is the open subagent)"
+    report "h	allow-subagent	p1" "$(row27)" "case 27 [subagent]: ... and the row says so"
+    reset27
+    printf '%s\t%s\ta\t-\tExplore\tag1\n%s\t%s\tz\t-\tExplore\tag1\n' "$(( NOW27 - 60 ))" "$UUID" "$(( NOW27 - 30 ))" "$UUID" >> "$W27/data/turn-log.tsv"
+    report block "$(gate27 | jq -r '.decision')" "case 27 [subagent]: a finished subagent no longer excuses the hold"
+    reset27
+    printf '%s\t%s\ta\t-\tExplore\tag1\n' "$(( NOW27 - 7200 - 60 ))" "$UUID" >> "$W27/data/turn-log.tsv"
+    report block "$(gate27 | jq -r '.decision')" "case 27 [subagent]: a start with no stop over two hours ago is a dead subagent, not a running one"
+    reset27
+    printf '%s\t%s\ta\t-\tExplore\tag1\n' "$(( NOW27 - 60 ))" "$UUID2" >> "$W27/data/turn-log.tsv"
+    report block "$(gate27 | jq -r '.decision')" "case 27 [subagent]: another session's subagent says nothing about this one"
+
+    # What cannot be read is not a reason to block.
+    reset27; rm -f "$W27/data/sessions/$UUID.json"
+    out=$(gate27)
+    report "" "$out" "case 27 [unknown]: no snapshot, so no window: let through"
+    report "h	allow-unknown	p1" "$(row27)" "case 27 [unknown]: ... and the row says so"
+    reset27; printf '{"session_name":"t"}\n' > "$W27/data/sessions/$UUID.json"
+    report "" "$(gate27)" "case 27 [unknown]: a snapshot without the window: let through"
+    reset27; printf '{"type":"user","message":{"role":"user","content":"go"}}\n' > "$TR27"
+    report "" "$(gate27)" "case 27 [unknown]: a transcript with no request in it: let through"
+    reset27; rm -f "$TR27"
+    report "" "$(gate27)" "case 27 [unknown]: no transcript: let through"
+    for bad in "" "not json" '{"hook_event_name":"PreCompact","trigger":"auto"}'; do
+        reset27
+        out=$(printf '%s' "$bad" | sess "$W27" PATH="$FT27:$PATH" TMUX_PANE=%14 SESSION_NOW="$NOW27" -- --compact-gate 2>/dev/null); rc=$?
+        report "0 []" "$rc [$out]" "case 27 [stdin='$bad']: exits 0 and blocks nothing"
+    done
+
+    # The hold ends when the compaction happens, or with the next prompt if no
+    # request asks for it again.
+    reset27; gate27 >/dev/null
+    printf '{"session_id":"%s","prompt_id":"p2"}' "$UUID" | sess "$W27" -- --hook >/dev/null 2>&1
+    report absent "$([ -e "$W27/data/sessions/$UUID.hold" ] && echo present || echo absent)" \
+        "case 27 [marker]: a new prompt clears a hold marker no request has re-touched"
+    report s "$(awk -F'\t' 'END{print $3}' "$W27/data/turn-log.tsv")" "case 27 [marker]: ... and still logs the turn start"
+
+    reset27; gate27 >/dev/null
+    printf '{"session_id":"%s","hook_event_name":"PostCompact","trigger":"manual","compact_summary":"s"}' "$UUID" \
+        | sess "$W27" -- --compact-mark >/dev/null 2>&1
+    report absent "$([ -e "$W27/data/sessions/$UUID.hold" ] && echo present || echo absent)" \
+        "case 27 [marker]: a PostCompact clears the hold marker"
+    report "c	manual" "$(awk -F'\t' 'END{print $3 "\t" $5}' "$W27/data/turn-log.tsv")" "case 27 [marker]: ... and still logs the compaction"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
