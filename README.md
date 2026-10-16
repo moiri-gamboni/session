@@ -343,7 +343,7 @@ The tick logs an activity mark, stamped with the client's actual input time, for
 
 The context is the last request's usage in the transcript (input, cache read, cache creation and output tokens) plus the bytes of the user and attachment rows appended since (except the `prompt_snapshot` attachment, a copy of the system prompt and tools), at three bytes a token. A hold prints `{"decision":"block","reason":…}`; an allow prints nothing. The mode always exits 0, and the installed entry ends in `|| true`, so an error in the gate lets the compaction run.
 
-Claude Code shows a blocked compaction nowhere, so a hold also sends its reason to the typing client with `tmux display-message` and writes `sessions/<sid>.hold`, which the status line renders as a leading `⏸ compaction held (Esc Esc, Summarize up to here)` until the next `PostCompact` or the next prompt removes it; a request that is held again writes it again. Attendance is read from tmux at the moment of the decision, not from `focus-log.tsv`, whose activity marks land up to a minute late. A session that is not in a tmux pane (a background session, `claude -p`) is never held.
+Claude Code shows a blocked compaction nowhere, so a hold also writes `sessions/<sid>.hold`, which the status line renders as a leading `⏸ compaction held` until the next `PostCompact` or the next prompt removes it; a request that is held again writes it again. Attendance is read from tmux at the moment of the decision, not from `focus-log.tsv`, whose activity marks land up to a minute late. A session that is not in a tmux pane (a background session, `claude -p`) is never held.
 
 ## Accounts
 

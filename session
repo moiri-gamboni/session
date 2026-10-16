@@ -2130,11 +2130,11 @@ if [ "${1:-}" = --compact-gate ]; then
   [ -d "$SESSION_DATA" ] && printf '%s\t%s\th\t%s\t%s\t-\n' \
     "$(now_epoch)" "$gsid" "$gpid" "${verdict%% *}" >> "$tlog"
   if [ "${verdict%% *}" = hold ]; then
-    gclient=${verdict#hold }; gclient=${gclient% *}; gpct=${verdict##* }
+    gpct=${verdict##* }
     gmsg="Auto-compaction held while you're here (context ${gpct}%): Esc Esc, pick a message, Summarize up to here; or /compact."
+    # The status line's marker is the only signal: a tmux message would be
+    # drawn over the fullscreen pane (status is off) and redrawn away at once.
     mkdir -p "$snapdir" && touch "$snapdir/$gsid.hold"
-    # tmux expands % in a message as strftime does.
-    tmux display-message -c "$gclient" -d 15000 "${gmsg//%/%%}" || true
     jq -cn --arg r "$gmsg" '{decision: "block", reason: $r}'
   fi
   exit 0

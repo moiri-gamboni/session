@@ -382,7 +382,7 @@ fi
 # compaction and PostCompact removes it. Claude Code shows nothing itself for a
 # blocked compaction, so this is where the hold stays visible.
 _hold_seg=""
-[ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held (Esc Esc, Summarize up to here) · "
+[ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held · "
 
 jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag" \
       --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" '

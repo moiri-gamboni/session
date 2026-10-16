@@ -618,8 +618,8 @@ nohold_line=$(render "$PH" SESSION_DATA_DIR="$DH")
 report no "$(yesno has "$nohold_line" 'compaction held')" "hold: no marker, no segment"
 : > "$DH/sessions/$SID.hold"
 hold_line=$(render "$PH" SESSION_DATA_DIR="$DH")
-report yes "$(yesno has "$hold_line" '⏸ compaction held (Esc Esc, Summarize up to here)')" \
-    "hold: a marker for this session shows the hold and the way out"
+report yes "$(yesno has "$hold_line" '⏸ compaction held · ')" \
+    "hold: a marker for this session shows the hold"
 report yes "$(yesno has "$hold_line" 'tkns')" "hold: ... on the line that still carries the token count"
 report 1 "$(printf '%s\n' "$hold_line" | wc -l | tr -d ' ')" "hold: ... and it is still one line"
 : > "$DH/sessions/22222222-2222-2222-2222-222222222222.hold"

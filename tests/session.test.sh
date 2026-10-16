@@ -6111,8 +6111,8 @@ FAKETMUX27
     report 6 "$(awk -F'\t' 'END{print NF}' "$W27/data/turn-log.tsv")" "case 27 [hold]: ... of six columns"
     report present "$([ -e "$W27/data/sessions/$UUID.hold" ] && echo present || echo absent)" \
         "case 27 [hold]: the status line's hold marker is written"
-    report yes "$(grep -q 'display-message -c pts/9 .*Summarize up to here' "$FT27/log" && echo yes || echo no)" \
-        "case 27 [hold]: the client that is typing is told on its tmux status line"
+    report no "$(grep -q 'display-message' "$FT27/log" && echo yes || echo no)" \
+        "case 27 [hold]: no tmux message is sent (the status line's marker is the signal)"
 
     # Not auto, or nobody there, or no room: the compaction proceeds as it would.
     reset27
