@@ -2,7 +2,7 @@
 # uninstall.sh — undo what install.sh wired, and nothing else.
 #
 # Removes from $CLAUDE_CONFIG_DIR/settings.json this clone's hook entries (the
-# nine lifecycle ones and the two auto-resume ones) and the statusLine when it
+# ten lifecycle ones and the two auto-resume ones) and the statusLine when it
 # is ours; unlinks the CLI when the name points at this clone. An entry
 # belonging to ANOTHER clone of this CLI goes too, but only when its command has
 # the exact shape install.sh writes — a foreign command that merely mentions the

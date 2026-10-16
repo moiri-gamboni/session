@@ -2,7 +2,7 @@
 # install.sh — wire this clone into a Claude Code configuration.
 #
 # What it writes into $CLAUDE_CONFIG_DIR/settings.json, all as absolute paths
-# into this clone: the nine lifecycle hook entries, the two auto-resume (rewake)
+# into this clone: the ten lifecycle hook entries, the two auto-resume (rewake)
 # entries and the statusLine. Beside that it creates the usage data root, links
 # the CLI onto PATH, and writes session.conf — written before the settings
 # merge, so no producer this run wires can ever resolve the default data root on
@@ -439,6 +439,7 @@ if [ "$settings_ok" = 1 ]; then
           life("SubagentStop"; null; "--subagent-end"),
           life("PostCompact"; null; "--compact-mark"),
           life("PreCompact"; null; "--compact-gate"),
+          life("PostToolBatch"; null; "--post-tool-batch"),
           life("Notification"; "permission_prompt"; "--perm-mark") ]
         + (if $armed then [wake("UserPromptSubmit"), wake("StopFailure")] else [] end)')
 
