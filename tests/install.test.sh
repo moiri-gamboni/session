@@ -124,18 +124,18 @@ S26="$C26/settings.json"
 report 0 "$rc" "case 26: exit 0 (the installer's status is its own steps', not \`session doctor\`'s)"
 report yes "$(yesno test -f "$S26")" "case 26: settings.json exists"
 
-report 8 "$(jq "$LIFECYCLE | length" "$S26")" "case 26: eight lifecycle entries"
-report 8 "$(jq "$LIFECYCLE | map(select(.command|endswith(\"|| true\"))) | length" "$S26")" \
+report 9 "$(jq "$LIFECYCLE | length" "$S26")" "case 26: nine lifecycle entries"
+report 9 "$(jq "$LIFECYCLE | map(select(.command|endswith(\"|| true\"))) | length" "$S26")" \
     "case 26: every lifecycle entry ends with || true"
-report 8 "$(jq "$LIFECYCLE | map(select(.timeout==2)) | length" "$S26")" \
+report 9 "$(jq "$LIFECYCLE | map(select(.timeout==2)) | length" "$S26")" \
     "case 26: every lifecycle entry has timeout 2"
-report 8 "$(jq "$LIFECYCLE | map(select(.type==\"command\")) | length" "$S26")" \
+report 9 "$(jq "$LIFECYCLE | map(select(.type==\"command\")) | length" "$S26")" \
     "case 26: every lifecycle entry is type command"
 
 for pair in "UserPromptSubmit --hook" "Stop --turn-end" "StopFailure --turn-fail" \
             "SessionEnd --session-end" "SubagentStart --subagent-start" \
             "SubagentStop --subagent-end" "PostCompact --compact-mark" \
-            "Notification --perm-mark"; do
+            "PreCompact --compact-gate" "Notification --perm-mark"; do
     ev=${pair%% *}; mode=${pair#* }
     want="bash $SESSION_BIN $mode || true"
     report 1 "$(jq --arg e "$ev" --arg c "$want" '[.hooks[$e][]?.hooks[]? | select(.command == $c)] | length' "$S26")" \
@@ -219,7 +219,7 @@ report 3 "$(grep -c '^SESSION_' "$C26c/session.conf")" "case 26 [conf]: and noth
 C26d=$(mkcfg); B26d="$TMP/bin26d"
 out=$(inst "$C26d" --bindir "$B26d" --no-rewake); rc=$?
 report 0 "$rc" "case 26 [--no-rewake]: exit 0"
-report 8 "$(jq "$LIFECYCLE | length" "$C26d/settings.json")" "case 26 [--no-rewake]: the eight lifecycle entries"
+report 9 "$(jq "$LIFECYCLE | length" "$C26d/settings.json")" "case 26 [--no-rewake]: the nine lifecycle entries"
 report 0 "$(jq "$REWAKE | length" "$C26d/settings.json")" "case 26 [--no-rewake]: no rewake entry"
 
 # --dry-run writes nothing at all
@@ -262,7 +262,7 @@ report yes "$(yesno grep -q '/opt/other/line.sh' <<<"$out")" "case 28 [statusLin
 report yes "$(yesno grep -q "$STATUSLINE" <<<"$out")" "case 28 [statusLine]: it prints the object to merge by hand"
 report "bash /opt/other/line.sh" "$(jq -r '.statusLine.command' "$C28a/settings.json")" \
     "case 28 [statusLine]: the foreign statusLine is untouched"
-report 8 "$(jq "$LIFECYCLE | length" "$C28a/settings.json")" \
+report 9 "$(jq "$LIFECYCLE | length" "$C28a/settings.json")" \
     "case 28 [statusLine]: the refusal did not stop the hook entries"
 report yes "$(yesno test -L "$B28a/session")" "case 28 [statusLine]: nor the symlink"
 
@@ -276,7 +276,7 @@ report yes "$(yesno grep -q 'REFUSE' <<<"$out")" "case 28 [name taken]: a REFUSE
 report yes "$(yesno grep -q -- '--force-link' <<<"$out")" "case 28 [name taken]: the remedy names --force-link"
 report yes "$(yesno grep -q -- '--name' <<<"$out")" "case 28 [name taken]: ... and --name"
 report no "$(yesno test -L "$B28b/session")" "case 28 [name taken]: the foreign file is left alone"
-report 8 "$(jq "$LIFECYCLE | length" "$C28b/settings.json")" \
+report 9 "$(jq "$LIFECYCLE | length" "$C28b/settings.json")" \
     "case 28 [name taken]: the settings steps still ran"
 
 out=$(inst "$C28b" --bindir "$B28b" --force-link); rc=$?
@@ -362,8 +362,8 @@ report yes "$(yesno grep -q 'REFUSE' <<<"$out")" "case 28 [old claude]: a REFUSE
 report yes "$(yesno grep -q '2\.1\.233' <<<"$out")" "case 28 [old claude]: it names the version it needs"
 report yes "$(yesno grep -q -- '--no-rewake' <<<"$out")" "case 28 [old claude]: the remedy names --no-rewake"
 report 0 "$(jq "$REWAKE | length" "$C28h/settings.json")" "case 28 [old claude]: no rewake entry was armed"
-report 8 "$(jq "$LIFECYCLE | length" "$C28h/settings.json")" \
-    "case 28 [old claude]: the eight lifecycle entries were still written"
+report 9 "$(jq "$LIFECYCLE | length" "$C28h/settings.json")" \
+    "case 28 [old claude]: the nine lifecycle entries were still written"
 
 for v in 2.1.233 2.1.251 2.2.0 3.0.0 10.0.0; do
     C=$(mkcfg); B="$TMP/bin28v$v"
@@ -400,7 +400,7 @@ else
           bash "$INSTALL" --bindir "$B28i" 2>&1); rc=$?
     report 1 "$rc" "case 28 [no claude]: exit 1"
     report 0 "$(jq "$REWAKE | length" "$C28i/settings.json")" "case 28 [no claude]: no rewake entry"
-    report 8 "$(jq "$LIFECYCLE | length" "$C28i/settings.json")" "case 28 [no claude]: the lifecycle entries still land"
+    report 9 "$(jq "$LIFECYCLE | length" "$C28i/settings.json")" "case 28 [no claude]: the lifecycle entries still land"
 fi
 
 # (j) a stale entry of ours whose file is gone is dropped; a live one belonging
@@ -440,7 +440,7 @@ cat > "$C29/settings.json" <<'PREEOF'
 PREEOF
 out=$(inst "$C29" --bindir "$B29" --data-dir "$D29"); rc=$?
 report 0 "$rc" "case 29: the install it will undo exits 0"
-report 8 "$(jq "$LIFECYCLE | length" "$C29/settings.json")" "case 29: eight lifecycle entries before uninstall"
+report 9 "$(jq "$LIFECYCLE | length" "$C29/settings.json")" "case 29: nine lifecycle entries before uninstall"
 
 out=$(uninst "$C29" --bindir "$B29"); rc=$?
 report 0 "$rc" "case 29: uninstall exits 0"
@@ -479,7 +479,7 @@ report "/bin/echo" "$(readlink "$B29b/session")" "case 29 [foreign]: a symlink p
 report 0 "$(jq "$LIFECYCLE | length" "$C29b/settings.json")" "case 29 [foreign]: our hooks are still removed"
 
 # The round trip the README's verification recipe ends on. Entry counts pass over
-# scaffolding the run itself created — the eight event keys install.sh adds and
+# scaffolding the run itself created — the nine event keys install.sh adds and
 # uninstall.sh emptied — so the assertion is the whole tree, not a count.
 C29c=$(mkcfg); B29c="$TMP/bin29c"
 printf '{}\n' > "$C29c/settings.json"
@@ -498,7 +498,7 @@ out=$(uninst "$C29d" --bindir "$B29d")
 report '{"hooks":{"PreToolUse":[]}}' "$(jq -Sc . "$C29d/settings.json")" \
     "case 29 [round trip]: an event key that was already empty is left as it was"
 # The rule is per RUN, so the empty hooks object has to be empty when THIS run
-# starts: after an install it holds eight keys this run empties, and taking the
+# starts: after an install it holds nine keys this run empties, and taking the
 # husk with them is the point. Uninstalled on its own, it stays.
 C29e=$(mkcfg); B29e="$TMP/bin29e"
 printf '{"hooks":{},"model":"opus"}\n' > "$C29e/settings.json"
@@ -649,8 +649,8 @@ mkclone "$ODIR"
 CM3=$(mkcfg); BM3="$TMP/binm3"
 out=$(env -i PATH="$IPATH" HOME="$IHOME" FAKE_CLAUDE_VERSION="$FAKE_CLAUDE_VERSION" \
       CLAUDE_CONFIG_DIR="$CM3" bash "$ODIR/install.sh" --bindir "$BM3" 2>&1)
-report 8 "$(jq '[.hooks[]?[]?.hooks[]? | select(.command|test("--hook|--turn-|--session-end|--subagent-|--compact-mark|--perm-mark"))] | length' "$CM3/settings.json")" \
-    "case M3: a clone not named session installs eight entries"
+report 9 "$(jq '[.hooks[]?[]?.hooks[]? | select(.command|test("--hook|--turn-|--session-end|--subagent-|--compact-mark|--compact-gate|--perm-mark"))] | length' "$CM3/settings.json")" \
+    "case M3: a clone not named session installs nine entries"
 out=$(env -i PATH="$IPATH" HOME="$IHOME" CLAUDE_CONFIG_DIR="$CM3" \
       bash "$ODIR/uninstall.sh" --bindir "$BM3" 2>&1); rc=$?
 report 0 "$rc" "case M3: uninstall exits 0"
@@ -735,7 +735,7 @@ FAKE_CLAUDE_VERSION=2.1.251
 report 1 "$rc" "case M2: the re-run refuses the gate"
 report 2 "$(jq "$REWAKE | length" "$CM2/settings.json")" \
     "case M2: ... and the two working entries are still armed"
-report 8 "$(jq "$LIFECYCLE | length" "$CM2/settings.json")" "case M2: ... beside the eight lifecycle entries"
+report 9 "$(jq "$LIFECYCLE | length" "$CM2/settings.json")" "case M2: ... beside the nine lifecycle entries"
 out=$(inst "$CM2" --bindir "$BM2" --no-rewake); rc=$?
 report 0 "$rc" "case M2: an explicit --no-rewake exits 0"
 report 0 "$(jq "$REWAKE | length" "$CM2/settings.json")" "case M2: ... and does disarm them"
@@ -823,7 +823,7 @@ ln -sfn "$DOT/settings.json" "$CF4/settings.json"
 out=$(inst "$CF4" --bindir "$BF4"); rc=$?
 report 0 "$rc" "case F4: exit 0"
 report yes "$(yesno test -L "$CF4/settings.json")" "case F4: the symlink is still a symlink"
-report 8 "$(jq "$LIFECYCLE | length" "$DOT/settings.json")" "case F4: the dotfiles target received the entries"
+report 9 "$(jq "$LIFECYCLE | length" "$DOT/settings.json")" "case F4: the dotfiles target received the entries"
 report "opus" "$(jq -r '.model' "$DOT/settings.json")" "case F4: ... keeping what it had"
 report yes "$(yesno test -f "$DOT/settings.json.session-bak")" "case F4: the backup lands beside the target"
 
@@ -865,7 +865,7 @@ report 1 "$rc" "case F9: exit 1"
 report yes "$(yesno grep -q 'REFUSE' <<<"$out")" "case F9: a refusal"
 report "bash /opt/mytool/prompt.sh" "$(jq -r '.statusLine' "$CF9/settings.json")" \
     "case F9: the string statusLine is left exactly as it was"
-report 8 "$(jq "$LIFECYCLE | length" "$CF9/settings.json")" "case F9: the hook entries still landed"
+report 9 "$(jq "$LIFECYCLE | length" "$CF9/settings.json")" "case F9: the hook entries still landed"
 
 echo "--- case F10: the data root's ok depends on the .gitignore actually being there ---"
 
@@ -1023,7 +1023,7 @@ if perms_bite; then
     out=$(uninst "$CU4" --bindir "$BU4"); rc=$?
     chmod 700 "$CU4"
     report 1 "$rc" "case U: uninstall refuses when it cannot write"
-    report 8 "$(jq "$LIFECYCLE | length" "$CU4/settings.json")" "case U: ... and changes nothing"
+    report 9 "$(jq "$LIFECYCLE | length" "$CU4/settings.json")" "case U: ... and changes nothing"
 else
     skip "case U: uninstall cannot write" "$ROOT_SKIP"
 fi
@@ -1050,7 +1050,7 @@ else
     out=$(env -i PATH="$NOJQ" HOME="$IHOME" CLAUDE_CONFIG_DIR="$CU6" \
           bash "$UNINSTALL" --bindir "$BU6" 2>&1); rc=$?
     report 1 "$rc" "case U: uninstall without jq refuses"
-    report 8 "$(jq "$LIFECYCLE | length" "$CU6/settings.json")" "case U: ... and changes no settings"
+    report 9 "$(jq "$LIFECYCLE | length" "$CU6/settings.json")" "case U: ... and changes no settings"
 fi
 
 echo "--- warn-thr: a hand-set USAGE_WARN_PCT survives a re-run that rewrites the conf ---"

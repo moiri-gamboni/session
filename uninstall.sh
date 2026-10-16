@@ -2,7 +2,7 @@
 # uninstall.sh — undo what install.sh wired, and nothing else.
 #
 # Removes from $CLAUDE_CONFIG_DIR/settings.json this clone's hook entries (the
-# eight lifecycle ones and the two auto-resume ones) and the statusLine when it
+# nine lifecycle ones and the two auto-resume ones) and the statusLine when it
 # is ours; unlinks the CLI when the name points at this clone. An entry
 # belonging to ANOTHER clone of this CLI goes too, but only when its command has
 # the exact shape install.sh writes — a foreign command that merely mentions the
@@ -143,7 +143,7 @@ DROPEOF
     # levels: a group, an event key and the hooks object itself are dropped only
     # when THIS run emptied them. A husk somebody else left is theirs, and the
     # event keys install.sh created are ours to take back — leaving them made an
-    # install/uninstall round trip on `{}` end at eight empty arrays.
+    # install/uninstall round trip on `{}` end at an empty array per event.
     merged=$(jq --argjson dropline "$drop_statusline" --argjson drop "$drop" '
         (.hooks // {}) as $was
         | (has("hooks") and ($was | length) == 0) as $keep_empty
