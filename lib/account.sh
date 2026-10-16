@@ -583,6 +583,19 @@ _acct_switch_msg() {  # FROM TO TIER
   printf 'session: the live login switched from %s to %s. %s' "$1" "$2" "$rest"
 }
 
+# Why the box left the live login, in the words a running session shows beside
+# the switch (the marker's reason= line, acct_swap in `session`): the credential
+# the endpoint refused or that holds no token, else the windows it had spent.
+_acct_switch_why() {  # LIVESTATE LIVEBLOCKS
+  local w="$2"
+  case "$1" in
+    dead)  printf 'credential rejected'; return ;;
+    blank) printf 'credential blank'; return ;;
+  esac
+  w=${w//week/weekly}; w=${w//fable/Fable}; w=${w//,/, }
+  case "$w" in *,*) printf '%s limits' "$w" ;; *) printf '%s limit' "$w" ;; esac
+}
+
 # When the earliest rejected candidate would stand ABOVE the live login — the
 # one piece of genuinely new information a hold carries, and what lets a waiter
 # sleep to a time something changes rather than to a reset that changes nothing.
@@ -755,7 +768,7 @@ _acct_decide() {  # TRIGGER SID DRY
     ev=hold; reason=climbed; tier=$wintier
   else
     tier=$wintier
-    acct_swap "$winvf"
+    acct_swap "$winvf" "$live" "$(_acct_switch_why "$livestate" "$liveblocks")"
     case $? in
       0) ev=switch; reason=climbed ;;
       1) ev=fail; reason='swap-write-failed'; tier=$livetier ;;

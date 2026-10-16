@@ -3031,8 +3031,11 @@ else
     report 0 "$rc" "case 14 [swap]: an untampered swap exits 0"
     report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$W14s/cfg/.credentials.json")" \
         "case 14 [swap]: ... installing the vault entry's credential"
-    report "a@example.com" "$(cat "$W14s/cfg/.session-login-switch" 2>&1)" \
-        "case 14 [swap]: ... and leaving the switch marker the plugin's hooks module watches, naming the login moved to"
+    report "$(printf 'from=b@example.com\nto=a@example.com\nreason=session account use')" \
+        "$(cat "$W14s/cfg/.session-login-switch" 2>&1)" \
+        "case 14 [swap]: ... and leaving the switch marker the plugin's hooks module watches, naming the logins moved from and to and saying a person asked"
+    report "" "$(ls -a "$W14s/cfg" | grep '^\.session-login-switch\.' || true)" \
+        "case 14 [swap]: ... written whole through a temp file, so a poll never reads half of it, and none left behind"
     # Removed, so every refusal below can show it wrote none: a failed or refused
     # swap moved no session, so no session may reload over it.
     rm -f "$W14s/cfg/.session-login-switch"
@@ -4374,8 +4377,9 @@ else
         "decide: ... leaving mcpOAuth, which is not account-scoped, alone"
     report b@example.com "$(jq -r '.oauthAccount.emailAddress' "$WD1/cfg/.claude.json")" \
         "decide: ... and moved the identity with it"
-    report b@example.com "$(cat "$WD1/cfg/.session-login-switch" 2>&1)" \
-        "decide: ... and left the switch marker naming the login moved to"
+    report "$(printf 'from=a@example.com\nto=b@example.com\nreason=5h limit')" \
+        "$(cat "$WD1/cfg/.session-login-switch" 2>&1)" \
+        "decide: ... and left the switch marker naming both logins and the window the old one spent"
     rm -f "$WD1/cfg/.session-login-switch"   # so the holds below can show they write none
     report 1 "$(grep -c . "$DLOG1")" "decide: one decision leaves exactly one audit row"
     report 'switch a@example.com b@example.com cap climbed' \
@@ -4611,6 +4615,8 @@ else
         "decide: ... so even a Fable-spent candidate stands above it, which is the authentication outage this exists for"
     report 'dead a@example.com=-/-/-' "$(ddet http "$DLOG18") $(awk -F'\t' 'NR==1{split($7,f,";"); print f[1]}' "$DLOG18")" \
         "decide: ... and the row says the credential was refused rather than quoting the cache at it"
+    report 'credential rejected' "$(sed -n 's/^reason=//p' "$WD18/cfg/.session-login-switch")" \
+        "decide: ... and the switch marker gives the refusal as the reason, not a window"
 
     WD19=$(dworld); CD19=$(curlstub)
     dlive "$WD19" a@example.com tok-a
@@ -4626,6 +4632,18 @@ else
         "decide: ... it ranks as unknown, which fails it closed, and the box stays put"
     report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD19/cfg/.credentials.json")" \
         "decide: ... installing nothing"
+
+    # The reason a running session is shown is the windows the old login had spent.
+    for row in '100 10 10|5h limit' '10 100 10|weekly limit' '100 100 10|5h, weekly limits' \
+               '10 10 100|Fable limit' '100 10 100|5h, Fable limits'; do
+        WDR=$(dworld); CDR=$(curlstub); read -r r5 rw rf <<<"${row%%|*}"
+        dlive "$WDR" a@example.com tok-a
+        dvent "$WDR" a@example.com tok-a; dvent "$WDR" b@example.com tok-b
+        dbody "$CDR" tok-a "$r5" "$rw" "$rf"; dbody "$CDR" tok-b 10 10 10
+        out=$(dauto "$WDR" "$CDR" --trigger cap)
+        report "switch ${row##*|}" "$(dkv ev "$out") $(sed -n 's/^reason=//p' "$WDR/cfg/.session-login-switch")" \
+            "decide: the switch marker's reason for windows ${row%%|*} (5h week fable)"
+    done
 
     WD20=$(dworld); CD20=$(curlstub)
     dlive "$WD20" a@example.com tok-a
@@ -5983,6 +6001,8 @@ else
         "blank-live: ... the swap's refusal to vault the blank row first, then the decision"
     report blank "$(ddet http "$DLOGBL" 2)" \
         "blank-live: ... and the decision row says the live token was blank"
+    report 'credential blank' "$(sed -n 's/^reason=//p' "$WBL/cfg/.session-login-switch")" \
+        "blank-live: ... and the switch marker gives the blank token as the reason"
 fi
 
 echo "--- ended-entry: a vault entry whose sign-in has ended is never a candidate ---"

@@ -1326,8 +1326,8 @@ acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 #   3  the entry cannot authenticate; nothing was read, written or vaulted
 #   4  a Claude Code lock stayed held (or could not be created) for the whole
 #      wait, so neither credential file was touched; ACCT_LOCK_BUSY names it
-acct_swap() {  # VAULTFILE
-  local vf="$1" cfg refresh twin held_twin=0 rc
+acct_swap() {  # VAULTFILE FROM WHY — the login being left and the reason, for the marker
+  local vf="$1" from="$2" why="$3" cfg refresh twin held_twin=0 rc
   # Refused before the locks, before the outgoing login is vaulted and before
   # any write. An entry with no usable token is the 2026-09-15 shape, and this
   # is the path a human takes while that outage is happening — reaching for
@@ -1346,14 +1346,14 @@ acct_swap() {  # VAULTFILE
     # as Claude Code skips it; one that is held is a refresh in flight.
     1) acct_dir_unlock "$refresh"; ACCT_LOCK_BUSY=$twin; return 4 ;;
   esac
-  acct_swap_locked "$vf" "$cfg"; rc=$?
+  acct_swap_locked "$vf" "$cfg" "$from" "$why"; rc=$?
   [ "$held_twin" = 1 ] && acct_dir_unlock "$twin"
   acct_dir_unlock "$refresh"
   return $rc
 }
 
-acct_swap_locked() {  # VAULTFILE CONFIG_DIR
-  local vf="$1" cfg="$2" tmp wrote
+acct_swap_locked() {  # VAULTFILE CONFIG_DIR FROM WHY
+  local vf="$1" cfg="$2" from="$3" why="$4" tmp wrote
   # Never lose the login being replaced — and announce nothing if it cannot be
   # saved. The automatic decision runs this inside switch.lock, and lock_run
   # EXECS its command, so a notifier backgrounded from here would inherit the
@@ -1388,13 +1388,16 @@ acct_swap_locked() {  # VAULTFILE CONFIG_DIR
   # Tell the running sessions: the plugin's hooks module
   # (hooks/reload-on-switch.ts, which says why) runs /reload-plugins when this
   # file's mtime moves, because a token swap alone leaves each session's
-  # claude.ai connectors on the old login's ids. The name inside is for a
-  # person. Written only after the read-back above: a refused or unobserved swap
-  # moved no session. Best-effort: a failed write leaves the swap done and
-  # reaches stderr, which `use` shows and the automatic path discards. It
-  # follows a successful write of .credentials.json into this same directory,
-  # so it is not expected to fail.
-  acct_name_of "$vf" > "$cfg/.session-login-switch" || true
+  # claude.ai connectors on the old login's ids, and shows the lines inside as
+  # the note on that command. Renamed into place so a poll that catches the
+  # mtime never reads half of it. Written only after the read-back above: a
+  # refused or unobserved swap moved no session. Best-effort: a failed write
+  # leaves the swap done and reaches stderr, which `use` shows and the automatic
+  # path discards. It follows a successful write of .credentials.json into this
+  # same directory, so it is not expected to fail.
+  tmp="$cfg/.session-login-switch.$$"
+  printf 'from=%s\nto=%s\nreason=%s\n' "$from" "$(acct_name_of "$vf")" "$why" > "$tmp" \
+    && mv -f "$tmp" "$cfg/.session-login-switch" || rm -f "$tmp"
 }
 
 acct_main() {
@@ -1432,7 +1435,7 @@ acct_main() {
       if [ "$email" = "$(acct_live_login)" ] && ! acct_token_blank "$cfg/.credentials.json"; then
         echo "session account: already on $email"; return 0
       fi
-      acct_swap "$vf"
+      acct_swap "$vf" "$(acct_live_login)" "session account use"
       case $? in
         1) echo "session account: failed to write credentials" >&2; return 1 ;;
         2) echo "session account: the credential swap did not land — the live credential is not $email's; check $cfg/.credentials.json" >&2; return 1 ;;
