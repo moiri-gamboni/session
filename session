@@ -3079,9 +3079,14 @@ ws5=$(( fivereset - FIVE_WINDOW )); wsw=$(( weekreset - WEEK_WINDOW ))
 # highest last cost not above the sample's is the sample's own. Rows from the
 # older schema have no column 8; they read as clock 0 and fall into one stream,
 # which is the per-sid rule they were written under.
+# This scan and base_pcts' run their awk in the C locale: the fields are
+# numbers, ids and login names compared for equality, and gawk under a UTF-8
+# locale takes ~3x as long over the whole log (0.6s against 0.2s on 36k rows,
+# measured) — time the UserPromptSubmit hook, which runs both while a window
+# warns, cannot spare under its 2s timeout.
 est_sessions() {
   [ -s "$slog" ] || return 1
-  LC_ALL=C sort -t$'\t' -k1,1n "$slog" | awk -F'\t' -v ws5="$ws5" -v wsw="$wsw" -v acct="$acct" '
+  LC_ALL=C sort -t$'\t' -k1,1n "$slog" | LC_ALL=C awk -F'\t' -v ws5="$ws5" -v wsw="$wsw" -v acct="$acct" '
     $2 != "" && $21 == acct {
       ts=$1+0; sid=$2; c=$3+0; dur=$8+0; d=0
       best=0; bc=-1; bd=-1
@@ -3113,7 +3118,7 @@ base_pcts() {
   # baseline is ASSIGNED on the first match (a window can open at 0.000%, and
   # `0 > uninit` would never fire, leaking an empty field — which bash read
   # under IFS=tab would then swallow as leading whitespace, shifting b5/bw)
-  LC_ALL=C sort -t$'\t' -k1,1n "$slog" | awk -F'\t' \
+  LC_ALL=C sort -t$'\t' -k1,1n "$slog" | LC_ALL=C awk -F'\t' \
     -v ws5="$ws5" -v wsw="$wsw" -v fr="$fivereset" -v wr="$weekreset" -v acct="$acct" '
     $21==acct && $1+0>=ws5 && $6==fr && $4+0>=0 {
       if (!g5) { g5=1; t5=$1+0; b5=$4+0 } else if ($1+0<=t5+300 && $4+0>b5) b5=$4+0 }
