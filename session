@@ -1983,7 +1983,7 @@ case "${1:-}" in
     if [ ! -t 0 ]; then
       IFS=$'\t' read -r esid epid edet eaid < <(jq -r \
         '[(.session_id//"-"),(.prompt_id//"-"),
-          (.error_type//.error//.reason//.compaction_reason//.agent_type//"-"),
+          (.error_type//.error//.reason//.trigger//.agent_type//"-"),
           (.agent_id//"-")]|@tsv' 2>/dev/null || true)
       if [ -n "${esid:-}" ] && [ "$esid" != "-" ]; then
         case "$1" in

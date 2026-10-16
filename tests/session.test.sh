@@ -795,7 +795,7 @@ else
                 "--subagent-start a" "--subagent-end z" "--compact-mark c" "--perm-mark p"; do
         m=${pair%% *}; ev=${pair##* }
         : > "$W2/data/turn-log.tsv"
-        out=$(printf '{"session_id":"%s","prompt_id":"p1","agent_id":"ag1","reason":"clear","error_type":"rate_limit","agent_type":"explore","compaction_reason":"auto"}' "$UUID" \
+        out=$(printf '{"session_id":"%s","prompt_id":"p1","agent_id":"ag1","reason":"clear","error_type":"rate_limit","agent_type":"explore","trigger":"auto"}' "$UUID" \
               | sess "$W2" -- "$m" 2>/dev/null)
         rc=$?
         report 0  "$rc"  "case 2 [$m]: exits 0"
@@ -821,6 +821,13 @@ else
         | sess "$W2" -- --session-end >/dev/null 2>&1
     report "x	exit" "$(awk -F'\t' 'NR==1{print $3 "\t" $5}' "$W2/data/turn-log.tsv")" \
         "case 2: the documented SessionEnd payload logs its reason as the detail"
+
+    # The PostCompact payload as captured from Claude Code 2.1.301 (compact_summary shortened).
+    : > "$W2/data/turn-log.tsv"
+    printf '{"session_id":"%s","transcript_path":"/t.jsonl","cwd":"/w","prompt_id":"p1","hook_event_name":"PostCompact","trigger":"auto","compact_summary":"Summary"}' "$UUID" \
+        | sess "$W2" -- --compact-mark >/dev/null 2>&1
+    report "c	auto" "$(awk -F'\t' 'NR==1{print $3 "\t" $5}' "$W2/data/turn-log.tsv")" \
+        "case 2: the PostCompact payload logs its trigger (manual or auto) as the detail"
 
     # A hostile detail: the row separator, the row terminator, and a whole forged
     # row. jq's @tsv escapes all three, so the log gains one row, not three.
