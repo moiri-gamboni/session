@@ -188,8 +188,72 @@ while [ -L "$_src" ] && [ "$_n" -lt 40 ]; do
   case "$_src" in /*) ;; *) _src="$_dir/$_src";; esac
   _n=$(( _n + 1 ))
 done
-SESSION_HOME=$(cd -P "$(dirname "$_src")" && pwd)
+# In place, not in a subshell with dirname: this runs before every mode, hooks
+# that fire after each tool batch included, and the two forks cost more than the
+# rest of a quiet hook. The working directory is put back.
+_d=${_src%/*}; case "$_src" in */*) [ -n "$_d" ] || _d=/ ;; *) _d=. ;; esac
+_pwd=$PWD
+cd -P "$_d" && SESSION_HOME=$PWD || { echo "session: cannot enter $_d" >&2; exit 1; }
+[ -d "$_pwd" ] && { cd "$_pwd" || true; }
 . "$SESSION_HOME/lib/common.sh" || { echo "session: cannot read $SESSION_HOME/lib/common.sh" >&2; exit 1; }
+
+# PostToolBatch stop ("--post-tool-batch"): end an attended turn before the
+# request that would cross the auto-compaction ceiling, so the conversation is
+# not summarised whole and the context keeps the room a manual compaction needs
+# (the rewind menu's "Summarize up to here", or /compact). A PreCompact hook
+# cannot do this, because Claude Code discards the `continue` it returns; a
+# PostToolBatch hook that returns continue:false ends the loop before the next
+# model call, and its stopReason shows in the terminal. Claude Code does not
+# run the Stop hook after it, so the turn's end is logged here.
+#
+# This runs after every tool batch in every session on the box. It therefore
+# sits ahead of the account library and of the function definitions below, whose
+# parsing is most of the cost of any other mode, and it reaches for the
+# transcript, jq and tmux only once the figures the status line publishes
+# (sessions/<sid>.ctx, up to a response behind: hence the 50,000 of slack) put
+# the context within reach of the ceiling. Everything fails open: no figures, no
+# ceiling, a payload of another shape, or a subagent's batch (the only kind that
+# carries agent_id) lets the turn go on.
+if [ "${1:-}" = --post-tool-batch ]; then
+  # Byte counts below, and no scan of a large payload for multibyte characters.
+  LC_ALL=C
+  # cat, not $(</dev/stdin): Claude Code hands a hook its stdin as a socket,
+  # which /dev/stdin cannot reopen.
+  ptb=$(cat)
+  ptb_head=${ptb:0:2000}
+  case "$ptb_head" in '{"session_id":"'*) ;; *) exit 0 ;; esac
+  case "$ptb_head" in *'"agent_id":'*) exit 0 ;; esac
+  ptb_sid=${ptb_head#'{"session_id":"'}; ptb_sid=${ptb_sid%%\"*}
+  case "$ptb_sid" in ''|*[!0-9A-Za-z-]*) exit 0 ;; esac
+  [ -r "$SESSION_SNAPDIR/$ptb_sid.ctx" ] || exit 0
+  read -r ptb_tok ptb_win ptb_ceil < "$SESSION_SNAPDIR/$ptb_sid.ctx" || exit 0
+  case "$ptb_tok" in ''|*[!0-9]*) exit 0 ;; esac
+  case "$ptb_ceil" in ''|*[!0-9]*) exit 0 ;; esac
+  [ $(( ptb_tok + ${#ptb} / 3 + 50000 )) -lt "$ptb_ceil" ] && exit 0
+  . "$SESSION_HOME/lib/compact.sh"
+  compact_attended || exit 0
+  ptb_tp=${ptb_head#*'"transcript_path":"'}; ptb_tp=${ptb_tp%%\"*}
+  ptb_ctx=$(compact_context "$ptb_tp")
+  [ -n "$ptb_ctx" ] || exit 0
+  # What the model will be sent is counted from the payload's tool_response
+  # strings, at three bytes a token; the tool_input is the model's own output,
+  # which the last request's usage already includes. The rows after that
+  # request are not counted: the batch's own results may or may not have been
+  # written to the transcript yet, and they are these same strings.
+  ptb_resp=$(printf '%s' "$ptb" | jq '[.tool_calls[]?.tool_response | tostring | utf8bytelength] | add // 0')
+  case "$ptb_resp" in ''|*[!0-9]*) exit 0 ;; esac
+  ptb_e=$(( ${ptb_ctx%% *} + ptb_resp / 3 ))
+  [ $(( ptb_e + 3000 )) -ge "$ptb_ceil" ] || exit 0
+  ptb_pid=${ptb_head#*'"prompt_id":"'}; ptb_pid=${ptb_pid%%\"*}
+  ptb_now=$(now_epoch)
+  mkdir -p "$SESSION_SNAPDIR" && touch "$SESSION_SNAPDIR/$ptb_sid.hold"
+  [ -d "$SESSION_DATA" ] && printf '%s\t%s\th\t%s\tstop\t-\n%s\t%s\te\t%s\t-\t-\n' \
+    "$ptb_now" "$ptb_sid" "$ptb_pid" "$ptb_now" "$ptb_sid" "$ptb_pid" >> "$SESSION_TLOG"
+  printf '{"continue": false, "stopReason": "Stopped before auto-compaction (context %s%%)."}\n' \
+    $(( ptb_e * 100 / ptb_win ))
+  exit 0
+fi
+
 . "$SESSION_HOME/lib/account.sh" || { echo "session: cannot read $SESSION_HOME/lib/account.sh" >&2; exit 1; }
 
 # cache resolution is deferred until after arg parsing: it depends on the login
