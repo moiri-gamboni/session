@@ -886,6 +886,25 @@ acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/nu
 # The converse PROVEN rather than "not proven ok": a file that cannot be read or
 # parsed is a different fault, and reading it as blank would misname it.
 acct_token_blank() { jq -e '(.claudeAiOauth.accessToken // "") == ""' "$1" >/dev/null 2>&1; }
+# Whether the live credentials are an earlier state of the login than a vault
+# entry, printing both sides' figures when they are. The sign-in end
+# (refreshTokenExpiresAt) orders first: /login sets it, and it is the same for
+# every renewal of that sign-in to within a second (vault history shows
+# renewals whose ends differ by one second), so ends within a minute are one
+# sign-in. The access token's expiry (expiresAt) then orders within a sign-in,
+# since every renewal moves it later. A field either side lacks orders nothing,
+# so a credential without them is never held back.
+acct_creds_older() {  # LIVE_CREDENTIALS VAULTFILE
+  jq -er --slurpfile v "$2" '
+      (.claudeAiOauth // {}) as $l | ($v[0].claudeAiOauth // {}) as $e
+      | ($l.refreshTokenExpiresAt // 0) as $le | ($e.refreshTokenExpiresAt // 0) as $ve
+      | ($l.expiresAt // 0) as $lx | ($e.expiresAt // 0) as $vx
+      | (if $le > $ve then $le - $ve else $ve - $le end) as $gap
+      | (if $le > 0 and $ve > 0 and $gap > 60000 then $le < $ve
+         else $lx > 0 and $vx > 0 and $lx < $vx end)
+      | if . then "live=\($le)/\($lx);vault=\($ve)/\($vx)" else false end' "$1" 2>/dev/null
+}
+
 # Record a refused blank credential at most once per login per cooldown, and —
 # unless the caller silences it — tell a human once per outage.
 #
@@ -920,12 +939,13 @@ acct_token_blank() { jq -e '(.claudeAiOauth.accessToken // "") == ""' "$1" >/dev
 acct_refuse_blank() {  # LOGIN VAULTFILE [no-notify]
   local last sent now notify="${SESSION_SWITCH_NOTIFY:-}" fired=off msg
   now=$(now_epoch)
-  # This login's rows only, not the newest refusal: `use` vaults the outgoing
-  # login, so a human switching entries during an outage puts another login's
-  # row in between, and reading only the last row would reopen this login's
-  # window every time that happened.
+  # This login's blank-credential rows only, not the newest refusal: `use`
+  # vaults the outgoing login, so a human switching entries during an outage
+  # puts another login's row in between, and reading only the last row would
+  # reopen this login's window every time that happened. A refusal for age
+  # (acct_save) is another record and starts no window here.
   read -r last sent < <(awk -F'\t' -v l="$1" -v gap=$(( 2 * ACCT_COOLDOWN_S )) -v now="$now" '
-      $2 == "refuse" && $3 == l {
+      $2 == "refuse" && $3 == l && $6 == "blank-credential" {
         if (ts && $1 - ts > gap) sent = 0
         ts = $1; if ($8 == "notify=sent") sent = 1
       }
@@ -954,7 +974,7 @@ acct_refuse_blank() {  # LOGIN VAULTFILE [no-notify]
 # Copy the live login into the vault. Idempotent: an unchanged entry is only
 # touched (the mtime is the autosave's "already captured" marker).
 acct_save() {  # [no-notify] — record a refusal without pushing it
-  local cfg login vf now ident
+  local cfg login vf now ident older
   cfg=$(acct_cfg)
   # The identity is read ONCE, and the name and the stored oauthAccount both
   # come from that read: two reads straddling a swap's identity write filed the
@@ -996,6 +1016,25 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
   if [ -s "$vf" ]; then
     if jq -e --slurpfile v "$vf" '.claudeAiOauth == $v[0].claudeAiOauth' "$cfg/.credentials.json" >/dev/null 2>&1; then
       rm -f "$ident"; touch "$vf"; return 0
+    fi
+    # An earlier state of this login than the vaulted one: a stale writer, a
+    # restored backup. Vaulting it would replace the newer copy, whose refresh
+    # token is the one that still works. The row says which side was older, and
+    # is written once per distinct pair of figures: `list` and every swap save
+    # too, so the refusal comes round for as long as the state lasts, and the
+    # log is never pruned. The touch marks the credentials judged, as an
+    # unchanged save does, so the status line's autosave does not run the save
+    # on every render — the next change to the file is judged afresh.
+    if older=$(acct_creds_older "$cfg/.credentials.json" "$vf"); then
+      rm -f "$ident"
+      echo "session account: not saving $login — the live credential is an older state of this login than the vaulted one, and vaulting it would destroy the newer copy" >&2
+      # awk exits 0 when the newest such row already carries these figures.
+      if ! awk -F'\t' -v l="$login" -v d="$older" '$2 == "refuse" && $3 == l && $6 == "older-credential" { last = $8 } END { exit last != d }' \
+             "$(acct_log_file)" 2>/dev/null; then
+        acct_log refuse "$login" - manual older-credential - "$older" || true
+      fi
+      touch "$vf"
+      return 1
     fi
     mkdir -p "$acctdir/.history" && chmod 700 "$acctdir/.history"
     cp -p "$vf" "$acctdir/.history/$login.$now.json"
@@ -1395,7 +1434,9 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  It holds Claude Code's credential locks while it writes, and
                  fails (exit 1, nothing changed) if one stays held for 15 s
   save           snapshot the live login into the vault (the statusline
-                 does this automatically every time credentials change)
+                 does this automatically every time credentials change).
+                 Refuses to replace a vault entry with an earlier state of
+                 the same login
   rm <name>      drop a saved login (a copy stays in accounts/.history/)
   auto           decide, once and box-wide, whether to move to another vaulted
                  login: hold unless one stands strictly higher on the

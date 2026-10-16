@@ -3421,6 +3421,115 @@ else
         "case 14 [blank]: ... and is not called a working copy"
 fi
 
+echo "--- case 14 [vault order]: an older login is never saved over a newer one ---"
+
+if ! have jq; then
+    skip "case 14 [vault order]" "no jq"
+else
+    # A login's age is its sign-in end first (refreshTokenExpiresAt, set by
+    # /login) and the access token's expiry second (moved by every renewal). A
+    # credential that sorts before the vault entry's is an earlier state of the
+    # login, and vaulting it destroys the newer copy. The sign-in end of one
+    # sign-in is not constant to the millisecond: real vault history holds
+    # renewals whose sign-in ends differ by a second, so ends within a minute
+    # are one sign-in. A field either side lacks orders nothing. Values are epoch
+    # milliseconds, as Claude Code writes them.
+    VE=1790100000000; VR=1792000000000; VH=3600000; VD=86400000
+    WVO=$(world); VVO="$WVO/vault"; VFO="$VVO/a@example.com.json"
+    mklogin "$WVO" a@example.com
+    vocred() {  # TOKEN EXPIRES_AT SIGNIN_END — the live credential
+        printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"rt","expiresAt":%s,"refreshTokenExpiresAt":%s},"mcpOAuth":{}}\n' \
+            "$1" "$2" "$3" > "$WVO/cfg/.credentials.json"
+    }
+    vosave() { sess "$WVO" SESSION_ACCOUNTS_DIR="$VVO" -- account save 2>&1; }
+    vorefuse() {  # LABEL — save must exit 1 and leave the entry byte-identical
+        local out rc
+        out=$( (sess "$WVO" SESSION_ACCOUNTS_DIR="$VVO" -- account save >/dev/null) 2>&1 ); rc=$?
+        report 1 "$rc" "case 14 [vault order]: $1 exits 1"
+        report yes "$([ "$KEEPO" = "$(cat "$VFO")" ] && echo yes || echo no)" \
+            "case 14 [vault order]: ... leaving the vault entry byte-identical"
+        VOOUT=$out
+    }
+
+    vocred tok-v $VE $VR
+    vosave >/dev/null
+    report tok-v "$(jq -r '.claudeAiOauth.accessToken' "$VFO")" "case 14 [vault order]: the first save vaults (the control)"
+    KEEPO=$(cat "$VFO")
+
+    vocred tok-old $(( VE + 8 * VH )) $(( VR - VD ))
+    vorefuse "a credential from an earlier sign-in, whatever its access token's expiry,"
+    report 0 "$(ls -1 "$VVO/.history" 2>/dev/null | grep -c . || true)" "case 14 [vault order]: ... rotating nothing into .history"
+    report yes "$(printf '%s' "$VOOUT" | grep -qi 'older' && echo yes || echo no)" "case 14 [vault order]: ... saying on stderr that the live credential is older"
+    report "refuse a@example.com - manual older-credential live=$(( VR - VD ))/$(( VE + 8 * VH ));vault=$VR/$VE" \
+        "$(awk -F'\t' '$2 == "refuse" { print $2, $3, $4, $5, $6, $8; exit }' "$WVO/data/switch-log.tsv")" \
+        "case 14 [vault order]: ... and writing the audit row that says why, with both sides' figures"
+    report no "$([ "$WVO/cfg/.credentials.json" -nt "$VFO" ] && echo yes || echo no)" \
+        "case 14 [vault order]: ... marking the credentials captured, so the status line's autosave does not run the save on every render"
+
+    # `account list` and every swap save as well, so the same refusal comes round
+    # for as long as the state lasts; the audit log is never pruned.
+    vorefuse "the same refusal repeated"
+    report 1 "$(grep -c 'older-credential' "$WVO/data/switch-log.tsv")" \
+        "case 14 [vault order]: ... without writing a second audit row for it"
+
+    vocred tok-lag $(( VE - 8 * VH )) $VR
+    vorefuse "the same sign-in with an earlier access token expiry"
+    report 2 "$(grep -c 'older-credential' "$WVO/data/switch-log.tsv")" \
+        "case 14 [vault order]: ... and a different credential's refusal gets its own audit row"
+    vocred tok-lag-jitter $(( VE - 8 * VH )) $(( VR - 1000 ))
+    vorefuse "an earlier access token expiry beside a sign-in end a second lower (one sign-in, not an earlier one)"
+
+    vocred tok-login $(( VE - 8 * VH )) $(( VR + VD ))
+    vosave >/dev/null
+    report tok-login "$(jq -r '.claudeAiOauth.accessToken' "$VFO")" \
+        "case 14 [vault order]: a later sign-in vaults although its access token expires sooner (a fresh /login)"
+    # The renewal that follows records the same sign-in end a second lower, as
+    # real vault history shows renewals doing.
+    vocred tok-renew $(( VE + 8 * VH )) $(( VR + VD - 1000 ))
+    vosave >/dev/null
+    report tok-renew "$(jq -r '.claudeAiOauth.accessToken' "$VFO")" \
+        "case 14 [vault order]: a renewal that records its sign-in end a second lower still vaults"
+    KEEPO=$(cat "$VFO")
+    printf '{"claudeAiOauth":{"accessToken":"tok-noend","expiresAt":%s}}\n' $(( VE )) > "$WVO/cfg/.credentials.json"
+    vorefuse "a credential with no sign-in end and an earlier access token expiry than the vault entry's"
+    printf '{"claudeAiOauth":{"accessToken":"tok-noend","expiresAt":%s}}\n' $(( VE + 16 * VH )) > "$WVO/cfg/.credentials.json"
+    vosave >/dev/null
+    report tok-noend "$(jq -r '.claudeAiOauth.accessToken' "$VFO")" \
+        "case 14 [vault order]: ... while one with a later access token expiry vaults"
+    printf '{"claudeAiOauth":{"accessToken":"tok-bare"}}\n' > "$WVO/cfg/.credentials.json"
+    vosave >/dev/null
+    report tok-bare "$(jq -r '.claudeAiOauth.accessToken' "$VFO")" \
+        "case 14 [vault order]: a credential carrying neither field orders nothing and vaults"
+
+    # A refusal for age is not a blank-credential outage, and the two keep
+    # separate records: the outage's one-row-per-cooldown rate limit must not
+    # be started by an older credential's row.
+    vocred tok-v2 $VE $(( VR + 2 * VD ))
+    vosave >/dev/null
+    vocred tok-old2 $(( VE - 8 * VH )) $VR
+    vosave >/dev/null
+    printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"refreshTokenExpiresAt":0}}\n' > "$WVO/cfg/.credentials.json"
+    vosave >/dev/null
+    report 1 "$(awk -F'\t' '$2 == "refuse" && $6 == "blank-credential"' "$WVO/data/switch-log.tsv" | grep -c . || true)" \
+        "case 14 [vault order]: a blank credential right after an older one still writes its own refusal row"
+
+    # The swap vaults the login it replaces; an older live copy of it must not
+    # take the newer vault entry's place on the way out.
+    WVS=$(world); VVS="$WVS/vault"
+    mklogin "$WVS" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1,"refreshTokenExpiresAt":9000}}\n' > "$WVS/cfg/.credentials.json"
+    sess "$WVS" SESSION_ACCOUNTS_DIR="$VVS" -- account save >/dev/null 2>&1
+    mklogin "$WVS" b@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-b-new","expiresAt":2000,"refreshTokenExpiresAt":9000}}\n' > "$WVS/cfg/.credentials.json"
+    sess "$WVS" SESSION_ACCOUNTS_DIR="$VVS" -- account save >/dev/null 2>&1
+    printf '{"claudeAiOauth":{"accessToken":"tok-b-old","expiresAt":1000,"refreshTokenExpiresAt":9000}}\n' > "$WVS/cfg/.credentials.json"
+    out=$(sess "$WVS" SESSION_ACCOUNTS_DIR="$VVS" -- account use a@ 2>&1); rc=$?
+    report 0 "$rc" "case 14 [vault order]: a swap away from a login whose live copy is the older one still exits 0"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WVS/cfg/.credentials.json")" "case 14 [vault order]: ... installing the target's credential"
+    report tok-b-new "$(jq -r '.claudeAiOauth.accessToken' "$VVS/b@example.com.json")" \
+        "case 14 [vault order]: ... and keeping the newer copy of the login it left"
+fi
+
 echo "--- case 14 [expiry]: a sign-in's end is announced before it arrives ---"
 
 # `refreshTokenExpiresAt` is a fixed end that renewal does not move; past it

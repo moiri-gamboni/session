@@ -533,11 +533,11 @@ acct_holds_live_token() {  # VAULTFILE LIVE_CREDENTIALS
 # Whether a decision may be taken at all right now.
 #
 # The cooldown is measured against the newest row THIS VERB wrote, which is
-# neither a blank-credential refusal nor a cooldown hold. The refusal belongs to
-# another producer, and the outage that produces a run of them is exactly when
-# an authentication death most needs a decision; a cooldown hold is not a
-# decision either, and counting it would slide the window forward on every
-# retry, so the cooldown would never end while anything kept asking.
+# neither a refusal of a save nor a cooldown hold. A refusal belongs to another
+# producer, and the blank-credential outage that produces a run of them is
+# exactly when an authentication death most needs a decision; a cooldown hold
+# is not a decision either, and counting it would slide the window forward on
+# every retry, so the cooldown would never end while anything kept asking.
 _acct_past_cooldown() {  # NOW LIVE
   local now="$1" live="$2" f last lastsw
   f=$(acct_log_file)
