@@ -3079,11 +3079,15 @@ ws5=$(( fivereset - FIVE_WINDOW )); wsw=$(( weekreset - WEEK_WINDOW ))
 # highest last cost not above the sample's is the sample's own. Rows from the
 # older schema have no column 8; they read as clock 0 and fall into one stream,
 # which is the per-sid rule they were written under.
-# This scan and base_pcts' run their awk in the C locale: the fields are
-# numbers, ids and login names compared for equality, and gawk under a UTF-8
-# locale takes ~3x as long over the whole log (0.6s against 0.2s on 36k rows,
-# measured) — time the UserPromptSubmit hook, which runs both while a window
-# warns, cannot spare under its 2s timeout.
+#
+# est_sessions and base_pcts run their awk in the C locale, each stage under its
+# own LC_ALL=C (the prefix covers one command, not the pipeline). That awk only
+# converts fields to numbers, tests ids and login names for equality and keys
+# arrays by them — no string ordering, length or regex on field text — so the
+# locale cannot change its output; re-check that before adding any. gawk under a
+# UTF-8 locale takes ~3x as long over the log (2026-10, 36k rows on a loaded
+# box: 0.6s against 0.2s a pass), and `session --hook` runs both scans whenever
+# a window is at or above the warning threshold, inside its 2s timeout.
 est_sessions() {
   [ -s "$slog" ] || return 1
   LC_ALL=C sort -t$'\t' -k1,1n "$slog" | LC_ALL=C awk -F'\t' -v ws5="$ws5" -v wsw="$wsw" -v acct="$acct" '
@@ -3117,7 +3121,8 @@ base_pcts() {
   [ -s "$slog" ] || { printf '%s\t%s\n' -1 -1; return; }
   # baseline is ASSIGNED on the first match (a window can open at 0.000%, and
   # `0 > uninit` would never fire, leaking an empty field — which bash read
-  # under IFS=tab would then swallow as leading whitespace, shifting b5/bw)
+  # under IFS=tab would then swallow as leading whitespace, shifting b5/bw).
+  # The awk runs in the C locale for the reason noted above est_sessions.
   LC_ALL=C sort -t$'\t' -k1,1n "$slog" | LC_ALL=C awk -F'\t' \
     -v ws5="$ws5" -v wsw="$wsw" -v fr="$fivereset" -v wr="$weekreset" -v acct="$acct" '
     $21==acct && $1+0>=ws5 && $6==fr && $4+0>=0 {
