@@ -69,7 +69,7 @@ _intonly() { local v="${1%%.*}"; case "$v" in ''|*[!0-9]*) printf 0 ;; *) printf
 # empty field would be eaten by `read` under IFS=tab (tab is IFS whitespace,
 # and consecutive tabs merge), shifting fields; numerics all have // defaults
 IFS=$'\t' read -r _sid _cost _f5 _w7 _new_fr _new_wr _dur _apidur \
-                 _otok _itok _ctx _crd _ccr _cin _cout _ladd _lrm _model _pid _cwd < <(
+                 _otok _itok _ctx _crd _ccr _cin _cout _ladd _lrm _model _pid _win _proj _cwd < <(
   jq -r '[(.session_id//"-"),(.cost.total_cost_usd//0),
           (.rate_limits.five_hour.used_percentage//-1),
           (.rate_limits.seven_day.used_percentage//-1),
@@ -88,6 +88,8 @@ IFS=$'\t' read -r _sid _cost _f5 _w7 _new_fr _new_wr _dur _apidur \
           (.cost.total_lines_removed//0),
           (.model.id//"-"),
           (.prompt_id//"-"),
+          (.context_window.context_window_size//0),
+          (.workspace.project_dir//.cwd//"-"),
           (.cwd//.workspace.current_dir//"-")]|@tsv' <<<"$input")
 _new_fr=$(_intonly "$_new_fr"); _new_wr=$(_intonly "$_new_wr")
 # Attribution: the payload's rate_limits belong to whichever account served this
@@ -195,7 +197,7 @@ fi
 # so the history exists when a view wants them (`session time` v1, cache-
 # efficiency, context-growth, per-turn cost). Static payload fields (version,
 # cwd, workspace, effort, …) are NOT time-series'd, and the per-session snapshot
-# below keeps only the title and the context window — the two fields anything reads back.
+# below keeps only the session's title — the one field anything reads back.
 _slog="$SESSION_SLOG"
 if [ -n "$_sid" ] && [ "$_sid" != "-" ] && _costf=$(LC_ALL=C printf '%.4f' "$_cost" 2>/dev/null); then
   _side="$_snapdir/$_sid.cost"
@@ -213,12 +215,20 @@ if [ -n "$_sid" ] && [ "$_sid" != "-" ] && _costf=$(LC_ALL=C printf '%.4f' "$_co
     if [ -e "$_pf" ] && [ "$(cat "$_pf")" = "$_sid" ]; then touch "$_pf"
     else printf '%s' "$_sid" > "$_pf"; fi
   fi
+  # What the compaction hold reads on every tool batch, so it is written on every
+  # render: the context the last request carried, the model's window, and the
+  # size at which Claude Code starts compacting (`-` when unknown). Through a
+  # temp file, so a reader never sees it half-written.
+  . "$SESSION_HOME/lib/compact.sh"
+  _ceil=$(compact_ceiling "$_model" "$_win" "$_proj")
+  printf '%s %s %s\n' $(( _cin + _ccr + _crd + _cout )) "$_win" "${_ceil:--}" > "$_snapdir/.$_sid.ctx.$$" \
+    && mv -f "$_snapdir/.$_sid.ctx.$$" "$_snapdir/$_sid.ctx"
   if [ "$_costf" != "$_prevf" ] || [ "$_side_age" -ge 600 ]; then
     LC_ALL=C printf '%s\t%s\t%s\t%.3f\t%.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$_now" "$_sid" "$_costf" "$_f5" "$_w7" "$_new_fr" "$_new_wr" "$_dur" "$_apidur" \
       "$_otok" "$_itok" "$_ctx" "$_crd" "$_ccr" "$_cin" "$_cout" "$_ladd" "$_lrm" "$_model" "$_pid" "$_acct" >> "$_slog"
     printf '%s' "$_costf" > "$_side"
-    jq -c '{session_name, context_window_size: .context_window.context_window_size}' <<<"$input" > "$_snapdir/.$_sid.tmp.$$" \
+    jq -c '{session_name}' <<<"$input" > "$_snapdir/.$_sid.tmp.$$" \
       && mv -f "$_snapdir/.$_sid.tmp.$$" "$_snapdir/$_sid.json"
   fi
 fi

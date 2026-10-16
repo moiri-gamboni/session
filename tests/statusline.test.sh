@@ -266,11 +266,11 @@ report absent "$(if ls "$DR1"/last-status.*.tmp* >/dev/null 2>&1; then echo pres
     "race: neither render leaves a temp file beside the cache"
 
 DR2="$TMP/datarace2"
-race_run '{session_name, context_window_size: .context_window.context_window_size}' "$DR2"
+race_run '{session_name}' "$DR2"
 report 2 "$(wc -l < "$SHIM/.hits" | tr -d ' ')" "race: (control) the shim intercepted both snapshot writes"
 SNAPR="$DR2/sessions/$SID.json"
 report yes "$(yesno isjson "$SNAPR")" "race: the snapshot is still one JSON value"
-report yes "$(yesno one_of "$(cat "$SNAPR")" '{"session_name":"fast, and the longer of the two","context_window_size":1000000}' '{"session_name":"slow","context_window_size":1000000}')" \
+report yes "$(yesno one_of "$(cat "$SNAPR")" '{"session_name":"fast, and the longer of the two"}' '{"session_name":"slow"}')" \
     "race: ... and is one of the two renders' snapshots whole"
 report absent "$(if ls "$DR2/sessions"/.*.tmp* >/dev/null 2>&1; then echo present; else echo absent; fi)" \
     "race: neither render leaves a temp file in the snapshot directory"
@@ -306,10 +306,7 @@ render "$P22" SESSION_DATA_DIR="$D22" TMUX_PANE=%42 >/dev/null
 
 SNAP22="$D22/sessions/$SID.json"
 report present "$(exists "$SNAP22")" "case 22: the per-session snapshot is written"
-report "context_window_size,session_name" "$(jq -r 'keys|join(",")' "$SNAP22")" \
-    "case 22: the snapshot carries only the title and the context window"
-report 1000000 "$(jq -r '.context_window_size' "$SNAP22")" \
-    "case 22: ... the window being the one the payload reports, which the PreCompact gate reads"
+report "session_name" "$(jq -r 'keys|join(",")' "$SNAP22")" "case 22: the snapshot carries only session_name"
 report "Port the statusline" "$(jq -r '.session_name // empty' "$SNAP22")" \
     "case 22: ... and the title reads back off it, which is all snap_name asks for"
 report 600 "$(mode_of "$SNAP22")" "case 22: the snapshot is 600"
@@ -626,6 +623,96 @@ report 1 "$(printf '%s\n' "$hold_line" | wc -l | tr -d ' ')" "hold: ... and it i
 rm -f "$DH/sessions/$SID.hold"
 report no "$(yesno has "$(render "$PH" SESSION_DATA_DIR="$DH")" 'compaction held')" \
     "hold: another session's marker says nothing about this one"
+
+echo "--- the compaction facts: tokens, window and the ceiling where Claude Code compacts ---"
+
+# sessions/<sid>.ctx is one line, `TOKENS WINDOW CEILING`, rewritten on every
+# render: what the current request carried (input, cache and output tokens), the
+# model's window, and the context size at which Claude Code starts an automatic
+# compaction (the effective auto-compact window less 33,000; `-` when it never
+# does or the settings cannot be read). The PreCompact and PostToolBatch hooks
+# read it instead of the settings, which is why it is rewritten rather than
+# cached: the hooks run after every tool batch.
+CFGX="$TMP/cfgx"; mkdir -p "$CFGX"; cp "$CFG/.claude.json" "$CFGX/.claude.json"
+WORKX="$FH/work"; mkdir -p "$WORKX/.claude"
+PX="$TMP/pctx.json"; mkpayload "$SID" 0.1 41 62 "$FR" "$WR" "ctx" > "$PX"
+settings_at() {  # FILE JSON — write one settings file
+    mkdir -p "$(dirname "$1")"; printf '%s\n' "$2" > "$1"
+}
+clear_settings() { rm -f "$CFGX/settings.json" "$WORKX/.claude/settings.json" "$WORKX/.claude/settings.local.json"; }
+ctx_of() {  # PAYLOAD [VAR=VAL ...] — render, then the sidecar's line
+    local pf="$1"; shift
+    local d; d=$(mktemp -d "$TMP/dctx.XXXXXX")
+    render "$pf" SESSION_DATA_DIR="$d" CLAUDE_CONFIG_DIR="$CFGX" ${1+"$@"} >/dev/null
+    cat "$d/sessions/$SID.ctx" 2>/dev/null
+}
+clear_settings
+report "57785 1000000 967000" "$(ctx_of "$PX")" \
+    "ctx: the request's tokens (input, cache write, cache read, output), the window, and window-33,000 with no settings"
+DCX=$(mktemp -d "$TMP/dctx.XXXXXX")
+render "$PX" SESSION_DATA_DIR="$DCX" CLAUDE_CONFIG_DIR="$CFGX" >/dev/null
+report 600 "$(mode_of "$DCX/sessions/$SID.ctx")" "ctx: the sidecar is 600"
+report absent "$(if ls "$DCX/sessions"/.*.ctx.* >/dev/null 2>&1; then echo present; else echo absent; fi)" \
+    "ctx: no temporary file is left behind"
+
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000}'
+report "57785 1000000 467000" "$(ctx_of "$PX")" "ctx: a top-level autoCompactWindow moves the ceiling"
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000, "modelSettings": {"claude-fable-5": {"autoCompactWindow": 300000}}}'
+report "57785 1000000 267000" "$(ctx_of "$PX")" "ctx: the model's own entry beats the top-level key in the same file"
+settings_at "$CFGX/settings.json" '{"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 300000}}}'
+report "57785 1000000 967000" "$(ctx_of "$PX")" "ctx: another model's entry says nothing about this one"
+settings_at "$CFGX/settings.json" '{"modelSettings": {"claude-fable-5": {"autoCompactWindow": 300000}}}'
+report "57785 1000000 267000" "$(ctx_of "$(jq '.model.id = "claude-fable-5[1m]"' "$PX" > "$TMP/pctx1m.json"; echo "$TMP/pctx1m.json")")" \
+    "ctx: a [1m] model id finds the entry under the canonical name"
+report "57785 1000000 267000" "$(ctx_of "$(jq '.model.id = "claude-fable-5-20260901"' "$PX" > "$TMP/pctxd.json"; echo "$TMP/pctxd.json")")" \
+    "ctx: ... and so does a date-suffixed one"
+
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000}'
+settings_at "$WORKX/.claude/settings.json" '{"autoCompactWindow": 400000}'
+report "57785 1000000 367000" "$(ctx_of "$PX")" "ctx: the project's settings beat the user's"
+settings_at "$WORKX/.claude/settings.local.json" '{"autoCompactWindow": 300000}'
+report "57785 1000000 267000" "$(ctx_of "$PX")" "ctx: ... and the project's local settings beat both"
+settings_at "$WORKX/.claude/settings.local.json" '{"autoCompactWindow": "auto"}'
+report "57785 1000000 967000" "$(ctx_of "$PX")" "ctx: \"auto\" in a higher file means the model's own window, whatever a lower file says"
+clear_settings
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 2000000}'
+report "57785 1000000 967000" "$(ctx_of "$PX")" "ctx: a window beyond the model's is capped at it"
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 50000}'
+report "57785 1000000 67000" "$(ctx_of "$PX")" "ctx: ... and one under 100,000 is raised to it"
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000, "autoCompactEnabled": false}'
+report "57785 1000000 -" "$(ctx_of "$PX")" "ctx: autoCompactEnabled false means no ceiling"
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000}'
+report "57785 1000000 167000" "$(ctx_of "$PX" CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000)" \
+    "ctx: CLAUDE_CODE_AUTO_COMPACT_WINDOW beats every settings file"
+report "57785 1000000 -" "$(ctx_of "$PX" DISABLE_AUTO_COMPACT=1)" "ctx: DISABLE_AUTO_COMPACT means no ceiling"
+for v in true TRUE yes On; do
+    report "57785 1000000 -" "$(ctx_of "$PX" DISABLE_AUTO_COMPACT=$v)" "ctx: ... DISABLE_AUTO_COMPACT=$v too, as Claude Code reads it"
+done
+report "57785 1000000 467000" "$(ctx_of "$PX" DISABLE_AUTO_COMPACT=0)" "ctx: DISABLE_AUTO_COMPACT=0 is off"
+report "57785 1000000 467000" "$(ctx_of "$PX" DISABLE_AUTO_COMPACT=10)" "ctx: ... and so is a value that merely contains a 1"
+report "57785 1000000 -" "$(ctx_of "$PX" DISABLE_COMPACT=1)" "ctx: DISABLE_COMPACT means no ceiling"
+report "57785 1000000 67000" "$(ctx_of "$PX" CLAUDE_CODE_AUTO_COMPACT_WINDOW=500k)" \
+    "ctx: the variable is read as parseInt does: 500k is 500, raised to 100,000"
+settings_at "$CFGX/settings.json" '{"autoCompactEnabled": false}'
+report "57785 1000000 -" "$(ctx_of "$PX" CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000)" \
+    "ctx: the variable moves the window, never the on/off switch"
+settings_at "$CFGX/settings.json" '{"autoCompactWindow": 500000}'
+settings_at "$WORKX/.claude/settings.json" '{"autoCompactWindow": 400000}'
+mkdir -p "$WORKX/sub"
+report "57785 1000000 367000" "$(ctx_of "$(jq --arg c "$WORKX/sub" --arg p "$WORKX" '.cwd = $c | .workspace.current_dir = $c | .workspace.project_dir = $p' "$PX" > "$TMP/pctxsub.json"; echo "$TMP/pctxsub.json")")" \
+    "ctx: the project's settings are found from the project directory, not from wherever the agent has moved to"
+rm -f "$WORKX/.claude/settings.json"
+settings_at "$CFGX/settings.json" '{not json'
+report "57785 1000000 -" "$(ctx_of "$PX")" "ctx: settings that do not parse leave the ceiling unknown, not guessed"
+clear_settings
+report "57785 200000 167000" "$(ctx_of "$(jq '.context_window.context_window_size = 200000' "$PX" > "$TMP/pctx200.json"; echo "$TMP/pctx200.json")")" \
+    "ctx: the window is the payload's own, so a 200k model compacts at 167,000"
+report "57785 0 -" "$(ctx_of "$(jq 'del(.context_window.context_window_size)' "$PX" > "$TMP/pctxnw.json"; echo "$TMP/pctxnw.json")")" \
+    "ctx: a payload without a window leaves the ceiling unknown"
+PXN="$TMP/pctxn.json"; jq '.session_id = "-"' "$PX" > "$PXN"
+DCXN=$(mktemp -d "$TMP/dctx.XXXXXX")
+render "$PXN" SESSION_DATA_DIR="$DCXN" CLAUDE_CONFIG_DIR="$CFGX" >/dev/null
+report 0 "$(ls "$DCXN/sessions" 2>/dev/null | grep -c 'ctx$' || true)" "ctx: a payload with no session id writes none"
 
 echo "--- the task segment ---"
 
