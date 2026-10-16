@@ -179,6 +179,7 @@ Everything is one environment variable with a default, declared once: the `SESSI
 | `SESSION_PRIMARY_CFG` | `$HOME/.claude` | the config dir this machine treats as its primary login |
 | `SESSION_NOW` | unset | a fixed "now" for the date layer; tests only |
 | `SESSION_LOCK_WAIT` | `15` | seconds the credential swap waits for each of Claude Code's lock directories ([Accounts](#accounts)); tests only |
+| `SESSION_LOGIN_SWITCH_MARKER` | `<config dir>/.session-login-switch` | the marker file the plugin's hooks module watches in a session ([Running sessions after a switch](#running-sessions-after-a-switch)); read by the plugin, not the CLI; tests only, because touching the real marker reloads every running session |
 | `USAGE_WARN_PCT` | `90` | the used % at or above which `session --hook` injects its usage line and ⚠ advisory, `session --rewake-waiter` arms, and a cached Fable figure counts as spent for the waiter's target; a whole number (anything else exits 2, except on `--rewake-waiter`, which exits 0 and arms nothing rather than turn a refusal into a wake-up), and above 100 turns the hook's output off entirely |
 
 `SESSION_PRIMARY_CFG` is the one that is easy to get wrong. Every other config dir is a secondary login and is tagged as one (the ` · <cfgdir>` segment on the statusline, the `account` line on the overview), so on a machine whose usual `CLAUDE_CONFIG_DIR` is not `~/.claude` the default tags every render. Point it at that machine's own config dir.
@@ -405,11 +406,21 @@ The statusline's autosave calls `<clone>/session account save` whenever the live
 
 The token swap reaches every running session on its next request, but a session fetches its claude.ai connectors (Gmail, Calendar, Slack, …) once, when it starts, and each login has its own connector ids. Left alone, a session keeps calling the previous login's, and every connector call fails with `MCP server "claude.ai <name>" session expired` until the session restarts.
 
-So once a swap has been read back, `use` and the [automatic switcher](#automatic-switching) write the new login's name to `<config dir>/.session-login-switch` (never on a refused or failed swap), and the plugin's hooks module, which checks that file every few seconds in each session, runs `/reload-plugins` there when it changes. The session then fetches its connector list again from the live login and moves each connector to the new login's id.
+So once a swap has been read back, `use` and the [automatic switcher](#automatic-switching) write `<config dir>/.session-login-switch` (never on a refused or failed swap), and the plugin's hooks module, which checks that file every few seconds in each session, runs `/reload-plugins` there when its modification time changes. The session then fetches its connector list again from the live login and moves each connector to the new login's id.
+
+Claude Code draws that command in the transcript with a note for its arguments, one row per switch, above the command's own `Reloaded: …` line:
+
+```
+❯ /reload-plugins login switched from a@example.com to b@example.com (5h limit)
+  ⎿  Reloaded: N plugins · N skills · N agents · N hooks · N plugin MCP servers · N plugin LSP servers
+```
+
+The reason is `session account use` for a manual switch. For an automatic one it is the windows the old login had spent (`5h limit`, `weekly limit`, `Fable limit`, or several, as in `5h, weekly limits`), or `credential rejected` or `credential blank` when its credential was refused or held no token.
 
 - The reload waits until the session is idle, so a turn under way at the switch keeps failing its connector calls until it ends.
 - It is a whole `/reload-plugins`: the session's plugins, skills, agents and hooks are reloaded. Background shells and subagents keep running through it; whether a subagent already running at the switch gets the new connectors is untested.
 - A session gets the new login's connectors. One connected at claude.ai only on the previous login stops working in it, and one only the new login has appears, so connecting the same set on every login makes a switch invisible.
+- The marker is three lines, `from=<old login>`, `to=<new login>` and `reason=<reason>`, renamed into place so a poll never reads half of it. A marker without them, or one the module cannot read, still reloads, with no note. A session started after the marker was written shows nothing for it.
 - It needs the plugin ([Install](#install), step 3). Without it, `/reload-plugins` typed in each session does the same. A session started before the plugin was installed or updated picks the module up at its next start or `/reload-plugins`.
 
 ### Automatic switching
