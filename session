@@ -2108,81 +2108,42 @@ fi
 # swallows any accident. One turn-log row ("h") per decision.
 #
 # Claude Code shows nothing for a blocked auto compaction (the reason reaches
-# only its debug log), so a hold tells the person itself: a tmux message on the
-# client that is typing, and the hold marker the status line shows until the
-# next PostCompact clears it.
+# only its debug log), so a hold leaves the marker the status line shows until
+# the next PostCompact or prompt clears it. The turn is normally stopped before
+# it gets here (--post-tool-batch); what reaches this gate is a prompt sent
+# when the context is already past the ceiling. It is held however full the
+# context is: a request Claude Code then refuses as too long ("Prompt is too
+# long", at the window less 23,000) fails that turn, and /compact and the
+# rewind menu still work from there.
 #
-# PreCompact fires before every API request once the context is past the
-# auto-compact threshold, so a hold is asked for again on each request and
-# lasts only as long as there is room: Claude Code refuses a request outright
-# (a synthetic "Prompt is too long") once the context reaches
-# window - 20,000 (kept for the summary) - 3,000, and blocking at that point
-# would fail the turn. The gate lets the compaction through 3,000 before that.
-# It sees no token count, so the context is the last request's usage in the
-# transcript plus an estimate (3 bytes a token) for what was appended since,
-# the tool result that triggered the check being the usual case.
-#
-# A subagent's compaction arrives as trigger "auto" with the parent's session
-# id and no agent field (measured on 2.1.301), so it is recognised only by the
-# turn log showing a subagent of this session started and not stopped.
+# PreCompact fires before every request once past the ceiling. A subagent's
+# compaction arrives as trigger "auto" with the parent's session id and no agent
+# field (measured on 2.1.301), so with a subagent of the session running any
+# compaction is ambiguous. It is the subagent's when the main conversation is
+# not at its own ceiling, and the main one's when it is, and that one is held:
+# it is the case most worth holding.
 if [ "${1:-}" = --compact-gate ]; then
-  gate_verdict() {  # SID TRANSCRIPT TRIGGER -> "hold CLIENT PCT" or "allow-<why>"
-    local sid=$1 tp=$2 trig=$3 now client="" win used e
-    local reserve=23000 margin=3000 subagent_max_age=7200
+  gate_verdict() {  # SID TRANSCRIPT TRIGGER -> "hold" or "allow-<why>"
+    local sid=$1 tp=$2 trig=$3 ceil="" ctx dummy1 dummy2
+    local margin=3000 subagent_max_age=7200
     [ "$trig" = auto ] || { echo allow-manual; return; }
-    now=$(now_epoch)
-    # Attended: a client viewing this session's pane typed within the bridge,
-    # the silence that still counts as one working stretch. The tail would ask
-    # whether the person is still credited after the last key, which is a
-    # seconds-wide window on a box that sets it short: an autonomous turn
-    # crosses the threshold long after the prompt was typed. A hold kept for
-    # someone who has gone costs at most the few thousand tokens before the
-    # gate lets go. Read from tmux now rather than from the focus log, whose
-    # activity marks land up to a minute late.
-    if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-      client=$(tmux list-clients -F $'#{pane_id}\t#{client_activity}\t#{client_name}' \
-        | awk -F'\t' -v p="$TMUX_PANE" -v now="$now" -v bridge="$ATTEND_GRACE" \
-              '$1 == p && now - $2 <= bridge { print $3; exit }')
-    fi
-    [ -n "$client" ] || { echo allow-unattended; return; }
+    compact_attended || { echo allow-unattended; return; }
     # A start with no stop older than subagent_max_age is a subagent that died.
-    if [ -s "$tlog" ] && awk -F'\t' -v sid="$sid" -v now="$now" -v max="$subagent_max_age" '
+    if [ -s "$tlog" ] && awk -F'\t' -v sid="$sid" -v now="$(now_epoch)" -v max="$subagent_max_age" '
          $2 == sid && $3 == "a" { running[$6] = $1 }
          $2 == sid && $3 == "z" { delete running[$6] }
          END { for (a in running) if (now - running[a] <= max) exit 0; exit 1 }' "$tlog"; then
-      echo allow-subagent; return
+      [ -r "$snapdir/$sid.ctx" ] && read -r dummy1 dummy2 ceil < "$snapdir/$sid.ctx"
+      case "$ceil" in ''|*[!0-9]*) echo allow-unknown; return ;; esac
+      ctx=$(compact_context "$tp")
+      [ -n "$ctx" ] || { echo allow-unknown; return; }
+      set -- $ctx
+      [ $(( $1 + $2 / 3 + margin )) -ge "$ceil" ] || { echo allow-subagent; return; }
     fi
-    win=""
-    [ -s "$snapdir/$sid.json" ] && win=$(jq -r '.context_window_size // empty' "$snapdir/$sid.json")
-    case "$win" in ''|*[!0-9]*) echo allow-unknown; return ;; esac
-    [ -r "$tp" ] || { echo allow-unknown; return; }
-    # Rows may be partial at the cut, hence the catch; the synthetic refusal row
-    # carries zero usage and must not reset the count. Only user rows and
-    # attachments become messages: the transcript also stores a copy of the
-    # system prompt and tools (a prompt_snapshot attachment, up to 111 KB) that
-    # the request carries from its cache, and counting it fired the room check
-    # at 63% of a window that was 45% full.
-    used=$(tail -c 1000000 "$tp" | jq -Rsr '
-      split("\n") | map(select(. != ""))
-      | reduce .[] as $l ({u: null, b: 0};
-          ($l | try fromjson catch null) as $r
-          | if ($r | type) == "object" and $r.type == "assistant"
-               and ($r.isApiErrorMessage | not) and ($r.isSidechain | not)
-               and ($r.message.usage.input_tokens != null)
-            then .u = ($r.message.usage | (.input_tokens // 0) + (.cache_read_input_tokens // 0)
-                         + (.cache_creation_input_tokens // 0) + (.output_tokens // 0)) | .b = 0
-            elif ($r | type) == "object"
-                 and ($r.type == "user"
-                      or ($r.type == "attachment" and $r.attachment.type != "prompt_snapshot"))
-            then .b += ($l | utf8bytelength)
-            else . end)
-      | select(.u != null and .u > 0) | "\(.u) \(.b)"')
-    [ -n "$used" ] || { echo allow-unknown; return; }
-    e=$(( ${used% *} + ${used#* } / 3 ))
-    [ "$e" -lt $(( win - reserve - margin )) ] || { echo allow-room; return; }
-    echo "hold $client $(( e * 100 / win ))"
+    echo hold
   }
 
+  . "$SESSION_HOME/lib/compact.sh"
   gsid="-"; gtp="-"; gpid="-"; gtrig="-"
   if [ ! -t 0 ]; then
     IFS=$'\t' read -r gsid gtp gpid gtrig < <(jq -r \
@@ -2190,16 +2151,12 @@ if [ "${1:-}" = --compact-gate ]; then
   fi
   [ -n "${gsid:-}" ] && [ "$gsid" != "-" ] || exit 0
   verdict=$(gate_verdict "$gsid" "$gtp" "$gtrig") || verdict=allow-unknown
-  case "$verdict" in hold\ *|allow-*) ;; *) verdict=allow-unknown ;; esac
+  case "$verdict" in hold|allow-*) ;; *) verdict=allow-unknown ;; esac
   [ -d "$SESSION_DATA" ] && printf '%s\t%s\th\t%s\t%s\t-\n' \
-    "$(now_epoch)" "$gsid" "$gpid" "${verdict%% *}" >> "$tlog"
-  if [ "${verdict%% *}" = hold ]; then
-    gpct=${verdict##* }
-    gmsg="Auto-compaction held while you're here (context ${gpct}%): Esc Esc, pick a message, Summarize up to here; or /compact."
-    # The status line's marker is the only signal: a tmux message would be
-    # drawn over the fullscreen pane (status is off) and redrawn away at once.
+    "$(now_epoch)" "$gsid" "$gpid" "$verdict" >> "$tlog"
+  if [ "$verdict" = hold ]; then
     mkdir -p "$snapdir" && touch "$snapdir/$gsid.hold"
-    jq -cn --arg r "$gmsg" '{decision: "block", reason: $r}'
+    printf '{"decision": "block", "reason": "Auto-compaction held: the session is attended. Esc Esc, Summarize up to here, or /compact."}\n'
   fi
   exit 0
 fi
@@ -2215,7 +2172,7 @@ fi
 #   a/z subagent start/stop (detail=agent type; agent_id pairs them)
 #   c compaction (PostCompact; detail=manual|auto)
 #   p permission prompt shown (Notification; a within-turn wait-on-human marker)
-#   h compaction-gate decision (--compact-gate, written there, not here)
+#   h compaction-hold decision (--compact-gate, --post-tool-batch: written there, not here)
 # The detail extractor is one //-chain across the per-event field names — for
 # any given event all but its own field are absent.
 case "${1:-}" in
@@ -2397,6 +2354,9 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
   session --compact-gate           PreCompact: hold an automatic compaction while the
                                    session is attended (README "The compaction
                                    hold"); always exit 0, one row per decision
+  session --post-tool-batch        PostToolBatch: stop an attended turn before the
+                                   request that would reach the auto-compaction
+                                   ceiling; always exit 0, silent unless it stops
   session --focus-mark in|out C P  tmux client-focus logger (attended time)
   session --focus-mark tick [AGE]  activity sampler (AGE = recency window in
                                    seconds, default 90; set it to one sampling

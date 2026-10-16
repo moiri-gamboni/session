@@ -215,7 +215,8 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
 | `fable.<login>.json` | that login's Fable weekly cap, fetched by `session account` |
 | `probe-body.<login>.json` | the raw usage-endpoint response of the last probe of that login from which no rate-limit window could be read; removed as soon as one can |
-| `sessions/<sid>.json` | `{"session_name": …, "context_window_size": …}` — the session's title and its model's context window in tokens |
+| `sessions/<sid>.json` | `{"session_name": …}` — the session's title |
+| `sessions/<sid>.ctx` | one line, `TOKENS WINDOW CEILING`: what the last request carried, the model's context window, and the size at which Claude Code starts an automatic compaction (`-` when it never does or the settings cannot be read). Rewritten on every status line render; read by [the compaction hold](#the-compaction-hold) |
 | `sessions/<sid>.hold` | empty; present while [the compaction hold](#the-compaction-hold) stands, removed by the next `PostCompact` or prompt |
 | `sessions/<sid>.cost` | dedup state for the sample log: content is the last logged cost, mtime the last sample time |
 | `sessions/<sid>[.p<pane>].limits` | the rate-limit tuple this session last saw, and which login owns it |
@@ -239,15 +240,15 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `ev` | Event | `detail` |
 |---|---|---|
 | `s` | turn start (`--hook`) | — |
-| `e` | turn end (`Stop`) | — |
+| `e` | turn end (`Stop`; `--post-tool-batch` writes it when it stops the loop, which runs no `Stop` hook) | — |
 | `f` | turn failed (`StopFailure`) | the API error type; `rate_limit` marks the moment a cap bit |
 | `x` | session end (`SessionEnd`) | the reason |
 | `a` / `z` | subagent start / stop | the agent type; `agent_id` pairs them |
 | `c` | compaction (`PostCompact`) | `manual` or `auto` |
-| `h` | decision of the [compaction hold](#the-compaction-hold) (`PreCompact`) | `hold`, or `allow-` and `manual`, `unattended`, `subagent`, `room` or `unknown` |
+| `h` | decision of the [compaction hold](#the-compaction-hold) (`PreCompact`) | `stop`, `hold`, or `allow-` and `manual`, `unattended`, `subagent` or `unknown` |
 | `p` | permission prompt shown (`Notification`) | — |
 
-Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing (`--compact-gate` prints its block on a hold), with field values `@tsv`-escaped; `--hook` writes the `s` row even when there is no rate-limit cache yet.
+Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing (the two modes of [the compaction hold](#the-compaction-hold) append a row only when they decide something, and print the decision), with field values `@tsv`-escaped; `--hook` writes the `s` row even when there is no rate-limit cache yet.
 
 **`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`.
 
@@ -285,7 +286,7 @@ Only what a reader needs is written; the rest of each source is dropped.
 
 **The cache** is `jq -c '{rate_limits, context_window, model, version}'` of the statusline payload. The payload's `cwd`, `transcript_path`, `workspace`, `session_id`, `cost` and the rest are not stored, since nothing reads them.
 
-**The snapshot** is `jq -c '{session_name, context_window_size: .context_window.context_window_size}'`, all that `session name`, the peer lookup and the compaction hold read.
+**The snapshot** is `jq -c '{session_name}'`, all that `session name` and the peer lookup read.
 
 **The Fable file** is `{"fable":{"used_percentage":N,"resets_at":EPOCH}}`, the usage endpoint's one Fable row with its reset in epoch seconds. A response without that row writes nothing; spend, credit balances and the other meters are dropped.
 
@@ -330,20 +331,25 @@ The tick logs an activity mark, stamped with the client's actual input time, for
 
 ## The compaction hold
 
-`PreCompact --compact-gate` holds an automatic compaction while someone is attending the session, so that its first half can be compacted through the rewind menu (`Esc Esc`, pick a message, **Summarize up to here**) instead of the whole conversation being summarised. Claude Code runs the hook before every request once the context is past the auto-compact threshold, and the gate decides each time. Each decision appends one `h` row to the turn log, whose detail is the verdict:
+Two hooks keep Claude Code from compacting an attended session by itself, so that its first half can be compacted through the rewind menu (`Esc Esc`, pick a message, **Summarize up to here**) or `/compact` instead of the whole conversation being summarised. A session is attended when a tmux client viewing its pane (`$TMUX_PANE`) had input within `SESSION_ATTEND_GRACE` seconds. Attendance is read from tmux at the moment of the decision, not from `focus-log.tsv`, whose activity marks land up to a minute late; a session with no `$TMUX_PANE` (a background session) is never attended, and a `claude -p` run from an attended session's shell inherits the pane. Each decision that is not a plain pass-through appends one `h` row to the turn log, whose detail is the verdict.
+
+The **ceiling** is the context size at which Claude Code starts an automatic compaction: the auto-compact window less 33,000 tokens. The status line works it out on every render and publishes it in `sessions/<sid>.ctx` beside the tokens the last request carried and the model's window. The window is the first that is set of `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (read as `parseInt` reads it), then the project's local settings, the project's settings (found from the project directory, not the working directory) and the user's `autoCompactWindow` (a model's entry under `modelSettings` beating the top-level key in the same file), capped at the model's window and raised to 100,000. `DISABLE_AUTO_COMPACT` or `DISABLE_COMPACT` set to `1`, `true`, `yes` or `on`, and `autoCompactEnabled: false` in the first settings file that sets it, leave no ceiling, whatever the variable says about the window. The `--autocompact` launch flag, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` and managed settings are not read.
+
+**`PostToolBatch --post-tool-batch` stops the turn.** After every batch of tool calls, in an attended session, when the context the next request would carry is within 3,000 tokens of the ceiling, it prints `{"continue": false, "stopReason": "Stopped before auto-compaction (context N%)."}`. Claude Code ends the loop before the next model call and shows the reason in the transcript, leaving the 33,000 tokens that a manual compaction needs. It writes the hold marker and the turn-log rows `h stop` and `e` (Claude Code runs no `Stop` hook after it). The next request's context is the last request's usage in the transcript plus the bytes of the payload's `tool_response` strings at three bytes a token. The rows after that request are not counted, since the batch's results may or may not be in the transcript yet when the hook runs; the `tool_input` is the model's own output, already in the usage. A subagent's batch (the only one whose payload carries `agent_id`) is never stopped. The mode runs after every batch in every session, so it decides from `sessions/<sid>.ctx` and the payload's size alone, and reads no transcript and runs neither `jq` nor `tmux` until the published figures put the context within 50,000 tokens of the ceiling (they run up to a response behind); with no figures or no ceiling the turn goes on.
+
+**`PreCompact --compact-gate` holds** a compaction that Claude Code still starts in an attended session, which happens when a prompt is sent while the context is already past the ceiling. The verdicts:
 
 | Verdict | When |
 |---|---|
-| `hold` | the trigger is `auto`; a tmux client viewing the session's pane had input within `SESSION_ATTEND_GRACE` seconds; no subagent of the session is running; room is left |
+| `hold` | the trigger is `auto` and the session is attended; no subagent of the session is running, or one is and the main conversation is within 3,000 tokens of its own ceiling |
 | `allow-manual` | the trigger is anything but `auto`: `/compact` and both rewind-menu summaries arrive as `manual` |
-| `allow-unattended` | no tmux client viewing the pane had input within the bridge, `TMUX_PANE` is unset, or there is no tmux |
-| `allow-subagent` | the turn log shows a subagent of this session started less than two hours ago and not stopped (a subagent's compaction carries the parent's session id and no agent field) |
-| `allow-room` | the context is within 3,000 tokens of the point where Claude Code refuses a request outright, the model's window minus 23,000 |
-| `allow-unknown` | the session's snapshot has no `context_window_size` (the statusLine writes it), or the transcript holds no request |
+| `allow-unattended` | the session is not attended |
+| `allow-subagent` | a subagent of this session started less than two hours ago and not stopped (the turn log's `a` and `z` rows), and the main conversation is more than 3,000 tokens short of its ceiling: a subagent's compaction carries the parent's session id and no agent field |
+| `allow-unknown` | a subagent is running and the ceiling or the transcript cannot be read, so the two cannot be distinguished |
 
-The context is the last request's usage in the transcript (input, cache read, cache creation and output tokens) plus the bytes of the user and attachment rows appended since (except the `prompt_snapshot` attachment, a copy of the system prompt and tools), at three bytes a token. A hold prints `{"decision":"block","reason":…}`; an allow prints nothing. The mode always exits 0, and the installed entry ends in `|| true`, so an error in the gate lets the compaction run.
+A hold prints `{"decision":"block","reason":…}`; an allow prints nothing. A held session is not compacted however full its context is; a request Claude Code then refuses as too long (at the window less 23,000 tokens) fails that turn, and `/compact` and the rewind menu work from there.
 
-Claude Code shows a blocked compaction nowhere, so a hold also writes `sessions/<sid>.hold`, which the status line renders as a leading `⏸ compaction held` until the next `PostCompact` or the next prompt removes it; a request that is held again writes it again. Attendance is read from tmux at the moment of the decision, not from `focus-log.tsv`, whose activity marks land up to a minute late. A session that is not in a tmux pane (a background session, `claude -p`) is never held.
+Claude Code shows a blocked compaction nowhere, so both modes write `sessions/<sid>.hold`, which the status line renders as a leading `⏸ compaction held` until the next `PostCompact` or the next prompt removes it; a request that is held again writes it again. Both always exit 0, the installed entries end in `|| true`, and anything unreadable lets the compaction or the turn go on.
 
 ## Accounts
 
