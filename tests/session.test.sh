@@ -3134,6 +3134,181 @@ FAILEOF
         "case 14 [swap]: none of the refused or unobserved swaps above left a switch marker"
 fi
 
+echo "--- case 14 [locks]: the swap holds Claude Code's credential locks ---"
+
+if ! have jq || ! have perl; then
+    skip "case 14 [locks]: the credential locks" "needs jq and perl"
+else
+    # Claude Code writes the credential under lock directories: a lock is a
+    # directory made with mkdir, and its mtime is the holder's proof of life.
+    # A token refresh holds .oauth_refresh.lock and the twin <real config dir>.lock
+    # (stale after 60 s), and every write of .credentials.json holds
+    # .storage-write.lock (stale after 15 s). A swap landing between a refresh's
+    # read and its write is lost, or leaves the outgoing login's refresh token
+    # spent after the vault took a copy of it.
+    lkworld() {  # -> a world with a@ vaulted and b@ live
+        local w; w=$(world)
+        mklogin "$w" a@example.com
+        printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1},"mcpOAuth":{"granola":"keep-me"}}\n' > "$w/cfg/.credentials.json"
+        sess "$w" -- account save >/dev/null 2>&1
+        mklogin "$w" b@example.com
+        printf '{"claudeAiOauth":{"accessToken":"tok-b","expiresAt":2},"mcpOAuth":{"granola":"keep-me"}}\n' > "$w/cfg/.credentials.json"
+        sess "$w" -- account save >/dev/null 2>&1
+        printf '%s\n' "$w"
+    }
+    lkreal() { (cd -P "$1" && pwd -P); }
+    # A jq that notes which of the given directories exist at the moment the
+    # credential is written, then runs the real one.
+    lkjq() {  # OUTFILE DIR... -> a bin directory
+        local d out="$1"; shift
+        d=$(mktemp -d "$TMP/lkjq.XXXXXX")
+        { printf '#!/usr/bin/env bash\nRJQ=%s\nOUT=%s\nDIRS=(' "$(command -v jq)" "$out"
+          printf '%q ' "$@"; printf ')\n'
+          cat <<'LKEOF'
+for x in "$@"; do
+    if [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ]; then
+        for p in "${DIRS[@]}"; do
+            if [ -d "$p" ]; then echo "held $p"; else echo "free $p"; fi
+        done >> "$OUT"
+    fi
+done
+exec "$RJQ" "$@"
+LKEOF
+        } > "$d/jq"
+        chmod +x "$d/jq"
+        printf '%s\n' "$d"
+    }
+    lkage() {  # DIR SECONDS — backdate a lock directory the way a dead holder leaves one
+        perl -e '$t = time - $ARGV[1]; utime $t, $t, $ARGV[0] or die "utime: $!"' "$1" "$2"
+    }
+    lkleft() {  # WORLD — which lock directories are still there
+        local w="$1" p
+        for p in "$w/cfg/.oauth_refresh.lock" "$(lkreal "$w/cfg").lock" "$w/cfg/.storage-write.lock"; do
+            [ -d "$p" ] && printf '%s ' "$p"
+        done
+        true
+    }
+
+    WL=$(lkworld); RCL=$(lkreal "$WL/cfg")
+    LKJ=$(lkjq "$WL/seen" "$WL/cfg/.oauth_refresh.lock" "$RCL.lock" "$WL/cfg/.storage-write.lock")
+    out=$(sess "$WL" PATH="$LKJ:$PATH" -- account use a@ 2>&1); rc=$?
+    report 0 "$rc" "case 14 [locks]: a swap nothing contends with exits 0"
+    report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$WL/cfg/.credentials.json")" \
+        "case 14 [locks]: ... installing the vault entry's credential"
+    report "held $WL/cfg/.oauth_refresh.lock|held $RCL.lock|held $WL/cfg/.storage-write.lock" \
+        "$(paste -s -d '|' "$WL/seen")" \
+        "case 14 [locks]: ... with the refresh lock, its twin beside the config dir and the storage-write lock all held while the credential is written"
+    report "" "$(lkleft "$WL")" "case 14 [locks]: ... and none of them left behind"
+
+    # Claude Code names the twin after the config dir with symlinks resolved.
+    WLS=$(lkworld); RCS=$(lkreal "$WLS/cfg"); ln -s "$WLS/cfg" "$WLS/cfglink"
+    LKJS=$(lkjq "$WLS/seen" "$RCS.lock" "$WLS/cfglink.lock")
+    out=$(sess "$WLS" CLAUDE_CONFIG_DIR="$WLS/cfglink" PATH="$LKJS:$PATH" -- account use a@ 2>&1); rc=$?
+    report 0 "$rc" "case 14 [locks]: a swap through a symlinked config dir exits 0"
+    report "held $RCS.lock|free $WLS/cfglink.lock" "$(paste -s -d '|' "$WLS/seen")" \
+        "case 14 [locks]: ... taking the twin lock under the resolved path, as Claude Code does"
+
+    # A holder that is still alive: wait for it, within a bound, and never break it.
+    WLW=$(lkworld)
+    mkdir "$WLW/cfg/.oauth_refresh.lock"
+    ( sleep 2; rmdir "$WLW/cfg/.oauth_refresh.lock" ) &
+    out=$(sess "$WLW" SESSION_LOCK_WAIT=10 -- account use a@ 2>&1); rc=$?
+    wait
+    report 0 "$rc" "case 14 [locks]: a swap waits out a refresh that finishes inside the wait"
+    report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$WLW/cfg/.credentials.json")" \
+        "case 14 [locks]: ... and then installs the credential"
+
+    WLH=$(lkworld); RCH=$(lkreal "$WLH/cfg")
+    for lk in "$WLH/cfg/.oauth_refresh.lock" "$RCH.lock" "$WLH/cfg/.storage-write.lock"; do
+        mkdir "$lk"
+        cp "$WLH/cfg/.credentials.json" "$TMP/lk.creds.before"
+        cp "$WLH/cfg/.claude.json" "$TMP/lk.claude.before"
+        t0=$(date +%s)
+        out=$( (sess "$WLH" SESSION_LOCK_WAIT=2 -- account use a@ >/dev/null) 2>&1 ); rc=$?
+        t1=$(date +%s)
+        report 1 "$rc" "case 14 [locks]: a swap exits 1 while ${lk##*/} stays held"
+        report yes "$(printf '%s' "$out" | grep -qF -- "$lk" && echo yes || echo no)" \
+            "case 14 [locks]: ... naming the lock it could not take"
+        report yes "$([ $(( t1 - t0 )) -le 12 ] && echo yes || echo no)" \
+            "case 14 [locks]: ... after waiting the bound and not for ever"
+        report yes "$(cmp -s "$TMP/lk.creds.before" "$WLH/cfg/.credentials.json" && echo yes || echo no)" \
+            "case 14 [locks]: ... leaving the live credentials byte-identical"
+        report yes "$(cmp -s "$TMP/lk.claude.before" "$WLH/cfg/.claude.json" && echo yes || echo no)" \
+            "case 14 [locks]: ... and the identity file"
+        report no "$([ -e "$WLH/cfg/.session-login-switch" ] && echo yes || echo no)" \
+            "case 14 [locks]: ... and leaving no switch marker"
+        report "$lk " "$(lkleft "$WLH")" \
+            "case 14 [locks]: ... releasing the locks it did take and leaving the holder's alone"
+        rmdir "$lk"
+    done
+
+    # Staleness is the mtime alone, per lock: a refresh lock a dead holder left
+    # is taken over after 60 s, the storage-write lock after 15 s.
+    lkcase() {  # DIR_RELATIVE_TO_WORLD AGE EXPECT_RC LABEL — DIR is cfg/<name> or twin
+        local w r d; w=$(lkworld); r=$(lkreal "$w/cfg")
+        case "$1" in twin) d="$r.lock" ;; *) d="$w/cfg/$1" ;; esac
+        mkdir "$d"; lkage "$d" "$2"
+        out=$( (sess "$w" SESSION_LOCK_WAIT=2 -- account use a@ >/dev/null) 2>&1 ); rc=$?
+        report "$3" "$rc" "case 14 [locks]: $4"
+        if [ "$3" = 0 ]; then
+            report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$w/cfg/.credentials.json")" \
+                "case 14 [locks]: ... installing the credential"
+            report "" "$(lkleft "$w")" "case 14 [locks]: ... and leaving no lock behind, the dead holder's included"
+        fi
+    }
+    lkcase .oauth_refresh.lock 120 0 "a refresh lock untouched for 120 s is a dead holder's and is taken over"
+    lkcase twin                120 0 "... and so is the twin"
+    lkcase .storage-write.lock  30 0 "a storage-write lock untouched for 30 s is taken over"
+    lkcase .oauth_refresh.lock  30 1 "a refresh lock untouched for 30 s is still held"
+    lkcase twin                 30 1 "... and so is the twin"
+    lkcase .storage-write.lock  10 1 "a storage-write lock untouched for 10 s is still held"
+
+    # The locks come off on every way out of the swap.
+    WLF=$(lkworld)
+    LKF=$(mktemp -d "$TMP/lkfail.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'LKFEOF'
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && exit 5
+done
+exec "$RJQ" "$@"
+LKFEOF
+    } > "$LKF/jq"
+    chmod +x "$LKF/jq"
+    out=$( (sess "$WLF" PATH="$LKF:$PATH" -- account use a@ >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [locks]: a credentials write that fails exits 1"
+    report "" "$(lkleft "$WLF")" "case 14 [locks]: ... with every lock released"
+    WLT=$(lkworld)
+    LKT=$(mktemp -d "$TMP/lktamper.XXXXXX")
+    { printf '#!/usr/bin/env bash\nRJQ=%s\n' "$(command -v jq)"
+      cat <<'LKTEOF'
+args=()
+for x in "$@"; do
+    [ "$x" = '.claudeAiOauth = $v[0].claudeAiOauth' ] && \
+        x='.claudeAiOauth = ($v[0].claudeAiOauth | .accessToken = "tok-tampered")'
+    args+=("$x")
+done
+exec "$RJQ" "${args[@]}"
+LKTEOF
+    } > "$LKT/jq"
+    chmod +x "$LKT/jq"
+    out=$( (sess "$WLT" PATH="$LKT:$PATH" -- account use a@ >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14 [locks]: a swap whose post-condition fails exits 1"
+    report "" "$(lkleft "$WLT")" "case 14 [locks]: ... with every lock released"
+
+    # Claude Code ignores a twin lock it cannot create, and so does the swap.
+    if [ "$(id -u)" = 0 ]; then
+        skip "case 14 [locks]: an uncreatable twin lock" "running as root, which creates it anyway"
+    else
+        WLU=$(lkworld); chmod 555 "$WLU"
+        out=$(sess "$WLU" -- account use a@ 2>&1); rc=$?
+        chmod 755 "$WLU"
+        report 0 "$rc" "case 14 [locks]: a twin lock that cannot be created does not stop the swap"
+        report "tok-a" "$(jq -r '.claudeAiOauth.accessToken' "$WLU/cfg/.credentials.json")" \
+            "case 14 [locks]: ... which installs the credential"
+    fi
+fi
+
 echo "--- case 14 [blank credential]: an empty accessToken is never vaulted ---"
 
 if ! have jq; then
@@ -4531,6 +4706,25 @@ DFAILEOF
         "decide: ... with the live credential untouched"
     report yes "$(cmp -s "$TMP/decide-claude-before" "$WD22/cfg/.claude.json" && echo yes || echo no)" \
         "decide: ... and the identity file never written, which is why this failure gets no probation"
+
+    # ── Claude Code still holds its refresh lock when the wait runs out ──────
+    WD25=$(dworld); CD25=$(curlstub); DLOG25="$WD25/data/switch-log.tsv"
+    dlive "$WD25" a@example.com tok-a
+    dvent "$WD25" a@example.com tok-a; dvent "$WD25" b@example.com tok-b
+    dbody "$CD25" tok-a 100 10 10; dbody "$CD25" tok-b 10 10 10
+    mkdir "$WD25/cfg/.oauth_refresh.lock"
+    cp "$WD25/cfg/.claude.json" "$TMP/decide-claude-before-lock"
+    out=$(sess "$WD25" PATH="$CD25:$PATH" SESSION_ACCOUNTS_DIR="$WD25/vault" SESSION_NOW="$DNOW" \
+            SESSION_SWITCH_NOTIFY="" SESSION_LOCK_WAIT=2 -- account auto --trigger cap 2>&1); rc=$?
+    report 5 "$rc" "decide: a swap that cannot take Claude Code's lock is an error"
+    report 'fail swap-locked' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... named as the lock, which is not the write and not a swap that did not land"
+    report 1 "$(grep -c . "$DLOG25")" "decide: ... on one audit row like any other decision"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD25/cfg/.credentials.json")" \
+        "decide: ... with the live credential untouched"
+    report yes "$(cmp -s "$TMP/decide-claude-before-lock" "$WD25/cfg/.claude.json" && echo yes || echo no)" \
+        "decide: ... and the identity file never written"
+    report "" "$(ddet notify "$DLOG25")" "decide: ... and nothing is announced, because nothing moved"
 
     # ── next_eligible_at when the live login lacks only Fable ────────────────
     # A candidate then has to clear all three windows to stand above it, so a

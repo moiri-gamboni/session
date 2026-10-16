@@ -763,6 +763,10 @@ _acct_decide() {  # TRIGGER SID DRY
       # credential that landed is somebody else's, so nothing downstream may
       # read the live login name back as evidence of what happened.
       2) ev=fail; reason='swap-not-observed'; tier=$livetier ;;
+      # Claude Code's lock stayed held for the whole wait. Nothing was written,
+      # so like a failed write this waits out the cooldown rather than
+      # starting a probation.
+      4) ev=fail; reason='swap-locked'; tier=$livetier ;;
       # Unreachable: the candidate screening above (acct_entry_ok) already
       # refuses an entry that cannot authenticate. Reaching it means the
       # screening was skipped.
@@ -858,3 +862,79 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
   ( "$notify" "$msg" >/dev/null 2>&1 & )
   return $rc
 }
+
+# ── 7. Claude Code's credential locks ─────
+# What Claude Code does around a credential write, read out of the 2.1.301
+# binary and watched under strace against a scratch config dir. A lock is a
+# directory made with mkdir (npm's proper-lockfile): mkdir failing with EEXIST
+# means held; the directory's mtime is the holder's proof of life, touched
+# every 5 s by a refresh and every 7.5 s by a storage write; a directory
+# untouched for the lock's stale age belongs to a dead holder, and whoever
+# finds it removes it and retries. Release is rmdir.
+#
+#   <config dir>/.oauth_refresh.lock    stale after 60 s. One token refresh
+#                                       holds it from reading the refresh token
+#                                       to writing the new pair.
+#   <config dir, symlinks resolved>.lock  taken straight after, same 60 s. The
+#                                       older name for the same exclusion, kept
+#                                       for sessions running an older build; a
+#                                       refresh that cannot create it goes on.
+#   <config dir>/.storage-write.lock    stale after 15 s. Held around every
+#                                       read-modify-write of .credentials.json,
+#                                       by a refresh and by a sign-in to an MCP
+#                                       server alike (their tokens live in the
+#                                       same file). Taken inside the other two
+#                                       and released first.
+#
+# A refresh also writes .oauth_refresh.lock.owner (pid, process start, the
+# lock's birth time) so a contender can take the lock from a holder whose
+# process is gone. A record that does not match the lock's birth time is
+# ignored, so a holder that writes none, as this one does, is just waited for.
+# A refresh contender gives up after about ten seconds of 1-2 s retries and
+# reports the refresh as failed (a storage-write contender, after about seven),
+# so a hold has to be short: nothing under these locks waits on the network, and
+# the mtime is not kept fresh, so a hold outlasting the stale age would let
+# another process in. The holds here are a fraction of a second. There is no
+# trap: an interrupt while waiting on the second or third lock leaves the ones
+# already taken to go stale, so they block a retry, and the refreshes of
+# running sessions, for up to a minute.
+#
+# Why the swap holds them. A refresh posts the refresh token it read, then
+# stores the new pair only if the file still holds that token. A swap landing
+# in between is therefore not overwritten, but the outgoing login's refresh
+# token has been spent by then, and the vault already holds a copy of the
+# token that no longer works. A swap landing between another writer's read and
+# its rename is simply lost. Holding the refresh lock means no refresh is in
+# flight when the outgoing login is vaulted; holding the storage lock makes the
+# swap's read-modify-write atomic against every other writer.
+#
+# None of this is documented, so re-read it after a Claude Code upgrade: run
+# `claude -p x` with CLAUDE_CONFIG_DIR and HOME pointing at a scratch directory
+# whose .credentials.json holds a fake expired claudeAiOauth (a refresh token
+# the server will refuse), under `strace -f -e trace=mkdir,rmdir,rename`.
+#
+# Staleness is judged against the real clock, not SESSION_NOW: it compares a
+# real mtime with it.
+
+# One lock directory. 0 held; 1 still held by someone else when the wait ran
+# out; 2 not creatable here (the parent is missing or not writable).
+acct_dir_lock() {  # DIR STALE_SECONDS
+  local d="$1" stale="$2" waited=0 m
+  while :; do
+    mkdir "$d" 2>/dev/null && return 0
+    # Not creatable: the parent is missing or not ours. A writable parent means
+    # the holder released since the mkdir, and the next try finds it free.
+    [ -d "$d" ] || [ -w "${d%/*}" ] || return 2
+    # A holder that released between the mkdir and the stat leaves no mtime to
+    # read. Read as "not stale" so a stat that keeps failing waits out the
+    # bound instead of spinning.
+    if m=$(mtime_of "$d") && [ $(( $(date +%s) - m )) -gt "$stale" ] && rmdir "$d" 2>/dev/null; then
+      continue
+    fi
+    [ "$waited" -lt "$SESSION_LOCK_WAIT" ] || return 1
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+}
+
+acct_dir_unlock() { rmdir "$1" 2>/dev/null || true; }

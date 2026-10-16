@@ -97,6 +97,9 @@ SESSION_LIVE_FLOOR_DAYS=$(( SESSION_LIVE_DAYS - 1 ))
 SESSION_BINDIR_DEFAULT="$HOME/.local/bin"
 # tests only: a fixed "now" for the date layer
 SESSION_NOW="${SESSION_NOW:-}"
+# tests only: how many seconds the credential swap waits for each of Claude
+# Code's lock directories before it gives up
+SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 
 # ── Login and the per-login cache ────────────────────────────────────────────
 # Rate-limit windows are per-login, so the statusline cache, the vault and the

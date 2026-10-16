@@ -886,7 +886,6 @@ acct_token_ok() { jq -e '(.claudeAiOauth.accessToken // "") != ""' "$1" >/dev/nu
 # The converse PROVEN rather than "not proven ok": a file that cannot be read or
 # parsed is a different fault, and reading it as blank would misname it.
 acct_token_blank() { jq -e '(.claudeAiOauth.accessToken // "") == ""' "$1" >/dev/null 2>&1; }
-
 # Record a refused blank credential at most once per login per cooldown, and —
 # unless the caller silences it — tell a human once per outage.
 #
@@ -1209,7 +1208,8 @@ acct_print_row() {  # MARKER NUMBER LOGIN
 acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 
 # Install a vaulted login: the whole write sequence (credential, identity, then
-# the switch marker) and nothing else. It prints nothing on any outcome but a
+# the switch marker) and nothing else, under the locks Claude Code takes around
+# a credential write (lib/account.sh §7). It prints nothing on any outcome but a
 # marker it could not write — the status is the whole answer, so a caller with
 # no human in front of it can use it, and one with a human keeps its own
 # wording.
@@ -1221,14 +1221,36 @@ acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 #      login whose credential did not land: a caller that reports the failure
 #      must not read the live login name back as the truth of what happened.
 #   3  the entry cannot authenticate; nothing was read, written or vaulted
+#   4  a Claude Code lock stayed held (or could not be created) for the whole
+#      wait, so neither credential file was touched; ACCT_LOCK_BUSY names it
 acct_swap() {  # VAULTFILE
-  local vf="$1" cfg tmp
-  cfg=$(acct_cfg)
-  # Refused before the outgoing login is vaulted and before any write. An entry
-  # with no usable token is the 2026-09-15 shape, and this is the path a human
-  # takes while that outage is happening — reaching for another login and
-  # installing a second dead credential over the one thing still working.
+  local vf="$1" cfg refresh twin held_twin=0 rc
+  # Refused before the locks, before the outgoing login is vaulted and before
+  # any write. An entry with no usable token is the 2026-09-15 shape, and this
+  # is the path a human takes while that outage is happening — reaching for
+  # another login and installing a second dead credential over the one thing
+  # still working.
   acct_token_ok "$vf" || return 3
+  cfg=$(acct_cfg)
+  refresh="$cfg/.oauth_refresh.lock"
+  twin="$(realpath_of "$cfg").lock"
+  ACCT_LOCK_BUSY=""
+  acct_dir_lock "$refresh" 60 || { ACCT_LOCK_BUSY=$refresh; return 4; }
+  acct_dir_lock "$twin" 60; rc=$?
+  case $rc in
+    0) held_twin=1 ;;
+    # A twin that cannot be created (its parent is not ours to write) is skipped,
+    # as Claude Code skips it; one that is held is a refresh in flight.
+    1) acct_dir_unlock "$refresh"; ACCT_LOCK_BUSY=$twin; return 4 ;;
+  esac
+  acct_swap_locked "$vf" "$cfg"; rc=$?
+  [ "$held_twin" = 1 ] && acct_dir_unlock "$twin"
+  acct_dir_unlock "$refresh"
+  return $rc
+}
+
+acct_swap_locked() {  # VAULTFILE CONFIG_DIR
+  local vf="$1" cfg="$2" tmp wrote
   # Never lose the login being replaced — and announce nothing if it cannot be
   # saved. The automatic decision runs this inside switch.lock, and lock_run
   # EXECS its command, so a notifier backgrounded from here would inherit the
@@ -1240,10 +1262,13 @@ acct_swap() {  # VAULTFILE
   acct_save no-notify 2>/dev/null || true
   # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
   # DoneThat, …), which is not account-scoped and must survive the switch.
+  acct_dir_lock "$cfg/.storage-write.lock" 15 || { ACCT_LOCK_BUSY="$cfg/.storage-write.lock"; return 4; }
   tmp="$cfg/.credentials.swap.$$"
   jq --slurpfile v "$vf" '.claudeAiOauth = $v[0].claudeAiOauth' "$cfg/.credentials.json" > "$tmp" \
-    && chmod 600 "$tmp" && mv -f "$tmp" "$cfg/.credentials.json" \
-    || { rm -f "$tmp"; return 1; }
+    && chmod 600 "$tmp" && mv -f "$tmp" "$cfg/.credentials.json"
+  wrote=$?
+  acct_dir_unlock "$cfg/.storage-write.lock"
+  [ "$wrote" = 0 ] || { rm -f "$tmp"; return 1; }
   # Identity too, so usage tracking labels the very next statusline render
   # correctly. The app re-fetches the profile on its own schedule, so this
   # is a head start, not the source of truth — and a concurrent session can
@@ -1309,6 +1334,7 @@ acct_main() {
         1) echo "session account: failed to write credentials" >&2; return 1 ;;
         2) echo "session account: the credential swap did not land — the live credential is not $email's; check $cfg/.credentials.json" >&2; return 1 ;;
         3) echo "session account use: $email's vaulted accessToken is empty — installing it would leave nothing on this machine able to authenticate; run /login instead" >&2; return 1 ;;
+        4) echo "session account: could not take Claude Code's credential lock $ACCT_LOCK_BUSY within ${SESSION_LOCK_WAIT}s (a token refresh in a running session holds it, or it cannot be created); nothing was changed, try again" >&2; return 1 ;;
       esac
       # After the swap, never before: a slow endpoint must not stand between a
       # capped session and the login that frees it. The outgoing login's Fable
@@ -1365,7 +1391,9 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  <email>+<org slug>, a separate login with its own credentials
                  and limits. Takes effect on the next request,
                  for running sessions too — no restart, no re-auth. The
-                 switch is box-wide: every claude here shares the config dir
+                 switch is box-wide: every claude here shares the config dir.
+                 It holds Claude Code's credential locks while it writes, and
+                 fails (exit 1, nothing changed) if one stays held for 15 s
   save           snapshot the live login into the vault (the statusline
                  does this automatically every time credentials change)
   rm <name>      drop a saved login (a copy stays in accounts/.history/)
