@@ -266,11 +266,11 @@ report absent "$(if ls "$DR1"/last-status.*.tmp* >/dev/null 2>&1; then echo pres
     "race: neither render leaves a temp file beside the cache"
 
 DR2="$TMP/datarace2"
-race_run '{session_name}' "$DR2"
+race_run '{session_name, context_window_size: .context_window.context_window_size}' "$DR2"
 report 2 "$(wc -l < "$SHIM/.hits" | tr -d ' ')" "race: (control) the shim intercepted both snapshot writes"
 SNAPR="$DR2/sessions/$SID.json"
 report yes "$(yesno isjson "$SNAPR")" "race: the snapshot is still one JSON value"
-report yes "$(yesno one_of "$(cat "$SNAPR")" '{"session_name":"fast, and the longer of the two"}' '{"session_name":"slow"}')" \
+report yes "$(yesno one_of "$(cat "$SNAPR")" '{"session_name":"fast, and the longer of the two","context_window_size":1000000}' '{"session_name":"slow","context_window_size":1000000}')" \
     "race: ... and is one of the two renders' snapshots whole"
 report absent "$(if ls "$DR2/sessions"/.*.tmp* >/dev/null 2>&1; then echo present; else echo absent; fi)" \
     "race: neither render leaves a temp file in the snapshot directory"
@@ -306,7 +306,10 @@ render "$P22" SESSION_DATA_DIR="$D22" TMUX_PANE=%42 >/dev/null
 
 SNAP22="$D22/sessions/$SID.json"
 report present "$(exists "$SNAP22")" "case 22: the per-session snapshot is written"
-report "session_name" "$(jq -r 'keys|join(",")' "$SNAP22")" "case 22: the snapshot carries only session_name"
+report "context_window_size,session_name" "$(jq -r 'keys|join(",")' "$SNAP22")" \
+    "case 22: the snapshot carries only the title and the context window"
+report 1000000 "$(jq -r '.context_window_size' "$SNAP22")" \
+    "case 22: ... the window being the one the payload reports, which the PreCompact gate reads"
 report "Port the statusline" "$(jq -r '.session_name // empty' "$SNAP22")" \
     "case 22: ... and the title reads back off it, which is all snap_name asks for"
 report 600 "$(mode_of "$SNAP22")" "case 22: the snapshot is 600"
@@ -603,6 +606,26 @@ notag_line=$(render "$P20b" SESSION_DATA_DIR="$D26" SESSION_PRIMARY_CFG="$CFG")
 report no "$(yesno endswith "$notag_line" " · ${CFG##*/}")" \
     "tag: the primary config dir renders no tag"
 report yes "$(yesno grep -q 'tkns' <<<"$notag_line")" "tag: the untagged line is still a status line"
+
+echo "--- the compaction hold ---"
+
+# `session --compact-gate` leaves sessions/<sid>.hold when it holds an automatic
+# compaction. Claude Code shows nothing for a blocked compaction, so the line is
+# where the hold stays visible until the compaction happens.
+DH="$TMP/datahold"; mkdir -p "$DH/sessions"
+PH="$TMP/phold.json"; mkpayload "$SID" 0.1 41 62 "$FR" "$WR" "hold" > "$PH"
+nohold_line=$(render "$PH" SESSION_DATA_DIR="$DH")
+report no "$(yesno has "$nohold_line" 'compaction held')" "hold: no marker, no segment"
+: > "$DH/sessions/$SID.hold"
+hold_line=$(render "$PH" SESSION_DATA_DIR="$DH")
+report yes "$(yesno has "$hold_line" '⏸ compaction held (Esc Esc, Summarize up to here)')" \
+    "hold: a marker for this session shows the hold and the way out"
+report yes "$(yesno has "$hold_line" 'tkns')" "hold: ... on the line that still carries the token count"
+report 1 "$(printf '%s\n' "$hold_line" | wc -l | tr -d ' ')" "hold: ... and it is still one line"
+: > "$DH/sessions/22222222-2222-2222-2222-222222222222.hold"
+rm -f "$DH/sessions/$SID.hold"
+report no "$(yesno has "$(render "$PH" SESSION_DATA_DIR="$DH")" 'compaction held')" \
+    "hold: another session's marker says nothing about this one"
 
 echo "--- the task segment ---"
 

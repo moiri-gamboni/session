@@ -195,7 +195,7 @@ fi
 # so the history exists when a view wants them (`session time` v1, cache-
 # efficiency, context-growth, per-turn cost). Static payload fields (version,
 # cwd, workspace, effort, …) are NOT time-series'd, and the per-session snapshot
-# below keeps only the session's title — the one field anything reads back.
+# below keeps only the title and the context window — the two fields anything reads back.
 _slog="$SESSION_SLOG"
 if [ -n "$_sid" ] && [ "$_sid" != "-" ] && _costf=$(LC_ALL=C printf '%.4f' "$_cost" 2>/dev/null); then
   _side="$_snapdir/$_sid.cost"
@@ -218,7 +218,7 @@ if [ -n "$_sid" ] && [ "$_sid" != "-" ] && _costf=$(LC_ALL=C printf '%.4f' "$_co
       "$_now" "$_sid" "$_costf" "$_f5" "$_w7" "$_new_fr" "$_new_wr" "$_dur" "$_apidur" \
       "$_otok" "$_itok" "$_ctx" "$_crd" "$_ccr" "$_cin" "$_cout" "$_ladd" "$_lrm" "$_model" "$_pid" "$_acct" >> "$_slog"
     printf '%s' "$_costf" > "$_side"
-    jq -c '{session_name}' <<<"$input" > "$_snapdir/.$_sid.tmp.$$" \
+    jq -c '{session_name, context_window_size: .context_window.context_window_size}' <<<"$input" > "$_snapdir/.$_sid.tmp.$$" \
       && mv -f "$_snapdir/.$_sid.tmp.$$" "$_snapdir/$_sid.json"
   fi
 fi
@@ -378,8 +378,14 @@ if [ -n "$_slug" ]; then
   fi
 fi
 
+# `session --compact-gate` leaves this marker when it holds an automatic
+# compaction and PostCompact removes it. Claude Code shows nothing itself for a
+# blocked compaction, so this is where the hold stays visible.
+_hold_seg=""
+[ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held (Esc Esc, Summarize up to here) · "
+
 jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag" \
-      --arg task_seg "$_task_seg" '
+      --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" '
   # model + effort come fresh in every render payload, so this tracks
   # mid-session switches (Fable safeguard fallback to Opus, /model, /effort)
   # without any caching
@@ -399,5 +405,5 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
     elif . >= 1000 then
       "\(. / 1000 | floor)k"
     else "\(.)" end;
-  "\($model)\($used | fmt) tkns\($five_seg)\($week_seg)\($task_seg)\($atag)"
+  "\($hold_seg)\($model)\($used | fmt) tkns\($five_seg)\($week_seg)\($task_seg)\($atag)"
 ' <<< "$input"
