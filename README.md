@@ -498,7 +498,7 @@ Write that line with your own editor, never with `sudo`: it changes the file's o
 
 Both **refuse with a message naming tmux** when tmux is absent. `session peers` works without tmux (it reads Claude Code's presence registry), and `--focus-mark` is a silent no-op.
 
-`SESSION_TMUX_MAIN_GUARD`, when set to an executable, runs before `resume` opens windows: a host's own pre-resume check. Running `session resume` automatically at boot needs a service unit, which is the host's business and not this installer's.
+`SESSION_TMUX_MAIN_GUARD`, when set to an executable, runs before `resume` opens windows: a host's own pre-resume check. Running `session resume` automatically at boot needs a service unit, which is the host's business and not this installer's. At boot `resume` is what starts the tmux server, and a oneshot unit's leftover processes are killed when it exits, so have the unit run it in a scope of its own (`systemd-run --user --scope … session resume`) or every reopened window goes with it.
 
 ## Auto-resume: `--rewake-waiter` and the ⚠ advisory
 
