@@ -899,7 +899,9 @@ EOF
 # ── Accounts (`session account …`) ───────────────────────────────
 # Several subscription logins, ONE config dir. The live login is
 # $CLAUDE_CONFIG_DIR/.credentials.json's `claudeAiOauth` (auth) plus
-# .claude.json's `oauthAccount` (identity); a vault at
+# .claude.json's `oauthAccount` (identity, or the vault entry holding the
+# installed sign-in when that identity's organisation contradicts the
+# credential's plan: lib/common.sh, above _SESSION_PLAN_CLASH); a vault at
 # $CLAUDE_CONFIG_DIR/accounts/<email>.json keeps a copy of every login seen.
 #
 # Switching in place (rather than one config dir per account) keeps everything
@@ -1042,10 +1044,15 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
   cfg=$(acct_cfg)
   # The identity is read ONCE, and the name and the stored oauthAccount both
   # come from that read: two reads straddling a swap's identity write filed the
-  # incoming seat's profile and credential under the outgoing plan's name.
+  # incoming seat's profile and credential under the outgoing plan's name. It is
+  # read from the live login's own vault entry when the installed credential's
+  # plan contradicts .claude.json (lib/common.sh, above _SESSION_PLAN_CLASH,
+  # says why and how that entry is found), so a renewal landing while a session
+  # has written another organisation back is saved under the login it renewed,
+  # not refused below.
   ident="$acctdir/.ident.$$"
   mkdir -p "$acctdir" && chmod 700 "$acctdir"
-  jq '{oauthAccount}' "$cfg/.claude.json" > "$ident" 2>/dev/null || : > "$ident"
+  jq '{oauthAccount}' "$(session_identity_file)" > "$ident" 2>/dev/null || : > "$ident"
   login=$(session_login_read "$ident")
   [ "$login" != unknown ] && [ -s "$cfg/.credentials.json" ] || {
     rm -f "$ident"
@@ -1054,15 +1061,17 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
   # sees one login's identity beside the other's credential. The credential's
   # subscriptionType names its plan (max, team, ...) and the identity's
   # organizationType the same plan as claude_<type>; when both are present and
-  # disagree, nothing is vaulted and the next render saves the settled pair.
-  # Two logins on the same plan type pass this check — the screening by live
-  # token and doctor's `vault` line are what catch that shape.
+  # disagree and no vault entry holds the credential's sign-in (the identity
+  # read above), nothing is vaulted, and the status line retries on every
+  # render until the two agree. Two logins on the same plan type pass this
+  # check — the screening by live token and doctor's `vault` line are what
+  # catch that shape.
   if ! jq -e --slurpfile i "$ident" '
         (.claudeAiOauth.subscriptionType // "") as $s
         | ($i[0].oauthAccount.organizationType // "") as $t
         | $s == "" or $t == "" or $t == "claude_\($s)"' "$cfg/.credentials.json" >/dev/null 2>&1; then
     rm -f "$ident"
-    echo "session account: not saving $login — the live credential's plan does not match its identity's, which is a swap caught between its two writes" >&2
+    echo "session account: not saving $login — the live credential's plan does not match its identity's (a swap caught between its two writes, or another organisation written back over the identity), and no saved login holds this sign-in" >&2
     return 1
   fi
   # A blank credential is not a credential. Five times in two months the live
@@ -1322,7 +1331,9 @@ acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 #      vault entry's, so the caller must not treat the login as switched.
 #      The identity file is already written at that point, so it names the
 #      login whose credential did not land: a caller that reports the failure
-#      must not read the live login name back as the truth of what happened.
+#      must not read the live login name back as the truth of what happened
+#      (across plans the name may follow the installed credential instead,
+#      and a caller cannot know which of the two it reads).
 #   3  the entry cannot authenticate; nothing was read, written or vaulted
 #   4  a Claude Code lock stayed held (or could not be created) for the whole
 #      wait, so neither credential file was touched; ACCT_LOCK_BUSY names it

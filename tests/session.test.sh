@@ -239,6 +239,65 @@ if have jq; then
     printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":null,"organizationName":"Example Org","seatTier":"team_standard"}}\n' > "$TEAMCFG/.claude.json"
     report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$TEAMCFG")" \
         "a null organisation type with a seat tier still names the seat"
+
+    # After a swap between two organisations of one account, a session still
+    # holding the outgoing token writes its organisation back into the identity,
+    # so the identity names the login just left while the credential is the new
+    # one's. The credential's plan names the login then, through the one vaulted
+    # entry with that email, that plan and the installed credential's sign-in.
+    CLASH="$TMP/clashcfg"; mkdir -p "$CLASH/accounts"
+    MAXID='"oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_max","organizationName":"me@example.com'"'"'s Organization"}'
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org"}}\n' > "$CLASH/.claude.json"
+    printf '{"claudeAiOauth":{"accessToken":"tok-max","subscriptionType":"max","refreshTokenExpiresAt":4000000000000}}\n' > "$CLASH/.credentials.json"
+    printf '{"login":"me@example.com",%s,"claudeAiOauth":{"accessToken":"tok-max","refreshTokenExpiresAt":4000000000000}}\n' "$MAXID" > "$CLASH/accounts/me@example.com.json"
+    printf '{"login":"me@example.com+example-org","oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org"},"claudeAiOauth":{"accessToken":"tok-team","refreshTokenExpiresAt":3000000000000}}\n' > "$CLASH/accounts/me@example.com+example-org.json"
+    report "me@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] a Max credential beside the seat's identity names the vaulted Max login holding it"
+    report "$CLASH/accounts/me@example.com.json" "$(probe 'session_identity_file' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] ... and the live identity is that entry's"
+    report "me@example.com+example-org" "$(probe 'session_login_read "$SESSION_CFG/.claude.json"' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] an identity file passed in names itself, unchecked"
+    # A renewal replaces the access token but keeps the sign-in's end.
+    printf '{"claudeAiOauth":{"accessToken":"tok-max-renewed","subscriptionType":"max","refreshTokenExpiresAt":4000000001000}}\n' > "$CLASH/.credentials.json"
+    report "me@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] ... and still does once the token is renewed within that sign-in"
+    printf '{"claudeAiOauth":{"accessToken":"tok-other","subscriptionType":"max","refreshTokenExpiresAt":4000000100000}}\n' > "$CLASH/.credentials.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] a Max credential of another sign-in leaves the identity's name"
+    # A swap from the seat to another account, caught between its two writes:
+    # the email is the outgoing login's, so its own Max entry must not be named.
+    printf '{"claudeAiOauth":{"accessToken":"tok-b","subscriptionType":"max","refreshTokenExpiresAt":4100000000000}}\n' > "$CLASH/.credentials.json"
+    printf '{"login":"b@example.com","oauthAccount":{"emailAddress":"b@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-b","refreshTokenExpiresAt":4100000000000}}\n' > "$CLASH/accounts/b@example.com.json"
+    report "me@example.com+example-org $CLASH/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$CLASH" | tr '\n' ' ' | sed 's/ $//')" \
+        "[org clash] another account's credential beside the seat's identity names no third login"
+    rm -f "$CLASH/accounts/b@example.com.json"
+    printf '{"claudeAiOauth":{"accessToken":"tok-max","subscriptionType":"max","refreshTokenExpiresAt":4000000000000}}\n' > "$CLASH/.credentials.json"
+    printf '{"login":"me@example.com",%s,"claudeAiOauth":{"accessToken":"tok-max","refreshTokenExpiresAt":4000000000000}}\n' "$MAXID" > "$CLASH/accounts/copy.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "[org clash] two vaulted entries holding that sign-in leave the identity's name"
+    printf '{"login":' > "$CLASH/accounts/a-broken.json"; rm -f "$CLASH/accounts/copy.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH" 2>/dev/null)" \
+        "[org clash] ... and so does a vault jq cannot read through"
+    rm -f "$CLASH/accounts/a-broken.json" "$CLASH/accounts/me@example.com.json"
+    report "me@example.com+example-org $CLASH/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$CLASH" | tr '\n' ' ' | sed 's/ $//')" \
+        "[org clash] ... and so does none"
+    printf '{"claudeAiOauth":{"accessToken":"tok-team","subscriptionType":"team"}}\n' > "$CLASH/.credentials.json"
+    report "me@example.com+example-org $CLASH/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$CLASH" | tr '\n' ' ' | sed 's/ $//')" \
+        "a credential whose plan matches the identity's changes nothing"
+    printf '{"claudeAiOauth":{"accessToken":"tok"}}\n' > "$CLASH/.credentials.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "a credential that names no plan changes nothing"
+    printf '{"claudeAiOauth":' > "$CLASH/.credentials.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "a credentials file that is not valid JSON leaves the identity's name, not unknown"
+    printf '{"claudeAiOauth":{"accessToken":"tok-max","subscriptionType":"max"}}\n' > "$CLASH/.credentials.json"
+    chmod 000 "$CLASH/.credentials.json"
+    report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
+        "... and so does one this user cannot read"
+    chmod 600 "$CLASH/.credentials.json"
 else
     skip "session_login: same email, two organisations" "no jq"
 fi
@@ -1043,6 +1102,34 @@ else
     out=$(sess "$W14m" SESSION_ACCOUNTS_DIR="$V3" -- account save 2>&1); rc=$?
     report "0 tok-max" "$rc $(jq -r '.claudeAiOauth.accessToken' "$V3/me@example.com.json")" \
         "case 14 [mid-swap]: ... while a Max credential beside it is"
+
+    # The same clash left by a session that wrote the seat's organisation back
+    # over the plan's identity: the plan's renewed credential is saved under the
+    # plan's vaulted name and identity, and the list marks the plan live.
+    W14c=$(world); V4="$W14c/vault"; mkdir -p "$V4"
+    printf '{"email":"me@example.com","login":"me@example.com","oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_max","organizationName":"me@example.com'"'"'s Organization"},"claudeAiOauth":{"accessToken":"tok-max-old","subscriptionType":"max","expiresAt":1000,"refreshTokenExpiresAt":4000000000000},"saved_at":1}\n' > "$V4/me@example.com.json"
+    printf '{"email":"me@example.com","login":"me@example.com+example-org","oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org"},"claudeAiOauth":{"accessToken":"tok-team","subscriptionType":"team","expiresAt":1000,"refreshTokenExpiresAt":3000000000000},"saved_at":1}\n' > "$V4/me@example.com+example-org.json"
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org"}}\n' > "$W14c/cfg/.claude.json"
+    # The plan's credential renewed: a new token, the same sign-in's end.
+    printf '{"claudeAiOauth":{"accessToken":"tok-max-new","subscriptionType":"max","expiresAt":2000,"refreshTokenExpiresAt":4000000001000}}\n' > "$W14c/cfg/.credentials.json"
+    out=$(sess "$W14c" SESSION_ACCOUNTS_DIR="$V4" -- account save 2>&1); rc=$?
+    report "0 tok-max-new claude_max" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$V4/me@example.com.json") $(jq -r '.oauthAccount.organizationType' "$V4/me@example.com.json")" \
+        "case 14 [org clash]: a Max credential beside the seat's identity is saved under the plan, with the plan's identity"
+    report "tok-team" "$(jq -r '.claudeAiOauth.accessToken' "$V4/me@example.com+example-org.json")" \
+        "case 14 [org clash]: ... leaving the seat's entry untouched"
+    out=$(sess "$W14c" SESSION_ACCOUNTS_DIR="$V4" -- account 2>&1)
+    report "me@example.com" "$(printf '%s\n' "$out" | awk '$1 == "live" { print $3 }')" \
+        "case 14 [org clash]: ... and the list marks the plan live"
+    # A swap from the seat to another account's Max login, caught between its
+    # two writes: that credential is never saved into this email's Max entry.
+    printf '{"email":"b@example.com","login":"b@example.com","oauthAccount":{"emailAddress":"b@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-b","subscriptionType":"max","expiresAt":5000,"refreshTokenExpiresAt":4100000000000},"saved_at":1}\n' > "$V4/b@example.com.json"
+    cp "$V4/me@example.com.json" "$TMP/w14c-max-before.json"
+    jq '{claudeAiOauth}' "$V4/b@example.com.json" > "$W14c/cfg/.credentials.json"
+    out=$(sess "$W14c" SESSION_ACCOUNTS_DIR="$V4" -- account save 2>&1); rc=$?
+    report 1 "$rc" "case 14 [org clash]: another account's credential beside the seat's identity is not saved"
+    report same "$(cmp -s "$TMP/w14c-max-before.json" "$V4/me@example.com.json" && echo same || echo changed)" \
+        "case 14 [org clash]: ... leaving this email's Max entry byte-identical"
 
     out=$( (sess "$W14b" SESSION_ACCOUNTS_DIR="$V2" -- account use me@example >/dev/null) 2>&1 ); rc=$?
     report 1 "$rc" "case 14 [same email]: a substring both names contain is ambiguous"
@@ -4493,6 +4580,30 @@ else
         "decide: ... leaving no scratch behind"
     report absent "$([ -s "$DNOTE5" ] && echo present || echo absent)" \
         "decide: ... and sends no notification"
+
+    # ── one account, two organisations, the identity naming the one just left ─
+    # The installed credential is the plan's, renewed since it was vaulted, while
+    # the identity names the seat, which a session holding the seat's token wrote
+    # back. The decision reads the live login as the plan, so the seat is a
+    # candidate rather than screened out as the live seat, and the plan's figures
+    # are not ranked under the seat.
+    WD5c=$(dworld); CD5c=$(curlstub)
+    printf '{"oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org","organizationUuid":"org-seat"}}\n' > "$WD5c/cfg/.claude.json"
+    printf '{"claudeAiOauth":{"accessToken":"tok-max","subscriptionType":"max","expiresAt":%s000,"refreshTokenExpiresAt":4000000000000}}\n' "$DEXP" > "$WD5c/cfg/.credentials.json"
+    printf '{"email":"me@example.com","login":"me@example.com","oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_max","organizationName":"Max","organizationUuid":"org-max"},"claudeAiOauth":{"accessToken":"tok-max-old","subscriptionType":"max","expiresAt":%s000,"refreshTokenExpiresAt":4000000000000}}\n' "$DEXP" > "$WD5c/vault/me@example.com.json"
+    printf '{"email":"me@example.com","login":"me@example.com+example-org","oauthAccount":{"emailAddress":"me@example.com","organizationType":"claude_team","organizationName":"Example Org","organizationUuid":"org-seat"},"claudeAiOauth":{"accessToken":"tok-team","subscriptionType":"team","expiresAt":%s000,"refreshTokenExpiresAt":3000000000000}}\n' "$DEXP" > "$WD5c/vault/me@example.com+example-org.json"
+    dbody "$CD5c" tok-max 10 100 0; dbody "$CD5c" tok-team 10 20 0
+    DCLOCK=$DNOW
+    out=$(dauto "$WD5c" "$CD5c" --dry-run --trigger cap); rc=$?
+    report yes "$(printf '%s\n' "$out" | grep -q '^live=me@example.com/0/probe/10/100/0$' && echo yes || echo no)" \
+        "decide [org clash]: the live login is the plan whose credential is installed"
+    report yes "$(printf '%s\n' "$out" | grep -q '^cand=me@example.com+example-org/2/probe/10/20/0$' && echo yes || echo no)" \
+        "decide [org clash]: ... and the seat the identity names is a candidate"
+    report 'dry-run climbed me@example.com+example-org' \
+        "$(dkv ev "$out") $(dkv reason "$out") $(dkv to "$out")" \
+        "decide [org clash]: ... which it would move to"
+    report "" "$(cd "$WD5c/data" && ls -a | grep -E '^\.(probe|ident|dry)\.' || true)" \
+        "decide [org clash]: ... leaving no scratch behind"
 
     # ── next_eligible_at: when the earliest rejected candidate climbs ─────────
     WD6=$(dworld); CD6=$(curlstub); DLOG6="$WD6/data/switch-log.tsv"

@@ -111,8 +111,8 @@ SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 # seat overwrote the plan's vault entry and the two logins' windows landed in
 # one cache (2026-09-15). A consumer organisation (claude_max, claude_pro,
 # claude_free, or none recorded and no seat tier) keeps the bare email, so
-# every login vaulted before this rule keeps its name. One jq call, whatever
-# the shape.
+# every login vaulted before this rule keeps its name. One jq call in the usual
+# case, whatever the shape.
 #
 # Claude Code sometimes rewrites the profile without organizationType (dropping
 # the rate-limit tiers with it), so the type falls back to the seat tier, which
@@ -120,14 +120,49 @@ SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 # separator, not a tab: tab is IFS whitespace, so an empty type would collapse
 # and the next field (the organisation name, or its uuid) would take its slot,
 # filing one login under a second name.
+#
+# The live identity is not the swap's alone to write. Claude Code (observed in
+# the 2.1.302 bundle) merges the organisation of whatever token a process holds
+# into it whenever the account matches, so after a swap between two
+# organisations of one account (one email's personal plan and Team seat), a
+# session still holding the outgoing token writes the outgoing organisation
+# back, for seconds to hours, while the incoming credential serves every
+# request. Named from that identity, the incoming login's windows were cached
+# under the outgoing name, the switcher judged the wrong login's headroom from
+# them, and acct_save's plan check refused to vault a renewed credential
+# (2026-10-17). So when the installed credential's plan contradicts the
+# identity's, the live login is the one vaulted entry with the identity's
+# email, the credential's plan and the credential's sign-in: the same access
+# token, or sign-in ends within a minute of each other, which renewal never
+# moves. The sign-in test keeps a swap to another account, caught between its
+# two writes, from naming a third login, since the email there is the outgoing
+# login's. None or several leave the identity's name, and two organisations of
+# one plan type are not distinguished this way. Only the live identity is
+# checked: a file passed in is a snapshot or a vault entry, and names itself.
+#
+# _SESSION_PLAN_CLASH is a jq fragment run on an oauthAccount with $cred bound
+# to the credentials file's text. It yields claude_<subscriptionType> when that
+# and organizationType are both present and disagree, else "". `try` keeps a
+# credentials file that is not valid JSON from failing the read, which would
+# name the login unknown; an absent or unreadable one is read as /dev/null.
+_SESSION_PLAN_CLASH='(try ($cred | fromjson | .claudeAiOauth.subscriptionType // "") catch "") as $s
+  | (.organizationType // "") as $o
+  | if $s != "" and $o != "" and $o != "claude_\($s)" then "claude_\($s)" else "" end'
 session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and the
-  local e t n s       # mid-wait flip check re-read the live value inside one process
-  IFS=$'\037' read -r e t n < <(jq -r '.oauthAccount
+  local e t n w v s cred=/dev/null   # mid-wait flip check re-read the live value inside one process
+  if [ $# -eq 0 ] && [ -s "$SESSION_CFG/.credentials.json" ] && [ -r "$SESSION_CFG/.credentials.json" ]; then
+    cred="$SESSION_CFG/.credentials.json"
+  fi
+  IFS=$'\037' read -r e t n w < <(jq -r --rawfile cred "$cred" '.oauthAccount
       | [(.emailAddress // ""),
          (.organizationType // (if (.seatTier // "") != "" then "seat" else "" end)),
-         (.organizationName // .organizationUuid // "")]
+         (.organizationName // .organizationUuid // ""),
+         ('"$_SESSION_PLAN_CLASH"')]
       | join("\u001f")' "${1:-$SESSION_CFG/.claude.json}" 2>/dev/null || true) || true
   [ -n "$e" ] || { printf 'unknown\n'; return 0; }
+  if [ -n "$w" ] && v=$(_session_vault_entry "$e" "$w" "$cred"); then
+    session_login_read "$v"; return 0
+  fi
   case "$t" in
     ""|claude_max|claude_pro|claude_free) ;;
     *) s=$(printf '%s' "$n" | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9]/-/g' -e 's/--*/-/g' -e 's/^-//' -e 's/-$//')
@@ -135,6 +170,40 @@ session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and 
        e="$e+$s" ;;
   esac
   printf '%s\n' "${e//[!A-Za-z0-9@._+-]/_}"
+}
+# The one vault entry with this email and organisation type that holds the
+# credential's sign-in (the rule above), or a non-zero return for none, several,
+# or a vault jq cannot read through: it stops at an unparseable file, so the
+# entries after it would go unexamined and a match before it is not known to
+# be the only one.
+_session_vault_entry() {  # EMAIL ORGANIZATION_TYPE CREDENTIALS -> a vault path
+  local e="$1" t="$2" c="$3" m nl=$'\n'
+  set -- "$SESSION_ACCOUNTS_DIR"/*.json
+  [ -e "$1" ] || return 1
+  m=$(jq -r --arg e "$e" --arg t "$t" --slurpfile c "$c" '
+        ($c[0].claudeAiOauth // {}) as $l
+        | select(.oauthAccount.emailAddress == $e and .oauthAccount.organizationType == $t)
+        | (.claudeAiOauth // {}) as $v
+        | ($v.refreshTokenExpiresAt // 0) as $ve | ($l.refreshTokenExpiresAt // 0) as $le
+        | select((($v.accessToken // "") != "" and $v.accessToken == $l.accessToken)
+                 or ($ve > 0 and $le > 0
+                     and (if $ve > $le then $ve - $le else $le - $ve end) <= 60000))
+        | input_filename' "$@") || return 1
+  case "$m" in ""|*"$nl"*) return 1 ;; esac
+  printf '%s\n' "$m"
+}
+# The file whose oauthAccount is the live login's: .claude.json, or the vault
+# entry session_login_read names the login from when the installed credential's
+# plan contradicts it. For a caller that keeps the identity, not just the name.
+session_identity_file() {
+  local f="$SESSION_CFG/.claude.json" c="$SESSION_CFG/.credentials.json" e w v
+  if [ -s "$c" ] && [ -r "$c" ]; then
+    IFS=$'\037' read -r e w < <(jq -r --rawfile cred "$c" \
+        '.oauthAccount | [(.emailAddress // ""), ('"$_SESSION_PLAN_CLASH"')] | join("\u001f")' \
+        "$f" 2>/dev/null || true) || true
+    [ -n "$w" ] && v=$(_session_vault_entry "$e" "$w" "$c") && f=$v
+  fi
+  printf '%s\n' "$f"
 }
 # Memoised: read at most once per process, and only when something asks.
 _session_login_memo=""

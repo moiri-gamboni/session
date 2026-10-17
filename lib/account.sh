@@ -486,14 +486,16 @@ acct_lock_file() { printf '%s\n' "$SESSION_DATA/switch.lock"; }
 # what authenticates, so an entry holding the live one moves the box nowhere
 # whatever else it carries, and the live file holds a refresh token an entry
 # saved from an earlier state of it may not. The live credentials file is
-# passed in, and the live identity read from the config dir, because whether an
-# entry may be switched to is a question about the entry and the machine's
-# current state together.
+# passed in, and the live identity read where session_identity_file finds it
+# (the live login's vault entry while a session has written another
+# organisation into .claude.json, which would otherwise screen out the very
+# seat the box should move to), because whether an entry may be switched to is
+# a question about the entry and the machine's current state together.
 acct_entry_ok() {  # VAULTFILE LIVE_CREDENTIALS
   acct_token_ok "$1" || return 1
   jq -e '(.claudeAiOauth.expiresAt // 0) != 0' "$1" >/dev/null 2>&1 || return 1
   ! acct_signin_ended "$1" || return 1
-  ! acct_same_seat "$1" "$(acct_cfg)/.claude.json" || return 1
+  ! acct_same_seat "$1" "$(session_identity_file)" || return 1
   ! acct_holds_live_token "$1" "$2"
 }
 # Whether a vault entry is the live account in the live organisation filed under
