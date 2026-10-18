@@ -1,4 +1,5 @@
-import type { Register } from 'claude-code'
+import type { On } from 'claude-code'
+import type { MainLoop } from './main-loop'
 
 // Keep Claude Code's usage-limit menu from opening by itself while the
 // auto-resume waiter is wired, because the open menu holds the wake-up.
@@ -24,9 +25,9 @@ import type { Register } from 'claude-code'
 // runs no command and opens no panel; the answer is drawn as the command's
 // output, under this plugin's name.
 //
-// The death is read off turn.complete, rather than classic.StopFailure, which
-// names the error but does not run in a plugin a person installs where an
-// organization manages Claude Code. turn.complete does not say which error
+// The death is read off turn.complete (main-loop.ts), rather than
+// classic.StopFailure, which names the error but does not run in a plugin a
+// person installs where an organization manages Claude Code. turn.complete does not say which error
 // ended the turn, and that is enough: only a usage-limit death is followed by
 // the automatic open, and a person who types the command within WINDOW_MS of
 // any other error just types it twice. Observed on Claude Code 2.1.302.
@@ -47,17 +48,10 @@ const waiterWired = (hooks: unknown) =>
   ((hooks as { StopFailure?: { hooks?: HookEntry[] }[] } | undefined)?.StopFailure ?? []).some((g) =>
     (g.hooks ?? []).some((h) => h.asyncRewake === true && (h.command ?? '').includes('--rewake-waiter')))
 
-export const register: Register = (on) => {
-  let diedAt: number | undefined
-
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined && e.reason === 'error') diedAt = await $.clock.now()
-    return next(e)
-  })
-
+export const register = (on: On, loop: MainLoop) => {
   on('command.run', { command: 'rate-limit-options' }, async ($, e, next) => {
-    const died = diedAt
-    diedAt = undefined
+    const died = loop.diedAt
+    loop.diedAt = undefined
     if (died === undefined || (await $.clock.now()) - died > WINDOW_MS) return next(e)
     if (!waiterWired((await $.settings.read()).hooks)) return next(e)
     return {

@@ -31,8 +31,16 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG }, marker = MARKER, refu
   })
   on('ui.log', () => ({ value: undefined }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
   return { clock, fs, runs }
 }
+
+// A main-loop turn, begun and ended by the test.
+const begin = ($: { turn: { start: (e: { text: string; turnId: string }) => Promise<unknown> } }) =>
+  $.turn.start({ text: '', turnId: 't1' })
+const end = ($: { turn: { complete: (e: { answer: string; durationMs: number; isAborted: boolean; turnId: string; reason: 'answer' }) => Promise<unknown> } }) =>
+  $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
 
 test('a marker that does not move runs nothing', async ($, on) => {
   const w = world(on)
@@ -153,4 +161,66 @@ test('SESSION_LOGIN_SWITCH_MARKER names the marker in place of the config direct
   await w.clock.advance(5_000)
   expect(w.fs.asked).not.toContain(MARKER)
   expect(w.runs).toEqual([NOTE])
+})
+
+// A command queued during a turn waits under the conversation until the session
+// is idle; held here instead, it is queued only when it can run.
+test('a switch seen during a turn reloads once the turn has ended', async ($, on) => {
+  const w = world(on)
+  w.fs.mtime = 1000
+  await $.session.start(START)
+  await begin($)
+  w.fs.mtime = 2000
+  w.fs.text = SWITCH
+  await w.clock.advance(60_000)
+  expect(w.runs).toEqual([])
+  await end($)
+  await w.clock.advance(5_000)
+  expect(w.runs).toEqual([NOTE])
+})
+
+test('an idle moment shorter than the settle time is not taken', async ($, on) => {
+  const w = world(on)
+  w.fs.mtime = 1000
+  await $.session.start(START)
+  await begin($)
+  w.fs.mtime = 2000
+  await w.clock.advance(4_000)
+  await end($)
+  await w.clock.advance(1_000)
+  expect(w.runs).toEqual([])
+  await w.clock.advance(5_000)
+  expect(w.runs).toEqual(['reload-plugins'])
+})
+
+test('a turn that starts as the last one ends is no idle moment', async ($, on) => {
+  const w = world(on)
+  w.fs.mtime = 1000
+  await $.session.start(START)
+  await begin($)
+  w.fs.mtime = 2000
+  await w.clock.advance(5_000)
+  await end($)
+  await begin($)
+  await w.clock.advance(30_000)
+  expect(w.runs).toEqual([])
+  await end($)
+  await w.clock.advance(5_000)
+  expect(w.runs).toEqual(['reload-plugins'])
+})
+
+test('two switches during one turn reload once, with the later note', async ($, on) => {
+  const w = world(on)
+  w.fs.mtime = 1000
+  await $.session.start(START)
+  await begin($)
+  w.fs.mtime = 2000
+  w.fs.text = SWITCH
+  await w.clock.advance(5_000)
+  w.fs.mtime = 3000
+  w.fs.text = 'from=b@example.com\nto=c@example.com\nreason=session account use\n'
+  await w.clock.advance(5_000)
+  await end($)
+  await w.clock.advance(5_000)
+  expect(w.runs).toEqual(['reload-plugins login switched from b@example.com to c@example.com (session account use)'])
 })

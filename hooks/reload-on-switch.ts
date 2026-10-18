@@ -1,4 +1,5 @@
-import type { Register } from 'claude-code'
+import type { On } from 'claude-code'
+import type { MainLoop } from './main-loop'
 
 // After `session account use` or an automatic switch, make this session fetch
 // its claude.ai connectors again, from the login now live.
@@ -35,11 +36,19 @@ import type { Register } from 'claude-code'
 // without a note: the reload is the point. Observed on Claude Code 2.1.301.
 //
 // $.command.run queues the reload until the session is idle, so a turn under
-// way at the switch keeps failing its connector calls until it ends. A reload
-// keeps this module as loaded unless its code changed, so `seen` is set before
-// the reload is queued: set after it, a reload that keeps failing would be
-// tried again on every poll. Where the code did change, the fresh copy reads
-// the marker at its own start. Either way each switch reloads once.
+// way at the switch keeps failing its connector calls until it ends. A command
+// queued during a turn is drawn under the conversation ("Prompt from the
+// session plugin") until it runs, and in a session its work keeps busy, with
+// notifications and typed prompts taking the queue's turn ahead of it, that
+// can be most of an hour. So a switch seen during a turn is held here, and the
+// reload is queued at the first poll that finds the main loop idle for
+// SETTLE_MS: long enough not to land between two queued turns, which follow
+// each other within milliseconds. Two switches in one busy stretch reload once,
+// with the later note. A reload keeps this module as loaded unless its code
+// changed, so `seen` is set before the reload is queued: set after it, a
+// reload that keeps failing would be tried again on every poll. Where the code
+// did change, the fresh copy reads the marker at its own start. Either way each
+// switch reloads once.
 //
 // Two shorter routes did not work when tested. MCP_DISCOVERY_CACHE=1 arms
 // Claude Code's own login-change watcher, but the watcher reads the identity a
@@ -52,10 +61,11 @@ import type { Register } from 'claude-code'
 // Claude Code changes how it loads claude.ai connectors.
 const MARKER = '.session-login-switch'
 const POLL_MS = 5000
+const SETTLE_MS = 2000
 
 const field = (text: string, key: string) => text.match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1]
 
-export const register: Register = (on) => {
+export const register = (on: On, loop: MainLoop) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const cfg = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
@@ -67,18 +77,25 @@ export const register: Register = (on) => {
     // 0 while there is no marker, so the first one ever written is a switch too.
     const mtime = () => $.fs.stat(path).then((s) => s.mtimeMs, () => 0)
     let seen = await mtime()
+    // The reload a switch asked for and the idle main loop has not run yet:
+    // its note, '' for none.
+    let pending: string | undefined
     $.clock.every(POLL_MS, () => {
-      void mtime().then(async (now) => {
-        if (now === seen) return
-        seen = now
-        // Reads the marker only after its mtime moved, and a torn or missing
-        // file costs the note, never the reload.
-        const text = await $.fs.read(path).catch(() => '')
-        const [from, to, why] = [field(text, 'from'), field(text, 'to'), field(text, 'reason')]
-        await $.command.run(from && to && why
-          ? { command: 'reload-plugins', args: `login switched from ${from} to ${to} (${why})` }
-          : { command: 'reload-plugins' })
-      }).catch((err: unknown) => {
+      void (async () => {
+        const now = await mtime()
+        if (now !== seen) {
+          seen = now
+          // Reads the marker only after its mtime moved, and a torn or missing
+          // file costs the note, never the reload.
+          const text = await $.fs.read(path).catch(() => '')
+          const [from, to, why] = [field(text, 'from'), field(text, 'to'), field(text, 'reason')]
+          pending = from && to && why ? `login switched from ${from} to ${to} (${why})` : ''
+        }
+        if (pending === undefined || loop.busy || (await $.clock.now()) - loop.endedAt < SETTLE_MS) return
+        const note = pending
+        pending = undefined
+        await $.command.run(note ? { command: 'reload-plugins', args: note } : { command: 'reload-plugins' })
+      })().catch((err: unknown) => {
         $.ui.log(`session: /reload-plugins after a login switch failed: ${String(err)}`)
       })
     })

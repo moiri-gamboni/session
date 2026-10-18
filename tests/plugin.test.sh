@@ -35,8 +35,11 @@ else
     trap 'rm -rf "$TMP"' EXIT
     claude plugin validate "$SDIR" > "$TMP/validate" 2>&1; rc=$?
     report 0 "$rc" "case 30: claude plugin validate accepts the plugin"
-    report yes "$(grep -q 'register.ts hooks: session.start, turn.complete, command.run{command=rate-limit-options}' "$TMP/validate" && echo yes || echo no)" \
-        "case 30: ... and reads the hooks module as hooking session.start, turn.complete and the usage-limit menu"
+    hooked=$(grep 'register.ts hooks: ' "$TMP/validate")
+    for h in turn.start turn.complete session.start 'command.run{command=rate-limit-options}'; do
+        report yes "$(printf '%s' "$hooked" | grep -qF -- "$h" && echo yes || echo no)" \
+            "case 30: ... and reads the hooks module as hooking $h"
+    done
     claude plugin test "$SDIR" > "$TMP/test" 2>&1; rc=$?
     sed 's/^/      /' "$TMP/test"
     report 0 "$rc" "case 30: claude plugin test passes the module's tests"

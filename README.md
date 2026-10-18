@@ -417,7 +417,7 @@ Claude Code draws that command in the transcript with a note for its arguments, 
 
 The reason is `session account use` for a manual switch. For an automatic one it is the windows the old login had spent (`5h limit`, `weekly limit`, `Fable limit`, or several, as in `5h, weekly limits`), or `credential rejected` or `credential blank` when its credential was refused or held no token.
 
-- The reload waits until the session is idle, so a turn under way at the switch keeps failing its connector calls until it ends.
+- The reload waits until the session is idle, so a turn under way at the switch keeps failing its connector calls until it ends. The module queues it only then: queued during a turn, Claude Code would show it as a pending "Prompt from the session plugin" row under the conversation for as long as the session stays busy. Two switches in one busy stretch reload once, with the later note.
 - It is a whole `/reload-plugins`: the session's plugins, skills, agents and hooks are reloaded. Background shells and subagents keep running through it; whether a subagent already running at the switch gets the new connectors is untested.
 - A session gets the new login's connectors. One connected at claude.ai only on the previous login stops working in it, and one only the new login has appears, so connecting the same set on every login makes a switch invisible.
 - The marker is three lines, `from=<old login>`, `to=<new login>` and `reason=<reason>`, renamed into place so a poll never reads half of it. A marker without them, or one the module cannot read, still reloads, with no note. A session started after the marker was written shows nothing for it.
