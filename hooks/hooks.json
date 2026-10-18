@@ -1,1 +1,1 @@
-{ "modules": ["./reload-on-switch.ts"] }
+{ "modules": ["./register.ts"] }

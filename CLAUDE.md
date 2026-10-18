@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`session` is one bash CLI (`session`), its status line (`statusline.sh`), an installer (`install.sh`, `uninstall.sh`), and a plugin carrying a skill (`skills/session/SKILL.md`) and a hooks module (`hooks/reload-on-switch.ts`). README.md is the contract for users and anything that reads the CLI's output; this file is for changing the code.
+`session` is one bash CLI (`session`), its status line (`statusline.sh`), an installer (`install.sh`, `uninstall.sh`), and a plugin carrying a skill (`skills/session/SKILL.md`) and a hooks module (`hooks/register.ts`, which registers `hooks/reload-on-switch.ts` and `hooks/rate-limit-menu.ts`). README.md is the contract for users and anything that reads the CLI's output; this file is for changing the code.
 
 ## Commands
 
