@@ -10,28 +10,35 @@ import type { Register } from 'claude-code'
 // a command panel that holds the session's queue: the waiter's wake-up, which
 // arrives as a queued task notification, and the /reload-plugins the switch
 // module queues both wait until someone presses Esc, so a switch to a login
-// with room reached the session only when a person came back to it. Within a
-// day of the reset Claude Code continues by itself and opens no menu, and
-// nothing here acts.
+// with room would not reach the session until a person did. Within a day of
+// the reset Claude Code continues by itself and opens no menu, and nothing
+// here acts.
 //
 // The menu opens by running the command as if typed: its command.run carries
 // the same origin (`composer`) as the person typing it. What distinguishes
 // the automatic one is that it follows the end of a main-loop turn that died
 // on an API error by about a tenth of a second. So the first
-// rate-limit-options within WINDOW_MS of such a death is answered here, and
-// every other one opens the menu: typing /rate-limit-options opens it, at once
-// after a death too, by typing it a second time. Answering without next() runs
-// no command and opens no panel; the answer is drawn as the command's output,
-// under this plugin's name. The death is read off turn.complete, which names no error
-// kind, rather than classic.StopFailure, which does: a classic hook does not
-// run in a plugin a person installs where an organization manages Claude Code.
-// Any error will do, since the menu opens only after a usage limit. Observed on
-// Claude Code 2.1.302.
+// rate-limit-options within WINDOW_MS of such a death is answered here,
+// whoever sent it, and every later one opens the menu: to see the menu
+// straight after a death, type the command again. Answering without next()
+// runs no command and opens no panel; the answer is drawn as the command's
+// output, under this plugin's name.
+//
+// The death is read off turn.complete, rather than classic.StopFailure, which
+// names the error but does not run in a plugin a person installs where an
+// organization manages Claude Code. turn.complete does not say which error
+// ended the turn, and that is enough: only a usage-limit death is followed by
+// the automatic open, and a person who types the command within WINDOW_MS of
+// any other error just types it twice. Observed on Claude Code 2.1.302.
 //
 // Only while the waiter is wired (a StopFailure entry running
 // `--rewake-waiter` with asyncRewake): without it, as after an install with
 // --no-rewake, the menu's own "continue automatically" choice is the only
 // wake-up there is, and the menu is left alone.
+//
+// The automatic open follows the death by 80-105 ms; 5 s leaves room for a
+// loaded machine and stays short enough that a menu asked for later is not
+// taken for it.
 const WINDOW_MS = 5_000
 
 type HookEntry = { command?: string; asyncRewake?: boolean }
