@@ -5039,8 +5039,11 @@ else
 echo tick >> "$AB/ticks"
 exit 0
 ATICKEOF
-    cat > "$AB/inotifywait" <<'AINOEOF'
+    # A case that needs the config directory to change while the waiter sleeps
+    # writes an executable $AB/on-wait, which the next watch runs once.
+    cat > "$AB/inotifywait" <<AINOEOF
 #!/bin/sh
+[ -x "$AB/on-wait" ] && "$AB/on-wait" && rm -f "$AB/on-wait"
 exit 0
 AINOEOF
     cat > "$AB/date" <<ACLKEOF
@@ -5169,6 +5172,9 @@ AASEOF
     report 'hold cooldown' "$(awk -F'\t' 'NR==2{print $2, $6}' "$WA3/data/switch-log.tsv")" \
         "arm: ... it holds, which is what bounds an authentication storm"
     report tok-b "$(atok "$WA3")" "arm: ... and swaps nothing"
+    report 216 "$(aticks)" "arm: ... having watched a day for a credential change that never came"
+    report absent "$([ -e "$WA3/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
+        "arm: ... and leaving no waiter behind"
 
     # Every documented sibling of authentication_failed decides on the same gate.
     for aerr in oauth_org_not_allowed account_on_hold billing_error cloud_credential_error; do
@@ -5237,6 +5243,68 @@ AASEOF
     report 10 "$(aticks)" "arm: ... having slept the whole way to the 5h reset"
     report 1 "$(arows "$WA4")" "arm: ... and taking no decision of its own"
     wait "$ALK" 2>/dev/null
+
+    # ── an authentication death that moves nothing waits for a new credential ─
+    # No reset lifts it; a credential that changes does. Here the decision finds
+    # another one in flight, which then installs another login: the shape of a
+    # death one second before another session's switch.
+    WA16=$(aworld); CA16=$(curlstub)
+    alive "$WA16" a@example.com tok-a
+    aent "$WA16" a@example.com tok-a; aent "$WA16" b@example.com tok-b
+    adead "$CA16" tok-a; abody "$CA16" tok-b 10 10 10
+    mkcache "$WA16" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    WN16=$(aworld); alive "$WN16" b@example.com tok-b   # what the other decision installs
+    printf '#!/bin/sh\ncp %s %s %s/\n' "$WN16/cfg/.claude.json" "$WN16/cfg/.credentials.json" \
+        "$WA16/cfg" > "$AB/on-wait"; chmod +x "$AB/on-wait"
+    lock_run "$WA16/data/switch.lock" "$AREALSLEEP" 5 &
+    ALK=$!
+    sleep 1
+    arun "$WA16" "$CA16" authentication_failed; rc=$?
+    report 2 "$rc" "arm: an authentication death that moves nothing wakes when another login is installed"
+    report yes "$(asaid 'login switched (a@example.com → b@example.com)')" \
+        "arm: ... naming the login it died on and the one now live"
+    report 0 "$(arows "$WA16")" "arm: ... taking no decision of its own while another was in flight"
+    report absent "$([ -e "$WA16/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
+        "arm: ... leaving no waiter behind"
+    wait "$ALK" 2>/dev/null; rm -f "$AB/on-wait"
+
+    # A fresh sign-in to the same login, after Claude Code blanked the token it
+    # could not renew: no other login is installed, the token is new.
+    WA17=$(aworld); CA17=$(curlstub)
+    alive "$WA17" a@example.com ""
+    aent "$WA17" a@example.com tok-a; aent "$WA17" b@example.com tok-b
+    abody "$CA17" tok-b 10 10 10
+    mkcache "$WA17" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    printf '{"claudeAiOauth":{"accessToken":"tok-a2","expiresAt":%s000}}\n' "$AEXP" > "$WA17/renewed.json"
+    printf '#!/bin/sh\ncp %s %s\n' "$WA17/renewed.json" "$WA17/cfg/.credentials.json" > "$AB/on-wait"
+    chmod +x "$AB/on-wait"
+    lock_run "$WA17/data/switch.lock" "$AREALSLEEP" 5 &
+    ALK=$!
+    sleep 1
+    arun "$WA17" "$CA17" authentication_failed; rc=$?
+    report 2 "$rc" "arm: ... and when the same login signs in again"
+    report yes "$(asaid 'a@example.com has a new credential')" "arm: ... saying so"
+    report 1 "$(aticks)" "arm: ... at the first change the watch sees"
+    wait "$ALK" 2>/dev/null; rm -f "$AB/on-wait"
+
+    # A cap death is not lifted by a renewal: woken on one, the session would retry
+    # into the same cap every time Claude Code renews its token.
+    WA18=$(aworld); CA18=$(curlstub)
+    alive "$WA18" a@example.com tok-a
+    aent "$WA18" a@example.com tok-a; aent "$WA18" b@example.com tok-b
+    abody "$CA18" tok-a 100 10 10; abody "$CA18" tok-b 10 10 10
+    mkcache "$WA18" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    printf '{"claudeAiOauth":{"accessToken":"tok-a2","expiresAt":%s000}}\n' "$AEXP" > "$WA18/renewed.json"
+    printf '#!/bin/sh\ncp %s %s\n' "$WA18/renewed.json" "$WA18/cfg/.credentials.json" > "$AB/on-wait"
+    chmod +x "$AB/on-wait"
+    lock_run "$WA18/data/switch.lock" "$AREALSLEEP" 5 &
+    ALK=$!
+    sleep 1
+    arun "$WA18" "$CA18" rate_limit; rc=$?
+    report 2 "$rc" "arm: a cap death sleeps through a renewal of its login's token"
+    report yes "$(asaid '5h rate-limit window has reset')" "arm: ... to the reset it derived"
+    report no "$(asaid 'new credential')" "arm: ... never waking on the renewal"
+    wait "$ALK" 2>/dev/null; rm -f "$AB/on-wait"
 
     # ── the insertion point: above the exit that used to end it here ──────────
     WA5=$(aworld); CA5=$(curlstub)
