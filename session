@@ -2287,7 +2287,7 @@ Lookup (any session, both directions; 8-char table ids work as prefixes):
 
 Reboot survival (tmux only; `session reboot -h`, `session resume -h`):
   session reboot [-n] [-y]         snapshot every live interactive session, then
-                                   reboot; -n prints the snapshot and stops, -y
+                                   reboot; -n writes the snapshot and stops, -y
                                    skips the prompt (needed without a terminal)
   session resume [--scan [H]]      reopen the snapshotted sessions, one tmux
                                    window each; --scan takes every session with

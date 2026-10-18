@@ -494,7 +494,7 @@ Write that line with your own editor, never with `sudo`: it changes the file's o
 
 ## Reboot and resume
 
-`session reboot` snapshots every live interactive session to the resume queue and reboots (`sudo systemctl reboot`, or `sudo shutdown -r now` where there is no systemctl); `session resume` reopens one tmux window per snapshotted session and clears the queue. `--scan [HOURS]` is the recovery path when no snapshot was taken, reading the transcript store instead. `-n` prints without doing anything.
+`session reboot` snapshots every live interactive session to the resume queue and reboots (`sudo systemctl reboot`, or `sudo shutdown -r now` where there is no systemctl); `session resume` reopens one tmux window per snapshotted session and clears the queue. `--scan [HOURS]` is the recovery path when no snapshot was taken, reading the transcript store instead. `session reboot -n` writes and prints the snapshot without rebooting, so a shutdown started some other way still comes back with its sessions; `session resume -n` prints what it would reopen and leaves the queue alone.
 
 Both **refuse with a message naming tmux** when tmux is absent. `session peers` works without tmux (it reads Claude Code's presence registry), and `--focus-mark` is a silent no-op.
 
