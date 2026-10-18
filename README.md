@@ -365,7 +365,7 @@ The list is a table:
          3  team@example.com                         -     -       -     -        n/a    -
 ```
 
-`live` in the first column marks the login every session here is using, and `out` a login whose sign-in has ended, with a line under the table saying so.
+`live` in the first column marks the login every session here is using; `out` marks a saved login whose sign-in has ended, and a line under the table then says what that means.
 
 | Column | Content |
 |---|---|

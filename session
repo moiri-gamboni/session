@@ -1426,8 +1426,9 @@ acct_main() {
         [ -n "$vf" ] || continue
         i=$(( i + 1 ))
         name=$(acct_name_of "$vf")
-        # A frozen figure older than five hours reads as ~0%, so a login whose
-        # sign-in has ended would otherwise list as the emptiest one there is.
+        # A frozen figure whose window has since reset reads as ~0%, so a login
+        # whose sign-in has ended would otherwise list as the emptiest one there
+        # is. The live login keeps its own marker.
         mark=""
         if [ "$name" = "$live" ]; then mark=live
         elif acct_signin_ended "$vf"; then mark=out; anyout=1; fi
@@ -1447,16 +1448,16 @@ acct_main() {
         return 1; }
       vf=$(acct_resolve "$m") || return 1
       email=$(acct_name_of "$vf")
+      # On the live login with a blank token, reinstalling its saved copy is the
+      # restore doctor and the sign-out push advise, so it goes ahead.
+      if [ "$email" = "$(acct_live_login)" ] && ! acct_token_blank "$cfg/.credentials.json"; then
+        echo "session account: already on $email"; return 0
+      fi
       # Installed, an ended sign-in only fails its renewal, and Claude Code
       # blanks the token: every session on the machine is then signed out.
       if acct_signin_ended "$vf"; then
         echo "session account use: $email's sign-in ended on $(fmt_epoch "$(jq -r '.claudeAiOauth.refreshTokenExpiresAt / 1000 | floor' "$vf")" '%Y-%m-%d %H:%M %Z'), so Claude Code cannot renew it and installing it would sign every session out; run /login to sign in to it again" >&2
         return 1
-      fi
-      # On the live login with a blank token, reinstalling its saved copy is the
-      # restore doctor and the sign-out push advise, so it goes ahead.
-      if [ "$email" = "$(acct_live_login)" ] && ! acct_token_blank "$cfg/.credentials.json"; then
-        echo "session account: already on $email"; return 0
       fi
       acct_swap "$vf" "$(acct_live_login)" "session account use"
       case $? in

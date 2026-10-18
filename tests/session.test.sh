@@ -1069,6 +1069,17 @@ else
     out=$(sess "$W14" SESSION_ACCOUNTS_DIR="$V" -- account 2>&1)
     report no "$(printf '%s' "$out" | grep -q 'sign-in has ended' && echo yes || echo no)" \
         "case 14: a listing with no ended sign-in carries no such line"
+    # The live login, working, whose saved copy reads as ended (renewed since
+    # the vault last saw it): it is already installed, not refused.
+    W14l=$(world); V14l="$W14l/vault"; mkdir -p "$V14l"
+    mklogin "$W14l" old@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-new","expiresAt":4000000000000,"refreshTokenExpiresAt":2000}}\n' \
+        > "$W14l/cfg/.credentials.json"
+    cp "$V14e/old@example.com.json" "$V14l/"
+    out=$(sess "$W14l" SESSION_ACCOUNTS_DIR="$V14l" -- account use old@ 2>&1); rc=$?
+    report 0 "$rc" "case 14: account use on the working live login whose saved copy has ended exits 0"
+    report yes "$(printf '%s' "$out" | grep -q 'already on old@example.com' && echo yes || echo no)" \
+        "case 14: ... saying it is already on it"
 
     # The macOS shape: credentials live in the Keychain, so there is no
     # .credentials.json to swap. Everything else must keep working.
