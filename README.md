@@ -84,7 +84,7 @@ On a shared machine, prefer a clone under your own home. The `statusLine` comman
 | Hook entries only (`statusLine` refused or declined) | `session time` and everything hook-fed: turn counts, active time, waits, subagent spans. No rate-limit figures at all — the 5h/weekly data exists only as statusline stdin, so `session`, `session usage`, `--guard` and `--wait` have no cache to read and exit 1. |
 | Hook entries + `statusLine` | The overview, `usage`, `--guard`, `--wait`, `--compact`, `account`. `attended_s` falls back to active time and says so (`attended_basis: active`). |
 | The above + the tmux/cron focus lines | Attended time as focused-tab time, idle-capped at `SESSION_ATTEND_GRACE`; `watched` (active ∩ attended); `attended_basis: focus`. |
-| The above + the rewake pair (default) | A session paused by a usage cap wakes itself when the window resets or the login switches; one stopped by an authentication failure, when the login switches or its credential is renewed. With two or more vaulted logins, a cap or authentication death also reaches a decision about moving the box to one of them before the waiter sleeps. |
+| The above + the rewake pair (default) | A session paused by a usage cap wakes itself when the window resets or the login switches; one stopped by an authentication failure, when the login switches or, for a rejected credential, answers again or gets a new token. With two or more vaulted logins, a cap or authentication death also reaches a decision about moving the box to one of them before the waiter sleeps. |
 
 Nothing above is required by anything below it, and `session doctor` names which of them this machine currently has.
 

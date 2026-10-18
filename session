@@ -3726,8 +3726,15 @@ if [ "$mode" = rewake ]; then
     # A live-clean hold means the decision has just probed the live login and it
     # answers: the rejection was momentary (Claude Code blanks the token for an
     # instant while it renews it), or the login was mended before this hook read
-    # it, which would leave the waiter below nothing that will ever change.
-    if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ]; then
+    # it, which would leave the waiter below nothing that will ever change. Once
+    # per session per cooldown: in the probation after a switch every death
+    # decides again, so a login whose usage endpoint answers while its requests
+    # keep failing would otherwise wake the session into the same failure at
+    # every death.
+    if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ] \
+       && [ "$(awk -F'\t' -v s="sid=$hsid" -v t=$(( $(date +%s) - ACCT_COOLDOWN_S )) \
+              '$1 >= t && $2 == "hold" && $6 == "live-clean" && index($8, s) { n++ } END { print n + 0 }' \
+              "$(acct_log_file)" 2>/dev/null)" -le 1 ]; then
       REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
     fi
     if [ -z "$REWSWITCH" ] && [ "$htrig" = cap ]; then
@@ -3778,8 +3785,14 @@ if [ "$mode" = rewake ]; then
   # fd 9, not stderr: this entry's stderr was discarded at the top of the file
   # so that no earlier producer's line can ride in front of the wake message.
   # Nothing else in this file writes to fd 9 — children inherit it and none of
-  # them uses it — so the message is the whole channel.
-  rewake_done() { rewake_release; printf '%s\n' "$1" >&9; exit 2; }
+  # them uses it — so the message is the whole channel. A waiter wakes only
+  # while it owns the pidfile: one replaced since its last look, at its reset or
+  # on its early re-decision, leaves waking no one, as the loop does.
+  rewake_done() {
+    local o=""; { read -r o _ < "$pidf"; } 2>/dev/null
+    [ "$o" = "$$" ] || exit 0
+    rm -f "$pidf"; printf '%s\n' "$1" >&9; exit 2
+  }
   # After the dedup, never before it: a session whose waiter already sleeps is
   # woken by the config-directory watch instead, so one switch delivers one wake.
   [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"

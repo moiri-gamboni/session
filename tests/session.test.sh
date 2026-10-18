@@ -5474,6 +5474,45 @@ AOWEOF
     kill "$AOWNER" 2>/dev/null; wait "$AOWNER" 2>/dev/null
     wait "$ALK" 2>/dev/null; rm -f "$AB/on-wait"
 
+    # A reset waiter replaced in its last chunk, by an authentication death
+    # taking the slot, does not deliver its reset wake.
+    WA29=$(aworld); CA29=$(curlstub)
+    alive "$WA29" a@example.com tok-a
+    aent "$WA29" a@example.com tok-a; aent "$WA29" b@example.com tok-b
+    abody "$CA29" tok-a 100 10 10; abody "$CA29" tok-b 100 10 10    # nothing to move to
+    mkcache "$WA29" a@example.com 100 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    bash -c "exec -a rewake-waiter bash -c 'sleep 60; :'" &
+    AOWNER=$!
+    cat > "$AB/on-wait" <<AOWEOF
+#!/bin/sh
+n=\$(grep -c . "$AB/ticks" 2>/dev/null)
+[ "\${n:-0}" -ge 9 ] || exit 1
+printf '%s auth\n' "$AOWNER" > "$WA29/data/sessions/$UUID.rewaiter"
+AOWEOF
+    chmod +x "$AB/on-wait"
+    arun "$WA29" "$CA29" rate_limit; rc=$?
+    report 0 "$rc" "arm: a reset waiter replaced just before its reset wakes no one"
+    report "$AOWNER auth" "$(cat "$WA29/data/sessions/$UUID.rewaiter" 2>/dev/null)" \
+        "arm: ... and leaves its successor's pidfile alone"
+    kill "$AOWNER" 2>/dev/null; wait "$AOWNER" 2>/dev/null; rm -f "$AB/on-wait"
+
+    # Within the probation after a switch onto the live login every death
+    # decides again; a login whose usage endpoint answers while its requests keep
+    # failing wakes the session once per cooldown, not at every death.
+    WA30=$(aworld); CA30=$(curlstub)
+    alive "$WA30" a@example.com tok-a
+    aent "$WA30" a@example.com tok-a; aent "$WA30" b@example.com tok-b
+    abody "$CA30" tok-a 10 10 10; abody "$CA30" tok-b 10 10 10
+    mkcache "$WA30" a@example.com 10 10 $(( ABASE + 4000 )) $(( ABASE + 5000 ))
+    printf '%s\tswitch\tb@example.com\ta@example.com\tauth\tclimbed\t-\tsid=x;tier=2\n' "$(( ABASE - 100 ))" \
+        > "$WA30/data/switch-log.tsv"
+    arun "$WA30" "$CA30" authentication_failed; rc=$?
+    report 2 "$rc" "arm: in probation, the first live-clean authentication death wakes the session"
+    arun "$WA30" "$CA30" authentication_failed; rc=$?
+    report 0 "$rc" "arm: ... the next one within the cooldown waits instead"
+    report 'hold live-clean' "$(tail -1 "$WA30/data/switch-log.tsv" | cut -f2,6 | tr '\t' ' ')" \
+        "arm: ... although its decision held live-clean too"
+
     # A prompt means the session runs again: it ends an authentication waiter.
     WA27=$(aworld); CA27=$(curlstub)
     alive "$WA27" a@example.com tok-a
