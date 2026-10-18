@@ -3545,8 +3545,10 @@ if [ "$mode" = rewake ]; then
   # threshold every UserPromptSubmit spawn exits 0 in ~no time; once a window
   # crosses it — or a turn dies on a usage cap (the StopFailure path) — the
   # first spawn becomes the waiter, sleeps to the earliest warned reset
-  # (login-switch aware), and exits 2 = wake. Exit 0 on every quiet path — an
-  # asyncRewake hook only wakes on exit 2.
+  # (login-switch aware), and exits 2 = wake. A turn that dies on an
+  # authentication failure has no reset: its waiter waits on the credential
+  # instead (below). Exit 0 on every quiet path — an asyncRewake hook only wakes
+  # on exit 2.
   [ -t 0 ] && exit 0                       # plumbing: needs the hook's stdin JSON
   IFS=$'\t' read -r hsid hev herr < <(jq -r \
     '[(.session_id//""),(.hook_event_name//""),(.error_type//.error//"")]|@tsv' \
@@ -3648,11 +3650,12 @@ if [ "$mode" = rewake ]; then
   }
   # A cap death is not only a reason to sleep: another login may be able to serve
   # the box right now, and `session account auto` is the one place that decides
-  # that. Sets REWSWITCH to the wake-up text when the box moved, and REWNEXT to
-  # the time a hold said its best rejected candidate would climb.
+  # that. Sets REWSWITCH to the wake-up text when the box moved, REWNEXT to the
+  # time a hold said its best rejected candidate would climb, and REWREASON to a
+  # hold's reason.
   rewake_decide() {  # TRIGGER
     local out="" rc=0 ev="" from="" to="" tier=""
-    REWSWITCH=""; REWNEXT=""
+    REWSWITCH=""; REWNEXT=""; REWREASON=""
     # The verb's own diagnostics must never reach this hook's stderr: here
     # stderr IS the wake-up, and only an exit 2 may carry one.
     out=$(acct_auto --trigger "$1" --sid "$hsid" 2>/dev/null); rc=$?
@@ -3679,13 +3682,15 @@ if [ "$mode" = rewake ]; then
                                      "$(_acct_out_val tier "$out")")
     else
       REWNEXT=$(_acct_out_val next_eligible_at "$out")
+      REWREASON=$(_acct_out_val reason "$out")
     fi
   }
-  REWSWITCH=""; REWNEXT=""; htrig=""; authtok=""
-  # The access token an authentication death happened on, or "" where there is
-  # none to read (a blank one, the macOS Keychain). Read before the decision, so
-  # a renewal that lands while it runs still counts as one.
+  REWSWITCH=""; REWNEXT=""; REWREASON=""; htrig=""; authrenew=0; authtok=""
+  # The live access token, or "" where there is none to read (a blank one, the
+  # macOS Keychain, which has no .credentials.json).
   live_token() { jq -r '.claudeAiOauth.accessToken // ""' "$cfg/.credentials.json" 2>/dev/null; }
+  authtail="This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the failure, continue that work."
+  pidf="$snapdir/$hsid.rewaiter"
   if [ "$hev" = StopFailure ]; then
     # a turn that died on a usage cap is capped whatever the (possibly lagging)
     # cache says — this is the only arming path for a cap that arrives mid-turn
@@ -3696,14 +3701,18 @@ if [ "$mode" = rewake ]; then
       *rate_limit*|*usage_limit*) htrig=cap ;;
       # The authentication family. These decide on the ORDINARY cooldown rather
       # than the probation bypass: the outage that produces them has no recent
-      # switch to be in probation from — one interactive authentication failure
-      # landed five minutes after a blank credential write and cost ten and a
-      # half hours — and the cooldown is what bounds an authentication storm to
-      # about one decision a quarter hour. No reset lifts an authentication
-      # failure; what does is a credential that changes, which the waiter below
-      # watches for when the decision moves nothing.
-      *authentication_failed*|*oauth_org_not_allowed*|*account_on_hold*|*billing_error*|*cloud_credential_error*)
-        htrig=auth; authtok=$(live_token) ;;
+      # switch to be in probation from, and the cooldown is what bounds an
+      # authentication storm to about one decision a quarter hour. No reset lifts
+      # them; another login does, and for a rejected credential a new token for
+      # the same login does too (authrenew), which the waiter below watches for
+      # when the decision moves nothing. A billing problem, an account on hold or
+      # an organisation that refuses the login is mended elsewhere and changes
+      # nothing here, so only a switch wakes those. The token is read before the
+      # decision, so a renewal that lands while it runs still counts as one.
+      *authentication_failed*)
+        htrig=auth; authrenew=1; authtok=$(live_token) ;;
+      *oauth_org_not_allowed*|*account_on_hold*|*billing_error*|*cloud_credential_error*)
+        htrig=auth ;;
       *) exit 0 ;;
     esac
     # Ahead of the arming below, which exits outright when the cache names no
@@ -3714,6 +3723,13 @@ if [ "$mode" = rewake ]; then
     # able to rescue the box, and the lock plus the cooldown reduce the fan-in to
     # one real decision.
     rewake_decide "$htrig"
+    # A live-clean hold means the decision has just probed the live login and it
+    # answers: the rejection was momentary (Claude Code blanks the token for an
+    # instant while it renews it), or the login was mended before this hook read
+    # it, which would leave the waiter below nothing that will ever change.
+    if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ]; then
+      REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
+    fi
     if [ -z "$REWSWITCH" ] && [ "$htrig" = cap ]; then
       # When neither window shows warned, the Fable window decides if it is
       # spent, and otherwise whichever generic reset is still ahead (5h first —
@@ -3728,23 +3744,42 @@ if [ "$mode" = rewake ]; then
       fi
     fi
   else
+    # A prompt means the session is running again, so an authentication waiter
+    # has nothing left to wait for: removing its pidfile makes it leave.
+    if [ -s "$pidf" ] && read -r opid okind < "$pidf" && [ "${okind:-}" = auth ]; then
+      rm -f "$pidf"
+    fi
     (( f_warn || w_warn )) || exit 0
   fi
-  # one waiter per session: newest spawn wins the pidfile; a spawn that finds a
-  # live owner leaves quietly, and a deposed owner never delivers a second wake
-  pidf="$snapdir/$hsid.rewaiter"
+  # One waiter per session, recorded as `PID KIND` in the pidfile: KIND reset
+  # sleeps to a window's reset, KIND auth waits on the credential. A spawn that
+  # finds a live owner of its own kind leaves quietly. One of the other kind
+  # takes the slot, because the owner waits for the wrong event: a session
+  # stopped by an authentication failure gains nothing from a reset, and one
+  # that has since hit a cap gains nothing from a new token. The owner it
+  # replaces checks its ownership before anything else and leaves waking no one.
+  # A pidfile with no KIND (written before kinds existed) is a reset waiter.
   # Captured, not piped, for the same reason as the walk above: a SIGPIPE here
   # would read as "the owner is gone" and let a second waiter arm.
-  if [ -s "$pidf" ] && read -r opid < "$pidf" && kill -0 "$opid" 2>/dev/null; then
-    case "$(proc_cmdline "$opid" 2>/dev/null)" in *rewake-waiter*) exit 0 ;; esac
+  wkind=reset; [ "$htrig" = auth ] && wkind=auth
+  if [ -s "$pidf" ] && read -r opid okind < "$pidf" && kill -0 "$opid" 2>/dev/null; then
+    case "$(proc_cmdline "$opid" 2>/dev/null)" in
+      *rewake-waiter*) [ "${okind:-reset}" = "$wkind" ] && exit 0 ;;
+    esac
   fi
   [ -d "$snapdir" ] || mkdir -p "$snapdir"
-  printf '%s\n' $$ > "$pidf.$$" && mv "$pidf.$$" "$pidf"
+  printf '%s %s\n' $$ "$wkind" > "$pidf.$$" && mv "$pidf.$$" "$pidf"
+  # The pidfile goes only while this waiter still owns it: one that was replaced
+  # must not take its successor's record with it.
+  rewake_release() {
+    local o=""; { read -r o _ < "$pidf"; } 2>/dev/null
+    [ "$o" = "$$" ] && rm -f "$pidf"
+  }
   # fd 9, not stderr: this entry's stderr was discarded at the top of the file
   # so that no earlier producer's line can ride in front of the wake message.
   # Nothing else in this file writes to fd 9 — children inherit it and none of
   # them uses it — so the message is the whole channel.
-  rewake_done() { rm -f "$pidf"; printf '%s\n' "$1" >&9; exit 2; }
+  rewake_done() { rewake_release; printf '%s\n' "$1" >&9; exit 2; }
   # After the dedup, never before it: a session whose waiter already sleeps is
   # woken by the config-directory watch instead, so one switch delivers one wake.
   [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"
@@ -3753,10 +3788,11 @@ if [ "$mode" = rewake ]; then
   #
   # An authentication death has no reset to sleep to. It is lifted by the live
   # credential changing: a switch (another session's decision, in flight while
-  # this one found the lock busy, or made later; `session account use`), or a
-  # new token for the same login (a /login, a renewal). So it waits for either,
-  # up to a day, the horizon past which Claude Code's own automatic continue
-  # also stops waiting, and then leaves without waking anyone.
+  # this one found the lock busy, or made later; `session account use`), or,
+  # for a rejected credential, a new token for the same login (a /login, a
+  # renewal). So it waits for that, for a day at most: a login nobody mends in
+  # a day is a session someone will come back to by hand, and the waiter then
+  # leaves without waking anyone. A prompt in the meantime ends it (above).
   if [ "$htrig" = auth ]; then
     target=$(( $(date +%s) + 86400 )); wlabel=""
   elif [ "$fb_warn" = 1 ]; then
@@ -3783,17 +3819,18 @@ if [ "$mode" = rewake ]; then
   esac
   while :; do
     while now=$(date +%s); (( now < eff )); do
+      # Ownership first: a waiter that was replaced or released wakes no one.
+      { read -r opid _ < "$pidf"; } 2>/dev/null || opid=""
+      [ "$opid" = "$$" ] || exit 0
       # 300 s is the longest a flip can go unnoticed — one sleep chunk — so a
       # switch row older than that belongs to some earlier decision, and the
       # wake-up says only what today's text said rather than guessing a tier.
       login_flip && rewake_done "$(rewake_switch_text "$acct" "$NEWACCT" \
         "$(rewake_switch_row "$now" 300 "$NEWACCT" | cut -f3)")"
-      if [ "$htrig" = auth ]; then
+      if [ "$authrenew" = 1 ]; then
         newtok=$(live_token)
-        [ -n "$newtok" ] && [ "$newtok" != "$authtok" ] && rewake_done "The Claude login $acct has a new credential (a fresh sign-in or a renewal) — the authentication failure that stopped the session may no longer apply. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the failure, continue that work."
+        [ -n "$newtok" ] && [ "$newtok" != "$authtok" ] && rewake_done "The Claude login $acct has a new credential (a fresh sign-in or a renewal) — the authentication failure that stopped the session may no longer apply. $authtail"
       fi
-      { read -r opid < "$pidf"; } 2>/dev/null || opid=""
-      [ "$opid" = "$$" ] || exit 0
       r=$(( eff - now )); (( r > 300 )) && r=300; flip_wait "$r"
     done
     (( eff < target )) || break
@@ -3801,7 +3838,7 @@ if [ "$mode" = rewake ]; then
     [ -n "$REWSWITCH" ] && rewake_done "$REWSWITCH"
     eff=$target
   done
-  [ "$htrig" = auth ] && { rm -f "$pidf"; exit 0; }
+  [ "$htrig" = auth ] && { rewake_release; exit 0; }
   rewake_done "The Claude $wlabel rate-limit window has reset to 0% — a fresh window is available. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work. The earlier ⚠ warning no longer applies."
 fi
 
