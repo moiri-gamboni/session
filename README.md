@@ -354,7 +354,7 @@ Claude Code shows a blocked compaction nowhere, so both modes write `sessions/<s
 
 ## Accounts
 
-`session account` lists every vaulted subscription login with its rate-limit headroom and reset countdowns; `use <substring>` swaps the live login in place, atomically, effective on the next request in every session sharing the config dir. Adding a login is just `/login`: the statusline vaults whatever you log into within a render, and the login it replaces was vaulted while it was live, so switching back never re-authenticates. Vault at `SESSION_ACCOUNTS_DIR`, superseded copies under `.history/`.
+`session account` lists every vaulted subscription login with its rate-limit headroom and reset countdowns; `use <substring>` swaps the live login in place, atomically, effective on the next request in every session sharing the config dir. Adding a login is just `/login`: the statusline vaults whatever you log into within a render, and the login it replaces was vaulted while it was live, so switching back never re-authenticates. Vault at `SESSION_ACCOUNTS_DIR`, superseded copies under `.history/`. A login whose sign-in has ended (its refresh token and its access token both expired) is marked `out` in the list and refused by `use`: Claude Code cannot renew it, so installing it would sign every session out, and only a fresh `/login` to it brings it back.
 
 The list is a table:
 
@@ -365,7 +365,7 @@ The list is a table:
          3  team@example.com                         -     -       -     -        n/a    -
 ```
 
-`live` in the first column marks the login every session here is using.
+`live` in the first column marks the login every session here is using, and `out` a login whose sign-in has ended, with a line under the table saying so.
 
 | Column | Content |
 |---|---|

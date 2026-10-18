@@ -1042,6 +1042,34 @@ else
     report no "$(printf '%s' "$out" | grep -qF -- '-1%' && echo yes || echo no)" \
         "case 14: ... and no -1% appears anywhere in the listing"
 
+    # A login whose sign-in has ended (refresh and access token both past) has
+    # only frozen figures, which read as ~0%: it lists as out, and `use` refuses
+    # it, because installed it fails its renewal and every session signs out.
+    W14e=$(world); V14e="$W14e/vault"; mkdir -p "$V14e"
+    mklogin "$W14e" a@example.com
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":4000000000000,"refreshTokenExpiresAt":4000000000000}}\n' \
+        > "$W14e/cfg/.credentials.json"
+    printf '{"email":"a@example.com","login":"a@example.com","oauthAccount":{"emailAddress":"a@example.com"},"claudeAiOauth":{"accessToken":"tok-a","expiresAt":4000000000000,"refreshTokenExpiresAt":4000000000000}}\n' \
+        > "$V14e/a@example.com.json"
+    printf '{"email":"old@example.com","login":"old@example.com","oauthAccount":{"emailAddress":"old@example.com"},"claudeAiOauth":{"accessToken":"tok-old","expiresAt":1000,"refreshTokenExpiresAt":2000}}\n' \
+        > "$V14e/old@example.com.json"
+    out=$(sess "$W14e" SESSION_ACCOUNTS_DIR="$V14e" -- account 2>&1)
+    report out "$(printf '%s\n' "$out" | awk '$3 == "old@example.com" { print $1 }')" \
+        "case 14: a login whose sign-in has ended lists as out"
+    report live "$(printf '%s\n' "$out" | awk '$3 == "a@example.com" { print $1 }')" \
+        "case 14: ... beside the live one, still marked live"
+    report yes "$(printf '%s' "$out" | grep -q 'sign-in has ended' && echo yes || echo no)" \
+        "case 14: ... under a line saying what out means"
+    out=$( (sess "$W14e" SESSION_ACCOUNTS_DIR="$V14e" -- account use old@ >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 14: account use refuses a login whose sign-in has ended"
+    report yes "$(printf '%s' "$out" | grep -q 'run /login' && echo yes || echo no)" \
+        "case 14: ... naming /login as the way back"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$W14e/cfg/.credentials.json")" \
+        "case 14: ... and installing nothing"
+    out=$(sess "$W14" SESSION_ACCOUNTS_DIR="$V" -- account 2>&1)
+    report no "$(printf '%s' "$out" | grep -q 'sign-in has ended' && echo yes || echo no)" \
+        "case 14: a listing with no ended sign-in carries no such line"
+
     # The macOS shape: credentials live in the Keychain, so there is no
     # .credentials.json to swap. Everything else must keep working.
     M14=$(world); MV="$M14/vault"
@@ -3607,7 +3635,8 @@ else
     # take the newer vault entry's place on the way out.
     WVS=$(world); VVS="$WVS/vault"
     mklogin "$WVS" a@example.com
-    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1,"refreshTokenExpiresAt":9000}}\n' > "$WVS/cfg/.credentials.json"
+    # a's sign-in has not ended, or `use` would refuse to switch to it.
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","expiresAt":1,"refreshTokenExpiresAt":4000000000000}}\n' > "$WVS/cfg/.credentials.json"
     sess "$WVS" SESSION_ACCOUNTS_DIR="$VVS" -- account save >/dev/null 2>&1
     mklogin "$WVS" b@example.com
     printf '{"claudeAiOauth":{"accessToken":"tok-b-new","expiresAt":2000,"refreshTokenExpiresAt":9000}}\n' > "$WVS/cfg/.credentials.json"
