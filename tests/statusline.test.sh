@@ -488,6 +488,56 @@ report "" "$(cat "$CALLS")" "case 24: an unknown login never calls account save"
 report present "$(exists "$TMP/data24b/session-log.tsv")" \
     "case 24: ... and the render still does the rest of its work"
 
+echo "--- case 26: a fresh figure at the switch threshold asks for a decision ---"
+
+# The decision runs detached, so the stub's record is polled for rather than
+# read straight after the render returns.
+callwait() {  # -> the stub's record once it has a line, or after ~5 s
+    local n=0
+    while [ ! -s "$CALLS" ] && [ "$n" -lt 25 ]; do sleep 0.2; n=$(( n + 1 )); done
+    cat "$CALLS"
+}
+D26="$TMP/data26"
+touch "$VAULT/$ACCT.json"   # newer than the credentials: no autosave call in the record
+P26a="$TMP/p26a.json"; mkpayload "$SID" 0.1 96 50 "$FR" "$WR" "switch" > "$P26a"
+P26b="$TMP/p26b.json"; mkpayload "$SID" 0.2 97 50 "$FR" "$WR" "switch" > "$P26b"
+P26c="$TMP/p26c.json"; mkpayload "$SID" 0.3 97 98 "$FR" "$WR" "switch" > "$P26c"
+render "$P26a" SESSION_DATA_DIR="$D26" >/dev/null    # first sighting: unowned, never fresh
+: > "$CALLS"
+render "$P26b" SESSION_DATA_DIR="$D26" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 26: a fresh figure below 98% asks for nothing"
+render "$P26c" SESSION_DATA_DIR="$D26" >/dev/null
+report "account auto --trigger usage --sid $SID" "$(callwait)" \
+    "case 26: a fresh weekly figure at 98% asks for a decision on the usage trigger"
+: > "$CALLS"
+render "$P26c" SESSION_DATA_DIR="$D26" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 26: ... and the same figure rendered again asks nothing more"
+
+# Right after a switch, a response that was already in flight still carries the
+# outgoing login's windows while the identity names the incoming one. Its
+# figure must not ask: the previous figure was owned by another login.
+D26s="$TMP/data26s"
+CFG26="$TMP/cfg26"; mkdir -p "$CFG26"
+printf '{"oauthAccount":{"emailAddress":"other@example.com"}}\n' > "$CFG26/.claude.json"
+cp "$CFG/.credentials.json" "$CFG26/.credentials.json"
+touch "$VAULT/other@example.com.json"
+render "$P26a" SESSION_DATA_DIR="$D26s" >/dev/null
+render "$P26b" SESSION_DATA_DIR="$D26s" >/dev/null    # owned by the first login
+: > "$CALLS"
+render "$P26c" SESSION_DATA_DIR="$D26s" CLAUDE_CONFIG_DIR="$CFG26" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" \
+    "case 26: the first fresh figure after a login switch asks nothing, since the login before owned the one it replaced"
+
+D26o="$TMP/data26o"
+render "$P26a" SESSION_DATA_DIR="$D26o" >/dev/null
+: > "$CALLS"
+render "$P26c" SESSION_DATA_DIR="$D26o" SESSION_AUTO_SWITCH=off >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 26: with the switcher off, nothing is asked"
+
 echo "--- case 25: an unreadable lib is a refusal, not a wrong status line ---"
 
 NOLIB="$TMP/shome-nolib"

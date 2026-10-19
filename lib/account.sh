@@ -56,7 +56,8 @@
 # ── 2. constants ──────────────────────────
 # Two intervals, and they are deliberately not one. The cooldown bounds
 # decision storms box-wide: one decision per quarter hour, whatever fires, not
-# one per login. (The blank-credential refusal is the one caller that applies
+# one per login (a usage hold bounds only the usage trigger's own retries; see
+# _acct_past_cooldown). (The blank-credential refusal is the one caller that applies
 # it per login, because its subject is a login rather than the box.) Probation
 # is the narrower window in which a switch that has just happened is still
 # being judged: while its target is the login now live, another death on that
@@ -74,11 +75,14 @@
 ACCT_COOLDOWN_S=900
 ACCT_PROBATION_S=600
 
-# A window counts as spent only when it is capped. A login at 90% of its week
-# still has hours of work in it, and switching away from one, or refusing to
-# switch to one, would strand that. This is deliberately not USAGE_WARN_PCT,
-# which decides when a session is warned, not when a login is out.
-ACCT_SPENT_PCT=100
+# A window counts as spent at 98%, just short of the cap: the status line asks
+# for a decision when a fresh figure reaches it (the usage trigger), so the box
+# moves before any turn dies on the cap, and a candidate this close to its cap
+# is not worth moving every session onto. A login at 90% of its week still has
+# hours of work in it, and switching away from one, or refusing to switch to
+# one, would strand that, so this is deliberately not USAGE_WARN_PCT, which
+# decides when a session is warned, not when a login is out.
+ACCT_SPENT_PCT=98
 
 # ── 3. pure selector ──────────────────────
 
@@ -349,7 +353,8 @@ acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … p
 
 # ── 5. audit log ──────────────────────────
 # Every automatic decision about which login the box runs on leaves one row in
-# `$SESSION_DATA/switch-log.tsv`, and that file is also the switcher's only
+# `$SESSION_DATA/switch-log.tsv` (bar a cooldown hold on the usage trigger,
+# which is not logged: section 6), and that file is also the switcher's only
 # control state: the cooldown and the post-switch probation both read it
 # back.
 #
@@ -362,7 +367,7 @@ acct_probe_all() {  # vault paths on stdin -> login TAB state TAB five TAB … p
 #            decision, not a decision of its own, so it belongs in that
 #            decision's figures and detail and must not compete with the
 #            one-row-per-decision rule.
-#   trigger  cap | auth | manual
+#   trigger  cap | auth | usage | manual
 #   figures  `login=5h/wk/fb` joined by `;`, `*` marking a probe-fresh figure
 #   detail   a `k=v;` bag over sid= http= tier= next_eligible= scoped= notify=.
 #            There is no `recov=`: the waiter's own sleep target already is the
@@ -456,11 +461,13 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 #
 # This section reads globals (SESSION_AUTO_SWITCH, SESSION_SWITCH_NOTIFY,
 # SESSION_HOME) and calls into `session` for the vault and the
-# swap, so unlike section 3 it runs only inside a `session` process. Two of
-# them reach it: a human typing the verb, and the auto-resume waiter on a cap
-# or auth death. The second has no one reading stderr — on that path stderr is
-# the wake channel — which is why every diagnostic here goes to the audit row
-# and the k=v output instead.
+# swap, so unlike section 3 it runs only inside a `session` process. Three of
+# them reach it: a human typing the verb, the auto-resume waiter on a cap or
+# auth death, and the status line when a fresh figure for the live login
+# reaches ACCT_SPENT_PCT. The last two have no one reading stderr — on the
+# waiter's path stderr is the wake channel, and the status line runs the
+# decision detached with its output discarded — which is why every diagnostic
+# here goes to the audit row and the k=v output instead.
 
 # The decision's mutex, resolved per call like the log's path so both follow
 # SESSION_DATA wherever a caller puts it.
@@ -540,11 +547,20 @@ acct_holds_live_token() {  # VAULTFILE LIVE_CREDENTIALS
 # exactly when an authentication death most needs a decision; a cooldown hold
 # is not a decision either, and counting it would slide the window forward on
 # every retry, so the cooldown would never end while anything kept asking.
-_acct_past_cooldown() {  # NOW LIVE
-  local now="$1" live="$2" f last lastsw
+#
+# A hold the usage trigger left bounds only the usage trigger's own retries.
+# It was taken while every session was still running; a cap or authentication
+# death after it has a stopped session behind it, and waiting out a quarter
+# hour on a hold that predates the death would leave that session asleep until
+# a reset rather than moved.
+_acct_past_cooldown() {  # NOW LIVE TRIGGER
+  local now="$1" live="$2" trigger="$3" f last lastsw
   f=$(acct_log_file)
   [ -s "$f" ] || return 0
-  last=$(awk -F'\t' '$2 != "refuse" && $6 != "cooldown" { ts = $1 } END { print ts + 0 }' "$f")
+  last=$(awk -F'\t' -v t="$trigger" '
+    $2 == "refuse" || $6 == "cooldown" { next }
+    t != "usage" && $2 == "hold" && $5 == "usage" { next }
+    { ts = $1 } END { print ts + 0 }' "$f")
   { [ "$last" -gt 0 ] && [ $(( now - last )) -lt "$ACCT_COOLDOWN_S" ]; } || return 0
   # Probation: a switch that has just happened is still being judged. While its
   # target is the login now live, another death on that login re-decides rather
@@ -664,9 +680,13 @@ _acct_decide() {  # TRIGGER SID DRY
 
   # ── the cooldown, box-wide ──
   now=$(now_epoch)
-  if ! _acct_past_cooldown "$now" "$live"; then
+  if ! _acct_past_cooldown "$now" "$live" "$trigger"; then
     ev=hold
-    if [ "$dry" = 1 ]; then ev='dry-run'; else acct_log hold "$live" - "$trigger" cooldown - "sid=$sid"; fi
+    # A usage trigger held here leaves no row: nothing died, and the status
+    # line asks again on the next fresh figure, so a row per ask would only
+    # bury the decisions.
+    if [ "$dry" = 1 ]; then ev='dry-run'
+    elif [ "$trigger" != usage ]; then acct_log hold "$live" - "$trigger" cooldown - "sid=$sid"; fi
     _acct_say "$ev" "$live" - cooldown - -
     return 3
   fi
@@ -752,7 +772,12 @@ _acct_decide() {  # TRIGGER SID DRY
   winner=$(printf '%s' "$rankrows" | acct_rank "$thr")
   if [ -n "$winner" ]; then
     wblocks=$(printf '%s' "$cinfo" | awk -F'\t' -v l="$winner" '$1 == l { print $2; exit }')
-    if acct_admissible "$wblocks" "$liveblocks"; then
+    # On the usage trigger the live login is at ACCT_SPENT_PCT, not dead, and
+    # still serves every model it served, Fable included. A move onto a login
+    # without Fable would stop every Fable session with nothing telling it to
+    # change model, so that move waits for the cap death, whose wake-up says so.
+    if acct_admissible "$wblocks" "$liveblocks" \
+       && { [ "$trigger" != usage ] || [ "$(acct_tier "$wblocks")" = 2 ]; }; then
       to=$winner
       wintier=$(acct_tier "$wblocks")
       winvf=$(printf '%s' "$candmap" | awk -F'\t' -v l="$winner" '$1 == l { print $2; exit }')
@@ -813,7 +838,7 @@ _acct_decide() {  # TRIGGER SID DRY
   esac
 }
 
-acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
+acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run]
   local trigger=manual sid=- dry=0 locked=0 dryflag="" out rc notify msg
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -829,8 +854,8 @@ acct_auto() {  # [--trigger cap|auth|manual] [--sid SID] [--dry-run]
     shift
   done
   case "$trigger" in
-    cap|auth|manual) ;;
-    *) echo "session account auto: --trigger takes cap, auth or manual, not '$trigger'" >&2
+    cap|auth|usage|manual) ;;
+    *) echo "session account auto: --trigger takes cap, auth, usage or manual, not '$trigger'" >&2
        _acct_say fail - - bad-trigger - -; return 5 ;;
   esac
   [ -n "$sid" ] || sid=-

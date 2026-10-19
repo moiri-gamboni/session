@@ -45,7 +45,7 @@ Run `session --guard` before each wave and inside each agent: exit 0 is go, exit
 
 A reset time quoted in a usage-limit error, this session's or a subagent's, belongs to the current login: a login switch lifts the cap at once, so the time is never a deadline or a planning constraint.
 
-**A cap or authentication death may also switch the login by itself** (`session account auto`, run by the same hook) when a saved login serves more than the live one. A wake-up saying the login switched may be that automatic decision, not a person: treat it as the cap lifted and carry on. If it says the new login serves every model except Fable, work that died on a Fable cap must continue on another model; a resumed subagent keeps the model it died on and would hit the same cap again.
+**The login may also switch by itself** (`session account auto`) when a saved login serves more than the live one: on a cap or authentication death, run by the same hook, or before any cap, when the status line sees the live login reach 98% of a window. A switch announced with no cap behind it is that. A wake-up saying the login switched may be that automatic decision, not a person: treat it as the cap lifted and carry on. If it says the new login serves every model except Fable, work that died on a Fable cap must continue on another model; a resumed subagent keeps the model it died on and would hit the same cap again.
 
 ## Switching logins — `session account`
 

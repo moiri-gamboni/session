@@ -172,6 +172,24 @@ elif [ "$_owner" = "$_acct" ] && [ -s "$_cache" ] \
   touch "$_cache"
 fi
 
+# Switch before the cap (`session account auto`, lib/account.sh §6): a fresh
+# figure for the live login at ACCT_SPENT_PCT asks for a decision, so the box
+# moves while every session is still running rather than after a turn has died
+# on the cap. Only a fresh figure asks, and only when the figure it replaced
+# was this login's too: the first response after a switch can still carry the
+# outgoing login's windows, which a decision would then be asked to act on. A
+# session's figures are fresh only when one of its windows moved, so it asks
+# per change of its figures, not per render; the decision's own cooldown bounds
+# what those asks cost. Detached, with every stream closed, because the decision
+# probes each login for up to 5 s and nothing here reads its outcome; its lock,
+# cooldown and audit row are its own.
+if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITCH" = on ]; then
+  . "$SESSION_HOME/lib/account.sh"
+  if [ "$(_intonly "$_f5")" -ge "$ACCT_SPENT_PCT" ] || [ "$(_intonly "$_w7")" -ge "$ACCT_SPENT_PCT" ]; then
+    ( "$SESSION_HOME/session" account auto --trigger usage --sid "$_sid" </dev/null >/dev/null 2>&1 & )
+  fi
+fi
+
 # --- Per-session usage sampling (read by `session usage`) ---
 # cost.total_cost_usd is the session's CUMULATIVE API-equivalent spend, delivered
 # on every render (~10s while active). Append a sample to session-log.tsv whenever

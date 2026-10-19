@@ -4823,28 +4823,106 @@ else
     report 0 "$(dasked "$CD11" tok-e)" \
         "decide: ... and an entry with no expiry is never even asked"
 
-    # ── spent means capped: 100%, whatever USAGE_WARN_PCT says ──────────────
-    # The warn threshold decides when a session is warned. A login at 95% of a
+    # ── spent means 98%, whatever USAGE_WARN_PCT says ────────────────────────
+    # The warn threshold decides when a session is warned. A login at 97% of a
     # window still has work in it, so it neither counts as out when live nor
     # disqualifies a candidate, and a warn threshold the CLI would refuse does
-    # not stop the switcher either.
+    # not stop the switcher either. At 98% it is out on both sides.
     WD12=$(dworld); CD12=$(curlstub)
     dlive "$WD12" a@example.com tok-a
     dvent "$WD12" a@example.com tok-a; dvent "$WD12" b@example.com tok-b
-    dbody "$CD12" tok-a 100 10 10; dbody "$CD12" tok-b 10 95 95
+    dbody "$CD12" tok-a 100 10 10; dbody "$CD12" tok-b 10 97 97
     out=$(sess "$WD12" PATH="$CD12:$PATH" SESSION_ACCOUNTS_DIR="$WD12/vault" SESSION_NOW="$DNOW" \
             SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=ninety -- account auto --trigger cap 2>&1); rc=$?
-    report 0 "$rc" "decide: a candidate at 95% of its week and its Fable is not spent"
+    report 0 "$rc" "decide: a candidate at 97% of its week and its Fable is not spent"
     report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
         "decide: ... so the box moves to it, whatever the warn threshold holds"
+
+    WD12b=$(dworld); CD12b=$(curlstub)
+    dlive "$WD12b" a@example.com tok-a
+    dvent "$WD12b" a@example.com tok-a; dvent "$WD12b" b@example.com tok-b
+    dbody "$CD12b" tok-a 100 10 10; dbody "$CD12b" tok-b 10 98 10
+    out=$(dauto "$WD12b" "$CD12b" --trigger cap)
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: a candidate at 98% of its week is spent, so it is no climb"
 
     WD13=$(dworld); CD13=$(curlstub)
     dlive "$WD13" a@example.com tok-a
     dvent "$WD13" a@example.com tok-a; dvent "$WD13" b@example.com tok-b
-    dbody "$CD13" tok-a 95 95 95; dbody "$CD13" tok-b 10 10 10
+    dbody "$CD13" tok-a 97 97 97; dbody "$CD13" tok-b 10 10 10
     out=$(dauto "$WD13" "$CD13" --trigger cap)
     report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
-        "decide: a live login at 95% on every window is not out, so a death there moves nothing"
+        "decide: a live login at 97% on every window is not out, so a death there moves nothing"
+
+    WD13b=$(dworld); CD13b=$(curlstub)
+    dlive "$WD13b" a@example.com tok-a
+    dvent "$WD13b" a@example.com tok-a; dvent "$WD13b" b@example.com tok-b
+    dbody "$CD13b" tok-a 98 10 10; dbody "$CD13b" tok-b 10 10 10
+    out=$(dauto "$WD13b" "$CD13b" --trigger cap)
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: a live login at 98% of its five hours is out, so the box climbs off it"
+
+    # ── the usage trigger: the status line asking before any turn dies ────────
+    # A fresh figure at the threshold reaches a decision of its own. Its holds
+    # bound only its own retries: a cap or authentication death after one still
+    # decides, because a session is now stopped and the hold said nothing about
+    # what has changed since. A cooldown hold of its own leaves no row — nothing
+    # died, and the next fresh figure asks again.
+    WD13u=$(dworld); CD13u=$(curlstub); DLOG13u="$WD13u/data/switch-log.tsv"
+    dlive "$WD13u" a@example.com tok-a
+    dvent "$WD13u" a@example.com tok-a; dvent "$WD13u" b@example.com tok-b
+    dbody "$CD13u" tok-a 10 98 10; dbody "$CD13u" tok-b 10 10 10
+    out=$(dauto "$WD13u" "$CD13u" --trigger usage --sid sid-u); rc=$?
+    report 0 "$rc" "decide [usage]: a live login at 98% of its week switches on the usage trigger"
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide [usage]: ... to the login that stands higher"
+    report 'switch usage climbed' "$(awk -F'\t' 'NR==1{print $2, $5, $6}' "$DLOG13u")" \
+        "decide [usage]: ... recording the trigger on its row"
+    report "$(printf 'from=a@example.com\nto=b@example.com\nreason=weekly limit')" \
+        "$(cat "$WD13u/cfg/.session-login-switch" 2>&1)" \
+        "decide [usage]: ... and leaving the switch marker running sessions reload on"
+
+    WD13h=$(dworld); CD13h=$(curlstub); DLOG13h="$WD13h/data/switch-log.tsv"
+    dlive "$WD13h" a@example.com tok-a
+    dvent "$WD13h" a@example.com tok-a; dvent "$WD13h" b@example.com tok-b
+    dbody "$CD13h" tok-a 98 10 10; dbody "$CD13h" tok-b 10 10 10
+    printf '%s\thold\ta@example.com\t-\tusage\tno-candidate\t-\tsid=sid-u\n' \
+        $(( DNOW - 100 )) > "$DLOG13h"
+    out=$(dauto "$WD13h" "$CD13h" --trigger usage --sid sid-u2); rc=$?
+    report 'hold cooldown' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide [usage]: a usage hold 100 s ago holds the next usage decision on the cooldown"
+    report 1 "$(grep -c . "$DLOG13h")" "decide [usage]: ... and that cooldown hold writes no row"
+    report 0 "$(dasked "$CD13h" tok-a tok-b)" "decide [usage]: ... having asked the endpoint nothing"
+    out=$(dauto "$WD13h" "$CD13h" --trigger cap --sid sid-c); rc=$?
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide [usage]: a cap death 100 s after a usage hold still decides, and climbs"
+
+    # At 98% the live login still serves every model, Fable included, so the
+    # usage trigger moves only onto a login that does too. A move onto one
+    # whose Fable is spent waits for the cap death, whose wake-up tells a Fable
+    # session to continue on another model.
+    WD13f=$(dworld); CD13f=$(curlstub)
+    dlive "$WD13f" a@example.com tok-a
+    dvent "$WD13f" a@example.com tok-a; dvent "$WD13f" b@example.com tok-b
+    dbody "$CD13f" tok-a 98 10 10; dbody "$CD13f" tok-b 10 10 100
+    out=$(dauto "$WD13f" "$CD13f" --trigger usage --sid sid-u)
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide [usage]: a candidate whose Fable is spent is no move before the cap"
+    report tok-a "$(jq -r '.claudeAiOauth.accessToken' "$WD13f/cfg/.credentials.json")" \
+        "decide [usage]: ... so the live login stays"
+    out=$(dauto "$WD13f" "$CD13f" --trigger cap --sid sid-c)
+    report 'switch b@example.com 1' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide [usage]: ... and the cap death after it still makes that move"
+
+    WD13c=$(dworld); CD13c=$(curlstub)
+    dlive "$WD13c" a@example.com tok-a
+    dvent "$WD13c" a@example.com tok-a; dvent "$WD13c" b@example.com tok-b
+    dbody "$CD13c" tok-a 98 10 10; dbody "$CD13c" tok-b 10 10 10
+    printf '%s\thold\ta@example.com\t-\tcap\tno-candidate\t-\tsid=sid-c\n' \
+        $(( DNOW - 100 )) > "$WD13c/data/switch-log.tsv"
+    out=$(dauto "$WD13c" "$CD13c" --trigger usage --sid sid-u)
+    report 'hold cooldown' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide [usage]: a cap decision 100 s ago holds a usage decision on the cooldown"
 
     # ── a swap that reports success and lands something else ─────────────────
     WD14=$(dworld); CD14=$(curlstub); DLOG14="$WD14/data/switch-log.tsv"

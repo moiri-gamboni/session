@@ -1532,9 +1532,12 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
   auto           decide, once and box-wide, whether to move to another vaulted
                  login: hold unless one stands strictly higher on the
                  capability ladder than the live one (5h and weekly gate every
-                 model, the Fable weekly gates only Fable). Every decision
-                 leaves a row in the data root's switch-log.tsv. Options:
-                 --trigger cap|auth|manual (what asked; default manual),
+                 model, the Fable weekly gates only Fable). A window counts
+                 as spent at 98%, and the status line asks for a decision
+                 when the live login reaches it. Every decision leaves a row
+                 in the data root's switch-log.tsv. Options:
+                 --trigger cap|auth|usage|manual (what asked; default
+                 manual),
                  --sid SID (the session it is for, recorded on the row),
                  --dry-run (rank and print; swaps and sends nothing).
                  Prints k=v lines. Exits 0 switched, 3 held, 4 refused,
@@ -1845,8 +1848,8 @@ doctor_main() {
     doc pending platform "macOS: \`session account\` cannot swap the login (credentials are in the Keychain)"
   fi
 
-  # 11. The automatic switcher: whether a cap death here can move the box onto
-  #     another vaulted login by itself. Read rather than run — invoking
+  # 11. The automatic switcher: whether a cap death here, or the status line's
+  #     98% trigger, can move the box onto another vaulted login by itself. Read rather than run — invoking
   #     `session account auto` would take the decision lock and write an audit
   #     row for a question nobody asked.
   #
@@ -1925,7 +1928,7 @@ doctor_main() {
 
   swmode="${SESSION_AUTO_SWITCH:-on}"
   if [ "$swmode" = off ]; then
-    doc pending switcher "off — SESSION_AUTO_SWITCH=off, so no cap death moves this box; that line is also the feature's instant rollback"
+    doc pending switcher "off — SESSION_AUTO_SWITCH=off, so neither a cap death nor the status line's 98% trigger moves this box; that line is also the feature's instant rollback"
   elif [ "$swmode" != on ]; then
     doc FAIL switcher "SESSION_AUTO_SWITCH is '$swmode' — it takes on or off, and every decision refuses until it does"
   elif [ -n "$SESSION_SWITCH_NOTIFY" ] && [ ! -x "$SESSION_SWITCH_NOTIFY" ]; then
@@ -1936,7 +1939,8 @@ doctor_main() {
     doc pending switcher "$vaultn vaulted login(s) in $acctdir — a switch needs somewhere to go; \`session account save\` captures each one after its \`/login\`"
   # StopFailure and not merely "armed somewhere": that hook is the one a turn
   # dying on a cap reaches, so an entry armed only on UserPromptSubmit leaves
-  # the switcher with no trigger while check 9 above reads ok. Structural, like
+  # the switcher no way to meet a cap or authentication death (only the status
+  # line's 98% trigger remains) while check 9 above reads ok. Structural, like
   # the advisory's own probe — `rewake-waiter` appears in a settings.json that
   # arms nothing (a commented-out entry, an entry on another event, or this one
   # with asyncRewake false, which the harness then runs synchronously).
@@ -2338,10 +2342,11 @@ Accounts (several subscription logins, one config dir; `session account -h`):
   session account auto             decide once, box-wide, whether a vaulted login
                                    stands strictly higher on the capability ladder
                                    than the live one, and move to it if so. The
-                                   StopFailure rewake entry runs it, so a cap or
-                                   authentication death takes this decision by
-                                   itself; SESSION_AUTO_SWITCH=off in session.conf
-                                   turns that off. `session account -h` has the
+                                   StopFailure rewake entry runs it on a cap or
+                                   authentication death, and the status line
+                                   when the live login reaches 98% of a window;
+                                   SESSION_AUTO_SWITCH=off in session.conf turns
+                                   both off. `session account -h` has the
                                    options, the exit codes and the k=v output
   session account expiry [--notify] each saved login's sign-in end; --notify pushes
                                    two days and six hours ahead (run it from cron)
@@ -3733,7 +3738,7 @@ if [ "$mode" = rewake ]; then
     # every death.
     if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ] \
        && [ "$(awk -F'\t' -v s="sid=$hsid" -v t=$(( $(date +%s) - ACCT_COOLDOWN_S )) \
-              '$1 >= t && $2 == "hold" && $6 == "live-clean" && index($8, s) { n++ } END { print n + 0 }' \
+              '$1 >= t && $2 == "hold" && $5 != "usage" && $6 == "live-clean" && index($8, s) { n++ } END { print n + 0 }' \
               "$(acct_log_file)" 2>/dev/null)" -le 1 ]; then
       REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
     fi

@@ -73,8 +73,9 @@ SESSION_ATTEND_GRACE="${SESSION_ATTEND_GRACE:-600}"
 SESSION_ATTEND_TAIL="${SESSION_ATTEND_TAIL:-$SESSION_ATTEND_GRACE}"
 # optional script run before `session resume` (a host's own pre-resume guard)
 SESSION_TMUX_MAIN_GUARD="${SESSION_TMUX_MAIN_GUARD:-}"
-# Whether a cap or authentication death may move the box to another vaulted
-# login by itself (`session account auto`). `on` or `off`, and nothing else:
+# Whether a cap or authentication death, or the status line seeing the live
+# login reach ACCT_SPENT_PCT, may move the box to another vaulted login by
+# itself (`session account auto`). `on` or `off`, and nothing else:
 # this is the feature's kill switch, so a value it cannot read is refused
 # rather than guessed at. Read on every invocation, which is what makes an
 # appended `SESSION_AUTO_SWITCH=off` line an instant rollback.
