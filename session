@@ -1045,11 +1045,11 @@ acct_save() {  # [no-notify] — record a refusal without pushing it
   # The identity is read ONCE, and the name and the stored oauthAccount both
   # come from that read: two reads straddling a swap's identity write filed the
   # incoming seat's profile and credential under the outgoing plan's name. It is
-  # read from the live login's own vault entry when the installed credential's
-  # plan contradicts .claude.json (lib/common.sh, above _SESSION_PLAN_CLASH,
-  # says why and how that entry is found), so a renewal landing while a session
-  # has written another organisation back is saved under the login it renewed,
-  # not refused below.
+  # read from the live login's own vault entry when the swap record or the
+  # installed credential's plan names another login than .claude.json
+  # (lib/common.sh, above _SESSION_PLAN_CLASH, says why and how), so a renewal
+  # landing while a session has written another identity back is saved under
+  # the login it renewed, not refused below or filed under the other name.
   ident="$acctdir/.ident.$$"
   mkdir -p "$acctdir" && chmod 700 "$acctdir"
   jq '{oauthAccount}' "$(session_identity_file)" > "$ident" 2>/dev/null || : > "$ident"
@@ -1372,7 +1372,7 @@ acct_swap() {  # VAULTFILE FROM WHY — the login being left and the reason, for
 }
 
 acct_swap_locked() {  # VAULTFILE CONFIG_DIR FROM WHY
-  local vf="$1" cfg="$2" from="$3" why="$4" tmp wrote
+  local vf="$1" cfg="$2" from="$3" why="$4" tmp wrote end
   # Never lose the login being replaced — and announce nothing if it cannot be
   # saved. The automatic decision runs this inside switch.lock, and lock_run
   # EXECS its command, so a notifier backgrounded from here would inherit the
@@ -1382,6 +1382,16 @@ acct_swap_locked() {  # VAULTFILE CONFIG_DIR FROM WHY
   # both callers the audit row is the whole record of a blank credential met
   # while switching — and it is written on every path for exactly that reason.
   acct_save no-notify 2>/dev/null || true
+  # The swap's record of what it installs: the login and its sign-in's end,
+  # which renewal never moves. session_login_read names the live login from it
+  # while the installed credential is that sign-in, because .claude.json is not
+  # this swap's alone to write: a running Claude Code process saving its
+  # in-memory config, or fetching the profile of the token it started with,
+  # writes the outgoing identity back (2026-10-19, for three minutes). Moved into
+  # place right after the credential lands, under the same lock: a swap that
+  # fails before then leaves the record it found, which still names the login
+  # whose credential is installed. An entry with no end leaves no record.
+  end=$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // 0 | floor' "$vf" 2>/dev/null)
   # Swap ONLY claudeAiOauth: .credentials.json also holds mcpOAuth (Granola,
   # DoneThat, …), which is not account-scoped and must survive the switch.
   acct_dir_lock "$cfg/.storage-write.lock" 15 || { ACCT_LOCK_BUSY="$cfg/.storage-write.lock"; return 4; }
@@ -1389,6 +1399,14 @@ acct_swap_locked() {  # VAULTFILE CONFIG_DIR FROM WHY
   jq --slurpfile v "$vf" '.claudeAiOauth = $v[0].claudeAiOauth' "$cfg/.credentials.json" > "$tmp" \
     && chmod 600 "$tmp" && mv -f "$tmp" "$cfg/.credentials.json"
   wrote=$?
+  if [ "$wrote" = 0 ]; then
+    case "$end" in
+      ''|0|*[!0-9]*) rm -f "$cfg/.session-login-installed" ;;
+      *) printf 'login=%s\nend=%s\n' "$(acct_name_of "$vf")" "$end" > "$cfg/.session-login-installed.$$" \
+           && mv -f "$cfg/.session-login-installed.$$" "$cfg/.session-login-installed" \
+           || rm -f "$cfg/.session-login-installed.$$" ;;
+    esac
+  fi
   acct_dir_unlock "$cfg/.storage-write.lock"
   [ "$wrote" = 0 ] || { rm -f "$tmp"; return 1; }
   # Identity too, so usage tracking labels the very next statusline render

@@ -298,6 +298,43 @@ if have jq; then
     report "me@example.com+example-org" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$CLASH")" \
         "... and so does one this user cannot read"
     chmod 600 "$CLASH/.credentials.json"
+
+    # Between two accounts the identity can be stale too: a Claude Code process
+    # that saves its in-memory config, or fetches the profile of the token it
+    # started with, after a swap wrote the new identity. The swap records what it
+    # installed, and while the installed credential is that sign-in the record
+    # names the login. A vaulted entry that merely holds the credential does
+    # not: an entry filed under the wrong name would then name the login for
+    # the life of the sign-in.
+    XACC="$TMP/xacccfg"; mkdir -p "$XACC/accounts"
+    printf '{"oauthAccount":{"emailAddress":"a@example.com","organizationType":"claude_max"}}\n' > "$XACC/.claude.json"
+    printf '{"login":"a@example.com","oauthAccount":{"emailAddress":"a@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-a","refreshTokenExpiresAt":4200000000000}}\n' > "$XACC/accounts/a@example.com.json"
+    printf '{"login":"b@example.com","oauthAccount":{"emailAddress":"b@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-b","refreshTokenExpiresAt":4100000000000}}\n' > "$XACC/accounts/b@example.com.json"
+    printf '{"claudeAiOauth":{"accessToken":"tok-b","subscriptionType":"max","refreshTokenExpiresAt":4100000000000}}\n' > "$XACC/.credentials.json"
+    report "a@example.com $XACC/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$XACC" | tr '\n' ' ' | sed 's/ $//')" \
+        "[other account] with no swap record, a vaulted entry holding the credential does not override the identity"
+    printf 'login=b@example.com\nend=4100000000000\n' > "$XACC/.session-login-installed"
+    report "b@example.com $XACC/accounts/b@example.com.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$XACC" | tr '\n' ' ' | sed 's/ $//')" \
+        "[other account] the swap's record names the login it installed, whatever the identity says"
+    report "a@example.com" "$(probe 'session_login_read "$SESSION_CFG/.claude.json"' CLAUDE_CONFIG_DIR="$XACC")" \
+        "[other account] ... while an identity file passed in still names itself"
+    printf '{"claudeAiOauth":{"accessToken":"tok-b-renewed","subscriptionType":"max","refreshTokenExpiresAt":4100000000500}}\n' > "$XACC/.credentials.json"
+    report "b@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$XACC")" \
+        "[other account] ... and still does once that token is renewed within its sign-in"
+    printf '{"claudeAiOauth":{"accessToken":"tok-c","subscriptionType":"max","refreshTokenExpiresAt":4300000000000}}\n' > "$XACC/.credentials.json"
+    report "a@example.com $XACC/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$XACC" | tr '\n' ' ' | sed 's/ $//')" \
+        "[other account] a credential of another sign-in (a /login since) leaves the identity's name"
+    printf '{"claudeAiOauth":{"accessToken":"tok-a","subscriptionType":"max","refreshTokenExpiresAt":4200000000000}}\n' > "$XACC/.credentials.json"
+    report "a@example.com $XACC/.claude.json" \
+        "$(probe 'session_login; session_identity_file' CLAUDE_CONFIG_DIR="$XACC" | tr '\n' ' ' | sed 's/ $//')" \
+        "[other account] ... and so does the identity's own credential"
+    printf '{"claudeAiOauth":{"accessToken":"tok-b","subscriptionType":"max","refreshTokenExpiresAt":4100000000000}}\n' > "$XACC/.credentials.json"
+    printf 'login=b@example.com\nend=garbage\n' > "$XACC/.session-login-installed"
+    report "a@example.com" "$(probe 'session_login' CLAUDE_CONFIG_DIR="$XACC")" \
+        "[other account] a record with no readable end names nothing"
 else
     skip "session_login: same email, two organisations" "no jq"
 fi
@@ -1169,6 +1206,35 @@ else
     report 1 "$rc" "case 14 [org clash]: another account's credential beside the seat's identity is not saved"
     report same "$(cmp -s "$TMP/w14c-max-before.json" "$V4/me@example.com.json" && echo same || echo changed)" \
         "case 14 [org clash]: ... leaving this email's Max entry byte-identical"
+
+    # A swap records the login it installed and that sign-in's end, so a
+    # session that writes the outgoing identity back afterwards does not rename
+    # the live login: the list, the switcher and the autosave all keep it.
+    W14x=$(world); VX="$W14x/vault"; mkdir -p "$VX"
+    printf '{"email":"a@example.com","login":"a@example.com","oauthAccount":{"emailAddress":"a@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-a","subscriptionType":"max","expiresAt":4000000000000,"refreshTokenExpiresAt":4200000000000},"saved_at":1}\n' > "$VX/a@example.com.json"
+    printf '{"email":"b@example.com","login":"b@example.com","oauthAccount":{"emailAddress":"b@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-b","subscriptionType":"max","expiresAt":4000000000000,"refreshTokenExpiresAt":4100000000000},"saved_at":1}\n' > "$VX/b@example.com.json"
+    jq '{oauthAccount}' "$VX/a@example.com.json" > "$W14x/cfg/.claude.json"
+    jq '{claudeAiOauth}' "$VX/a@example.com.json" > "$W14x/cfg/.credentials.json"
+    out=$(sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" PATH="$(minipath curl)" -- account use b@example.com 2>&1); rc=$?
+    report "0 $(printf 'login=b@example.com\nend=4100000000000')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
+        "case 14 [swap record]: a swap records the login it installed and its sign-in's end"
+    jq '{oauthAccount}' "$VX/a@example.com.json" > "$W14x/cfg/.claude.json"   # a session writes a's identity back
+    out=$(sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" PATH="$(minipath curl)" -- account 2>&1)
+    report "b@example.com" "$(printf '%s\n' "$out" | awk '$1 == "live" { print $3 }')" \
+        "case 14 [swap record]: ... so the outgoing identity written back after it does not rename the live login"
+    cp "$VX/a@example.com.json" "$TMP/w14x-a-before.json"
+    jq '.claudeAiOauth.accessToken = "tok-b-renewed"' "$W14x/cfg/.credentials.json" > "$W14x/cfg/.c.tmp" && mv "$W14x/cfg/.c.tmp" "$W14x/cfg/.credentials.json"
+    out=$(sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" -- account save 2>&1); rc=$?
+    report "0 tok-b-renewed same" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$VX/b@example.com.json") $(cmp -s "$TMP/w14x-a-before.json" "$VX/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [swap record]: ... and a renewal is saved under it, never under the identity's login"
+    # A swap that fails leaves the record it found: here Claude Code's storage
+    # lock stays held, so a's credential never lands and b is still the login.
+    mkdir "$W14x/cfg/.storage-write.lock"
+    out=$( (sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" SESSION_LOCK_WAIT=2 PATH="$(minipath curl)" -- account use a@example.com >/dev/null) 2>&1 ); rc=$?
+    report "1 $(printf 'login=b@example.com\nend=4100000000000')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
+        "case 14 [swap record]: a swap that fails on a held lock leaves the record it found"
+    rmdir "$W14x/cfg/.storage-write.lock"
 
     out=$( (sess "$W14b" SESSION_ACCOUNTS_DIR="$V2" -- account use me@example >/dev/null) 2>&1 ); rc=$?
     report 1 "$rc" "case 14 [same email]: a substring both names contain is ambiguous"
@@ -5805,7 +5871,10 @@ ATURNEOF
             "arm: a decision that refuses leaves the waiter armed on its reset"
         printf '%s\tswitch\ta@example.com\tb@example.com\tcap\tclimbed\t-\tsid=-;tier=1;notify=off\n' \
             "$(date +%s)" >> "$WA11/data/switch-log.tsv"
-        mklogin "$WA11" b@example.com
+        # Another process's switch: b's credential installed, then its identity.
+        # The identity alone is not a switch, since the credential names the login.
+        aent "$WA11" b@example.com tok-b
+        alive "$WA11" b@example.com tok-b
         i=0
         while [ ! -e "$WA11/rc" ] && [ "$i" -lt 25 ]; do sleep 1; i=$(( i + 1 )); done
         wait "$AWPID" 2>/dev/null

@@ -138,8 +138,22 @@ SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 # moves. The sign-in test keeps a swap to another account, caught between its
 # two writes, from naming a third login, since the email there is the outgoing
 # login's. None or several leave the identity's name, and two organisations of
-# one plan type are not distinguished this way. Only the live identity is
-# checked: a file passed in is a snapshot or a vault entry, and names itself.
+# one plan type are not distinguished this way.
+#
+# Between two accounts the identity is rewritten too, by other paths: a session
+# saving its in-memory config over the swap's write, or a process that started
+# on the outgoing token fetching that account's profile into it (2026-10-19:
+# three minutes of one account's windows cached under another's name, and an
+# autosave that would have filed its credential there). So every swap records
+# the login it installed and that sign-in's end in
+# <config dir>/.session-login-installed (acct_swap_locked), and while the
+# installed credential is that sign-in (ends within a minute) the record names
+# the live login, ahead of both rules here. It is what the swap installed, not
+# how the vault is filed: a vault entry that merely holds the credential would,
+# if it was ever filed under the wrong name, keep naming the login wrong for the
+# life of the sign-in. A credential of another sign-in, as after a /login,
+# leaves the record naming nothing. Only the live identity is checked: a file
+# passed in is a snapshot or a vault entry, and names itself.
 #
 # _SESSION_PLAN_CLASH is a jq fragment run on an oauthAccount with $cred bound
 # to the credentials file's text. It yields claude_<subscriptionType> when that
@@ -149,28 +163,44 @@ SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 _SESSION_PLAN_CLASH='(try ($cred | fromjson | .claudeAiOauth.subscriptionType // "") catch "") as $s
   | (.organizationType // "") as $o
   | if $s != "" and $o != "" and $o != "claude_\($s)" then "claude_\($s)" else "" end'
+# _SESSION_INSTALLED is a jq fragment with $cred and $inst bound to the
+# credentials file's and the swap record's text. It yields the login the record
+# names when the installed credential's sign-in end is within a minute of the
+# recorded one, else "".
+_SESSION_INSTALLED='(try ($cred | fromjson | .claudeAiOauth.refreshTokenExpiresAt // 0) catch 0) as $le
+  | ($inst | split("\n")) as $r
+  | ($r | map(select(startswith("login=")) | .[6:]) | first // "") as $il
+  | ($r | map(select(startswith("end=")) | .[4:] | (tonumber? // 0)) | first // 0) as $ie
+  | if $il != "" and ($ie | type) == "number" and $ie > 0 and ($le | type) == "number" and $le > 0
+       and (if $ie > $le then $ie - $le else $le - $ie end) <= 60000 then $il else "" end'
 session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and the
-  local e t n w v s cred=/dev/null   # mid-wait flip check re-read the live value inside one process
+  local e t n w m v s l cred=/dev/null inst=/dev/null   # mid-wait flip check re-read the live value inside one process
   if [ $# -eq 0 ] && [ -s "$SESSION_CFG/.credentials.json" ] && [ -r "$SESSION_CFG/.credentials.json" ]; then
     cred="$SESSION_CFG/.credentials.json"
+    [ -s "$SESSION_CFG/.session-login-installed" ] && [ -r "$SESSION_CFG/.session-login-installed" ] \
+      && inst="$SESSION_CFG/.session-login-installed"
   fi
-  IFS=$'\037' read -r e t n w < <(jq -r --rawfile cred "$cred" '.oauthAccount
+  IFS=$'\037' read -r e t n w m < <(jq -r --rawfile cred "$cred" --rawfile inst "$inst" '.oauthAccount
       | [(.emailAddress // ""),
          (.organizationType // (if (.seatTier // "") != "" then "seat" else "" end)),
          (.organizationName // .organizationUuid // ""),
-         ('"$_SESSION_PLAN_CLASH"')]
+         ('"$_SESSION_PLAN_CLASH"'),
+         ('"$_SESSION_INSTALLED"')]
       | join("\u001f")' "${1:-$SESSION_CFG/.claude.json}" 2>/dev/null || true) || true
   [ -n "$e" ] || { printf 'unknown\n'; return 0; }
-  if [ -n "$w" ] && v=$(_session_vault_entry "$e" "$w" "$cred"); then
-    session_login_read "$v"; return 0
-  fi
+  l=$e
   case "$t" in
     ""|claude_max|claude_pro|claude_free) ;;
     *) s=$(printf '%s' "$n" | tr 'A-Z' 'a-z' | sed -e 's/[^a-z0-9]/-/g' -e 's/--*/-/g' -e 's/^-//' -e 's/-$//')
        [ -n "$s" ] || s=$t
-       e="$e+$s" ;;
+       l="$l+$s" ;;
   esac
-  printf '%s\n' "${e//[!A-Za-z0-9@._+-]/_}"
+  l=${l//[!A-Za-z0-9@._+-]/_}
+  [ -n "$m" ] && [ "$m" != "$l" ] && { printf '%s\n' "${m//[!A-Za-z0-9@._+-]/_}"; return 0; }
+  if [ -n "$w" ] && v=$(_session_vault_entry "$e" "$w" "$cred"); then
+    session_login_read "$v"; return 0
+  fi
+  printf '%s\n' "$l"
 }
 # The one vault entry with this email and organisation type that holds the
 # credential's sign-in (the rule above), or a non-zero return for none, several,
@@ -194,15 +224,13 @@ _session_vault_entry() {  # EMAIL ORGANIZATION_TYPE CREDENTIALS -> a vault path
   printf '%s\n' "$m"
 }
 # The file whose oauthAccount is the live login's: .claude.json, or the vault
-# entry session_login_read names the login from when the installed credential's
-# plan contradicts it. For a caller that keeps the identity, not just the name.
+# entry of the login session_login_read names when that is not the identity's
+# (the swap record or a plan clash, both above). For a caller that keeps the identity, not just the name.
 session_identity_file() {
-  local f="$SESSION_CFG/.claude.json" c="$SESSION_CFG/.credentials.json" e w v
-  if [ -s "$c" ] && [ -r "$c" ]; then
-    IFS=$'\037' read -r e w < <(jq -r --rawfile cred "$c" \
-        '.oauthAccount | [(.emailAddress // ""), ('"$_SESSION_PLAN_CLASH"')] | join("\u001f")' \
-        "$f" 2>/dev/null || true) || true
-    [ -n "$w" ] && v=$(_session_vault_entry "$e" "$w" "$c") && f=$v
+  local f="$SESSION_CFG/.claude.json" live
+  live=$(session_login_read)
+  if [ "$live" != "$(session_login_read "$f")" ] && [ -s "$SESSION_ACCOUNTS_DIR/$live.json" ]; then
+    f="$SESSION_ACCOUNTS_DIR/$live.json"
   fi
   printf '%s\n' "$f"
 }
