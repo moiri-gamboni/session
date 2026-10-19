@@ -1261,6 +1261,8 @@ else
     fcache x@example.com 40 $(( NOWI + 3 * 86400 )) 7200
     mkcache "$W14f" x@example.com 10 20 $(( NOWI + 600 )) $(( NOWI + 3 * 86400 ))
     fcache p@example.com 100 $(( NOWI - 3600 )) 90000
+    mkcache "$W14f" f@example.com 10 20 $(( NOWI + 600 )) $(( NOWI + 3 * 86400 ))
+    touch -t 202001010000 "$W14f/data/last-status.f@example.com.json"   # frozen long before the fetch
 
     out=$(sess "$W14f" PATH="$FB:$PATH" SESSION_ACCOUNTS_DIR="$VF" -- account 2>&1); rc=$?
     report 0 "$rc" "case 14 [fable]: account list exits 0"
@@ -1268,8 +1270,15 @@ else
         "case 14 [fable]: the list is a table with a FABLE column and no Fable countdown (it resets with WEEK)"
     report "83% now" "$(acol f@example.com 7) $(acol f@example.com 8)" \
         "case 14 [fable]: a login with a live token lists the endpoint's Fable figure"
-    report "- - - -" "$(acol f@example.com 3) $(acol f@example.com 4) $(acol f@example.com 5) $(acol f@example.com 6)" \
-        "case 14 [fable]: ... with a dash in each 5H and WEEK column while it has no statusline cache"
+    # The probe reads the general windows too, and they are what the list shows
+    # once they are newer than the statusline's cache: a login that is not live
+    # has a cache frozen at the switch, and a capped login would otherwise list
+    # with the headroom it had then.
+    report "n/a 50%" "$(acol f@example.com 3) $(acol f@example.com 5)" \
+        "case 14 [fable]: ... and the endpoint's weekly figure over a statusline cache frozen before it, n/a for the five-hour window it did not carry"
+    report '{"rate_limits":{"seven_day":{"used_percentage":50,"resets_at":4070908800}}}' \
+        "$(cat "$W14f/data/usage.f@example.com.json" 2>&1)" \
+        "case 14 [fable]: ... caching the general windows it read beside the Fable file"
     report '{"fable":{"used_percentage":83,"resets_at":4070908800}}' "$(cat "$W14f/data/fable.f@example.com.json" 2>&1)" \
         "case 14 [fable]: ... caching that row alone, its ISO reset as epoch seconds"
     report yes "$([ -s "$FB/argv" ] && echo yes || echo no)" "case 14 [fable]: curl was called"

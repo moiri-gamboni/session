@@ -265,7 +265,7 @@ _acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unkn
 # nothing is known — `dead` would claim the endpoint rejected a token that was
 # never sent.
 acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5reset TAB wreset TAB freset TAB scoped
-  local login="$1" vf="$2" tok c body code row five week fable rf scoped
+  local login="$1" vf="$2" tok c u body code row five week fable r5 rw rf scoped
   command -v curl >/dev/null 2>&1 || { _acct_probe_blank nocurl; return 0; }
   tok=$(jq -r --argjson now "$(now_epoch)" '
       select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60)
@@ -293,7 +293,7 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
     *) rm -f "$body"; _acct_probe_blank unreachable; return 0 ;;
   esac
   row=$(jq -r "$ACCT_USAGE_JQ" "$body" 2>/dev/null)
-  IFS=$'\t' read -r five week fable _ _ rf scoped <<<"$row"
+  IFS=$'\t' read -r five week fable r5 rw rf scoped <<<"$row"
   if [ -z "$row" ] || { [ "$five" = -1 ] && [ "$week" = -1 ] && [ "$fable" = -1 ]; }; then
     # The one case worth keeping a body for. This endpoint's shape has already
     # moved once, and a 200 that reads as nothing is the only evidence that
@@ -309,6 +309,18 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
   if [ "$fable" != -1 ]; then
     printf '{"fable":{"used_percentage":%s,"resets_at":%s}}\n' "$fable" "$rf" > "$c.tmp.$$" \
       && mv -f "$c.tmp.$$" "$c" || rm -f "$c.tmp.$$"
+  fi
+  # The general windows too, in the statusline cache's shape, for `session
+  # account` to list when they are the newer reading (acct_row): a login that is
+  # not live has a statusline cache frozen at the switch, and listed from it a
+  # capped login shows the headroom it had then. A window the body did not
+  # carry is left out, which lists as n/a.
+  if [ "$five" != -1 ] || [ "$week" != -1 ]; then
+    u=$(session_cache_path "$login" usage)
+    jq -nc --argjson f "$five" --argjson w "$week" --argjson r5 "$r5" --argjson rw "$rw" '
+        {rate_limits: ((if $f >= 0 then {five_hour: {used_percentage: $f, resets_at: $r5}} else {} end)
+                     + (if $w >= 0 then {seven_day: {used_percentage: $w, resets_at: $rw}} else {} end))}' \
+        > "$u.tmp.$$" && mv -f "$u.tmp.$$" "$u" || rm -f "$u.tmp.$$"
   fi
   # Dropped the moment a body reads again, so the file is always the last
   # response this login gave that nothing could be read from, never an older

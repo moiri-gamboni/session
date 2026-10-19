@@ -1267,10 +1267,18 @@ acct_week() {  # PCT RESETS_AT NOW -> "N%<TAB>left" for a fixed-cadence 7-day wi
 # One login's figures as six tab-separated fields, none ever empty (IFS
 # whitespace would collapse an empty one): 5h% 5h-left week% week-left fable% age.
 acct_row() {
-  local c fc f w rf rw fp fr now l5 f5 tab=$'\t' five week fable=n/a oldest=-1 a
+  local c u fc f w rf rw fp fr now l5 f5 tab=$'\t' five week fable=n/a oldest=-1 a
   now=$(date +%s)
   five="-${tab}-"; week="-${tab}-"
   c=$(session_cache_path "$1")
+  # The usage endpoint's reading of the same two windows (usage.<login>.json,
+  # written by the probe in the same shape) when it is the newer one. The
+  # statusline's cache is current only for the live login; every other
+  # login's froze at the switch, while a fetch reads the login as it is now.
+  u=$(session_cache_path "$1" usage)
+  if [ -s "$u" ] && { [ ! -s "$c" ] || [ "$(mtime_of "$u")" -gt "$(mtime_of "$c")" ]; }; then
+    c=$u
+  fi
   if [ -s "$c" ]; then
     IFS=$'\t' read -r f w rf rw < <(jq -r '[(.rate_limits.five_hour.used_percentage//-1),
                                             (.rate_limits.seven_day.used_percentage//-1),
@@ -2398,6 +2406,8 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
 `session doctor` prints the resolved path):
   last-status.<login>.json  per-account limits cache (statusline-written, ~10s)
   fable.<login>.json        per-account Fable weekly cap (`session account`-fetched)
+  usage.<login>.json        per-account 5h and weekly windows from the same fetch;
+                            `session account` lists them when newer than the cache
   probe-body.<login>.json   a usage-endpoint response no window could be read
                             from; removed once a later probe reads
   session-log.tsv   per-session cost/token samples    turn-log.tsv  turn events

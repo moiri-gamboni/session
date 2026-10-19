@@ -215,6 +215,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 | `signin-warned.tsv` | `login<TAB>end<TAB>stage` for every sign-in-end warning `account expiry --notify` has sent (`2d`, `6h`), so each is sent once per login and sign-in; delete it to have due warnings sent again |
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
 | `fable.<login>.json` | that login's Fable weekly cap, fetched by `session account` |
+| `usage.<login>.json` | that login's 5-hour and weekly windows from the same fetch, in the statusline cache's shape; `session account` lists them when they are newer than `last-status.<login>.json` |
 | `probe-body.<login>.json` | the raw usage-endpoint response of the last probe of that login from which no rate-limit window could be read; removed as soon as one can |
 | `sessions/<sid>.json` | `{"session_name": …}` — the session's title |
 | `sessions/<sid>.ctx` | one line, `TOKENS WINDOW CEILING`: what the last request carried, the model's context window, and the size at which Claude Code starts an automatic compaction (`-` when it never does or the settings cannot be read). Rewritten on every status line render; read by [the compaction hold](#the-compaction-hold) |
@@ -374,7 +375,7 @@ The list is a table:
 | `FABLE` | Fable's weekly cap, used %; `~0%` once its reset has passed. It resets with `WEEK`, so it has no countdown column |
 | `AGE` | the age of the row's oldest figure: `now` under two minutes, then `Nm`, `Nh`, `Nd` |
 
-`n/a` is a window the source did not carry. `-` is no data at all: `5H` and `WEEK` come from the statusline cache, which a login gets only once a session has rendered on it.
+`n/a` is a window the source did not carry. `-` is no data at all. `5H` and `WEEK` come from whichever is newer of two readings: the statusline cache, which a login gets once a session has rendered on it and which stops moving when the box switches away from that login, and the same usage fetch that fills `FABLE` (below), which reads every login as it is now. So a login that is not live lists the figures of the last fetch, not the ones it had when the box left it.
 
 **`FABLE` is Fable's own weekly cap**, which the statusline cannot record: the payload carries only the 5-hour and all-models weekly windows. Its source is `GET https://api.anthropic.com/api/oauth/usage`, the endpoint behind `/usage`, whose `limits[]` lists it as a `weekly_scoped` row with `scope.model.display_name` `Fable`. The endpoint is undocumented. `list` and `use` fetch it for every vaulted login whose `claudeAiOauth.expiresAt` is more than a minute away, in parallel, 5 s each, with that login's own access token passed to curl on stdin (`-K -`), never in argv. `use` fetches after the swap, never before it.
 
@@ -466,7 +467,7 @@ next_eligible_at=<epoch>|-
 
 | State | What happened |
 |---|---|
-| `good` | 200 with at least one readable window. The only state that supplies reset epochs, and the one that refreshes `fable.<login>.json` |
+| `good` | 200 with at least one readable window. The only state that supplies reset epochs, and the one that refreshes `fable.<login>.json` and `usage.<login>.json` |
 | `dead` | **401 or 403 only** — the credential was rejected |
 | `unreachable` | 429, 408, 5xx, anything else, or curl failing. A 429 is a 4xx and must never read as `dead`: this endpoint's rate bucket is selected by User-Agent, so a throttle read as a rejection would mark healthy logins dead |
 | `noshape` | 200 that no window could be read from. The body is kept as `probe-body.<login>.json`, and a later `good` probe of that login deletes it, so the file always describes the *last* unreadable response |
