@@ -553,15 +553,30 @@ acct_holds_live_token() {  # VAULTFILE LIVE_CREDENTIALS
 # death after it has a stopped session behind it, and waiting out a quarter
 # hour on a hold that predates the death would leave that session asleep until
 # a reset rather than moved.
+#
+# The cooldown is also about the login that decision left live: the target of
+# a switch, the login a hold stayed on, either one for a failed swap. Once the
+# live login is another — a `session account use` or a `/login` since — that
+# decision concluded nothing about it, and holding would leave a login the
+# switcher never chose to die on its cap unmoved for the rest of the quarter
+# hour (2026-10-19: a switch off a 98% login, a manual switch back onto it, and
+# every death on it four minutes later held).
 _acct_past_cooldown() {  # NOW LIVE TRIGGER
-  local now="$1" live="$2" trigger="$3" f last lastsw
+  local now="$1" live="$2" trigger="$3" f last lev lfrom lto lastsw
   f=$(acct_log_file)
   [ -s "$f" ] || return 0
-  last=$(awk -F'\t' -v t="$trigger" '
+  # Fields never empty (acct_log writes `-`), so `read` on tabs is safe here.
+  IFS=$'\t' read -r last lev lfrom lto < <(awk -F'\t' -v t="$trigger" '
     $2 == "refuse" || $6 == "cooldown" { next }
     t != "usage" && $2 == "hold" && $5 == "usage" { next }
-    { ts = $1 } END { print ts + 0 }' "$f")
-  { [ "$last" -gt 0 ] && [ $(( now - last )) -lt "$ACCT_COOLDOWN_S" ]; } || return 0
+    { row = ($1 + 0) "\t" $2 "\t" $3 "\t" $4 }
+    END { print (row == "" ? "0\t-\t-\t-" : row) }' "$f")
+  { [ "${last:-0}" -gt 0 ] && [ $(( now - last )) -lt "$ACCT_COOLDOWN_S" ]; } || return 0
+  case "$lev" in
+    switch) [ "$live" = "$lto" ] || return 0 ;;
+    hold)   [ "$live" = "$lfrom" ] || return 0 ;;
+    *)      { [ "$live" = "$lfrom" ] || [ "$live" = "$lto" ]; } || return 0 ;;
+  esac
   # Probation: a switch that has just happened is still being judged. While its
   # target is the login now live, another death on that login re-decides rather
   # than waiting the cooldown out. That covers a switch that landed and one

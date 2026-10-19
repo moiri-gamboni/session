@@ -4555,6 +4555,30 @@ else
     report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
         "decide: a cooldown hold does not itself restart the cooldown, which would hold a retrying session for ever"
 
+    # ── the cooldown belongs to the login the last decision left live ─────────
+    # A switch onto b, then `session account use` back onto a, then a death on
+    # a: the decision about b says nothing about a, so this one runs at once.
+    # Same for a hold taken on another login. A hold on a itself still holds.
+    WDm=$(dworld); CDm=$(curlstub); DLOGm="$WDm/data/switch-log.tsv"
+    dlive "$WDm" a@example.com tok-a
+    dvent "$WDm" a@example.com tok-a; dvent "$WDm" b@example.com tok-b; dvent "$WDm" c@example.com tok-c
+    dbody "$CDm" tok-a 100 10 10; dbody "$CDm" tok-b 10 10 10; dbody "$CDm" tok-c 100 100 100
+    DCLOCK=$DNOW
+    printf '%s\tswitch\ta@example.com\tb@example.com\tusage\tclimbed\t-\tsid=s0\n' $(( DNOW - 300 )) > "$DLOGm"
+    out=$(dauto "$WDm" "$CDm" --trigger cap --sid sid-m)
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: a death on a login switched back to by hand since the last switch decides at once"
+    dlive "$WDm" a@example.com tok-a
+    printf '%s\thold\tc@example.com\t-\tcap\tno-candidate\t-\tsid=s0\n' $(( DNOW - 100 )) > "$DLOGm"
+    out=$(dauto "$WDm" "$CDm" --trigger cap --sid sid-m2)
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "decide: ... and so does one after a hold taken on another login"
+    dlive "$WDm" a@example.com tok-a
+    printf '%s\thold\ta@example.com\t-\tcap\tno-candidate\t-\tsid=s0\n' $(( DNOW - 100 )) > "$DLOGm"
+    out=$(dauto "$WDm" "$CDm" --trigger cap --sid sid-m3)
+    report 'hold cooldown' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... while a hold taken on the live login itself still holds"
+
     # ── the three refusals, all of them before any state or any request ───────
     WD2=$(dworld); CD2=$(curlstub)
     dlive "$WD2" a@example.com tok-a
