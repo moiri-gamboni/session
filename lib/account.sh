@@ -329,6 +329,58 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
   printf 'good\t%s\n' "$row"
 }
 
+# Which account an access token belongs to, from the endpoint Claude Code's own
+# startup profile fetch reads ("oauth populate" in the 2.1.304 bundle; called
+# by hand 2026-10-20). Undocumented:
+#
+#   GET https://api.anthropic.com/api/oauth/profile, bearer token on curl's
+#   STDIN, Content-Type: application/json, Cache-Control: no-cache
+#   200  {account:{uuid, email, full_name, display_name, …},
+#         organization:{uuid, name, organization_type, seat_tier, …},
+#         application:{…}}; organization_type takes the identity's own
+#         vocabulary (claude_max, claude_pro, claude_team, claude_enterprise)
+#   401  {"type":"error","error":{"type":"authentication_error",…}} for an
+#        invalid token and for none
+#
+# Prints {"oauthAccount":{…},"end":N,"plan":"…"}: the account as an identity
+# in .claude.json's own field names, so session_login_read names it like any
+# identity file, beside the sign-in end and plan of the very credential that
+# was sent, so a record written from it cannot pair one sign-in with another's
+# account. Non-zero, printing nothing, when nothing was asked or nothing
+# answered: no curl, a lapsed token (never sent, as in acct_probe, and for the
+# same reasons), any status but 200, or a 200 with no account email, whose body
+# is kept as profile-body.json for the next person to follow the shape.
+ACCT_PROFILE_URL=https://api.anthropic.com/api/oauth/profile
+acct_profile() {  # CREDENTIALS -> {"oauthAccount":{…},"end":N,"plan":"…"}, or non-zero
+  local tok end plan body code
+  command -v curl >/dev/null 2>&1 || return 1
+  # Split on the unit separator, and a blank token refused before the split:
+  # tab is IFS whitespace, so an empty first field would collapse and the end
+  # would be sent as the token.
+  IFS=$'\037' read -r tok end plan < <(jq -r --argjson now "$(now_epoch)" '
+      .claudeAiOauth // {}
+      | select((.expiresAt // 0) / 1000 > $now + 60 and (.accessToken // "") != "")
+      | [.accessToken, (.refreshTokenExpiresAt // 0 | floor | tostring), (.subscriptionType // "")]
+      | join("\u001f")' "$1" 2>/dev/null)
+  [ -n "${tok:-}" ] || return 1
+  body="$SESSION_DATA/.profile.$$"
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+         | curl -s -m 5 -K - -H 'Content-Type: application/json' -H 'Cache-Control: no-cache' \
+                -o "$body" -w '%{http_code}' "$ACCT_PROFILE_URL")
+  [ "$code" = 200 ] || { rm -f "$body"; return 1; }
+  # Not $end: `end` is a keyword jq 1.6 refuses as a variable name.
+  jq -ce --argjson e "${end:-0}" --arg plan "${plan:-}" '
+      {oauthAccount: ({accountUuid: .account.uuid, emailAddress: .account.email,
+                       organizationUuid: .organization.uuid, organizationName: .organization.name,
+                       organizationType: .organization.organization_type,
+                       seatTier: .organization.seat_tier, displayName: .account.display_name}
+                      | with_entries(select(.value != null))),
+       end: $e, plan: $plan}
+      | select((.oauthAccount.emailAddress // "") != "")' "$body" 2>/dev/null \
+    || { mv -f "$body" "$SESSION_DATA/profile-body.json"; return 1; }
+  rm -f "$body" "$SESSION_DATA/profile-body.json"
+}
+
 # Every vaulted login at once: paths on stdin, `login TAB <probe row>` on
 # stdout. Parallel because each fetch waits up to five seconds on a network the
 # caller is asking about precisely because it may be slow.

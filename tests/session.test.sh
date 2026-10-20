@@ -856,24 +856,34 @@ curlstub() {  # -> a bin directory holding the stub
     d=$(mktemp -d "$TMP/curlstub.XXXXXX")
     cat > "$d/curl" <<'CURLEOF'
 #!/usr/bin/env bash
-d=$(dirname "$0"); out=""; wfmt=""
+d=$(dirname "$0"); out=""; wfmt=""; url=""
 printf '%s\n' "$*" >> "$d/argv"
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) out="$2"; shift ;;
         -w) wfmt="$2"; shift ;;
+        https://*) url="$1" ;;
     esac
     shift
 done
 tok=$(sed -n 's/^header = "Authorization: Bearer \(.*\)"$/\1/p')
 [ -n "$tok" ] || exit 2
-: > "$d/asked.$tok"
+# The profile endpoint answers from its own files, so a token's usage body and
+# its profile body never stand in for each other, and its own marker says it
+# was asked.
+case "$url" in
+    */api/oauth/profile) : > "$d/profiled.$tok"; bf="$d/profile.$tok"; sf="$d/pstatus.$tok" ;;
+    *)                   : > "$d/asked.$tok";    bf="$d/body.$tok";    sf="$d/status.$tok" ;;
+esac
 [ -n "$out" ] || { echo "curl stub: called with no -o FILE" >&2; exit 2; }
+# Something that happens while the request is in flight, for a case that needs
+# the world to move under it.
+[ -x "$d/during.$tok" ] && "$d/during.$tok"
 code=200
-[ -f "$d/status.$tok" ] && code=$(cat "$d/status.$tok")
+[ -f "$sf" ] && code=$(cat "$sf")
 emit_code() { case "$wfmt" in *'%{http_code}'*) printf '%s' "$code" ;; esac; }
 if [ "$code" = 000 ]; then emit_code; exit 7; fi
-if [ -f "$d/body.$tok" ]; then cat "$d/body.$tok" > "$out"; else : > "$out"; fi
+if [ -f "$bf" ]; then cat "$bf" > "$out"; else : > "$out"; fi
 emit_code
 exit 0
 CURLEOF
@@ -1216,8 +1226,8 @@ else
     jq '{oauthAccount}' "$VX/a@example.com.json" > "$W14x/cfg/.claude.json"
     jq '{claudeAiOauth}' "$VX/a@example.com.json" > "$W14x/cfg/.credentials.json"
     out=$(sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" PATH="$(minipath curl)" -- account use b@example.com 2>&1); rc=$?
-    report "0 $(printf 'login=b@example.com\nend=4100000000000')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
-        "case 14 [swap record]: a swap records the login it installed and its sign-in's end"
+    report "0 $(printf 'login=b@example.com\nend=4100000000000\nplan=max')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
+        "case 14 [swap record]: a swap records the login it installed, its sign-in's end and its plan"
     jq '{oauthAccount}' "$VX/a@example.com.json" > "$W14x/cfg/.claude.json"   # a session writes a's identity back
     out=$(sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" PATH="$(minipath curl)" -- account 2>&1)
     report "b@example.com" "$(printf '%s\n' "$out" | awk '$1 == "live" { print $3 }')" \
@@ -1232,9 +1242,113 @@ else
     # lock stays held, so a's credential never lands and b is still the login.
     mkdir "$W14x/cfg/.storage-write.lock"
     out=$( (sess "$W14x" SESSION_ACCOUNTS_DIR="$VX" SESSION_LOCK_WAIT=2 PATH="$(minipath curl)" -- account use a@example.com >/dev/null) 2>&1 ); rc=$?
-    report "1 $(printf 'login=b@example.com\nend=4100000000000')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
+    report "1 $(printf 'login=b@example.com\nend=4100000000000\nplan=max')" "$rc $(cat "$W14x/cfg/.session-login-installed" 2>&1)" \
         "case 14 [swap record]: a swap that fails on a held lock leaves the record it found"
     rmdir "$W14x/cfg/.storage-write.lock"
+
+    # ── a sign-in no swap recorded is named by the account its token belongs to
+    # A /login lands a credential no record names, and a running session can
+    # write the previous login's identity back before the autosave runs. The
+    # save asks the profile endpoint whose token it is, files the credential
+    # under that login and records it like a swap, so the endpoint is asked once
+    # per sign-in. The body is the live response's shape with invented values.
+    pbody() {  # STUB TOKEN EMAIL ORG_TYPE ORG_NAME [SEAT_TIER_JSON]
+        printf '{"account":{"uuid":"acct-%s","full_name":"Test User","display_name":"Test","email":"%s","has_claude_max":true,"created_at":"2023-07-17T15:43:29.687326Z"},"organization":{"uuid":"org-%s","name":"%s","organization_type":"%s","billing_type":"stripe_subscription","rate_limit_tier":"default_claude_max_20x","seat_tier":%s,"has_extra_usage_enabled":false,"subscription_status":"active","subscription_created_at":"2024-06-25T14:24:38.082084Z","cc_onboarding_flags":{},"claude_code_trial_ends_at":null,"claude_code_trial_duration_days":null,"payment_auth_hosted_invoice_url":null,"claude_ai_completion_feedback_enabled":true,"claude_ai_safety_feedback_enabled":true},"application":{"uuid":"app-uuid","name":"Claude Code","slug":"claude-code"}}\n' \
+            "$2" "$3" "$2" "$5" "$4" "${6:-null}" > "$1/profile.$2"
+    }
+    pworld() {  # TOKEN SUBSCRIPTION EXPIRES_MS -> a world: a's entry vaulted, a's identity live, a fresh sign-in installed
+        local w; w=$(world); mkdir -p "$w/vault"
+        printf '{"email":"a@example.com","login":"a@example.com","oauthAccount":{"emailAddress":"a@example.com","organizationType":"claude_max"},"claudeAiOauth":{"accessToken":"tok-a","subscriptionType":"max","expiresAt":4000000000000,"refreshTokenExpiresAt":4200000000000},"saved_at":1}\n' > "$w/vault/a@example.com.json"
+        jq '{oauthAccount}' "$w/vault/a@example.com.json" > "$w/cfg/.claude.json"
+        printf '{"claudeAiOauth":{"accessToken":"%s","subscriptionType":"%s","expiresAt":%s,"refreshTokenExpiresAt":4300000000000}}\n' "$1" "$2" "$3" > "$w/cfg/.credentials.json"
+        cp "$w/vault/a@example.com.json" "$w/a-before.json"
+        printf '%s\n' "$w"
+    }
+    CPF=$(curlstub)
+    W14p=$(pworld tok-n max 4000000000000)
+    pbody "$CPF" tok-n n@example.com claude_max "N Org"
+    out=$(sess "$W14p" SESSION_ACCOUNTS_DIR="$W14p/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-n n@example.com" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14p/vault/n@example.com.json" 2>&1) $(jq -r '.oauthAccount.emailAddress' "$W14p/vault/n@example.com.json" 2>&1)" \
+        "case 14 [profile]: a fresh sign-in beside a stale identity is saved under the account its token belongs to"
+    report same "$(cmp -s "$W14p/a-before.json" "$W14p/vault/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [profile]: ... leaving the stale identity's login untouched"
+    report "yes $(printf 'login=n@example.com\nend=4300000000000\nplan=max')" \
+        "$([ -e "$CPF/profiled.tok-n" ] && echo yes || echo no) $(cat "$W14p/cfg/.session-login-installed" 2>&1)" \
+        "case 14 [profile]: ... having asked the profile endpoint, and recorded like a swap"
+    out=$(sess "$W14p" SESSION_ACCOUNTS_DIR="$W14p/vault" PATH="$(minipath curl)" -- account 2>&1)
+    report "n@example.com" "$(printf '%s\n' "$out" | awk '$1 == "live" { print $3 }')" \
+        "case 14 [profile]: ... so the list marks that login live"
+    jq '.claudeAiOauth.accessToken = "tok-n2"' "$W14p/cfg/.credentials.json" > "$W14p/cfg/.c.tmp" && mv "$W14p/cfg/.c.tmp" "$W14p/cfg/.credentials.json"
+    out=$(sess "$W14p" SESSION_ACCOUNTS_DIR="$W14p/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-n2 no" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14p/vault/n@example.com.json") $([ -e "$CPF/profiled.tok-n2" ] && echo yes || echo no)" \
+        "case 14 [profile]: a renewal within that sign-in is saved under the record, without asking again"
+
+    W14s=$(pworld tok-s team 4000000000000)
+    pbody "$CPF" tok-s s@example.com claude_team "Example Org" '"team_standard"'
+    out=$(sess "$W14s" SESSION_ACCOUNTS_DIR="$W14s/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-s claude_team" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14s/vault/s@example.com+example-org.json" 2>&1) $(jq -r '.oauthAccount.organizationType' "$W14s/vault/s@example.com+example-org.json" 2>&1)" \
+        "case 14 [profile]: a Team seat's profile names the seat, <email>+<org slug>"
+
+    # When the endpoint cannot be asked, the identity stands, as before, so an
+    # outage never blocks a save; nothing is recorded, and the next sign-in or
+    # renewal asks again.
+    W14f=$(pworld tok-f max 4000000000000)
+    printf '500' > "$CPF/pstatus.tok-f"
+    out=$(sess "$W14f" SESSION_ACCOUNTS_DIR="$W14f/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-f absent" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14f/vault/a@example.com.json") $([ -e "$W14f/cfg/.session-login-installed" ] && echo present || echo absent)" \
+        "case 14 [profile]: an endpoint that fails leaves the identity's name, as before, and records nothing"
+    W14l=$(pworld tok-l max 1000)
+    pbody "$CPF" tok-l l@example.com claude_max "L Org"
+    out=$(sess "$W14l" SESSION_ACCOUNTS_DIR="$W14l/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "no" "$([ -e "$CPF/profiled.tok-l" ] && echo yes || echo no)" \
+        "case 14 [profile]: a lapsed token is never sent to the profile endpoint"
+    printf '{"claudeAiOauth":{"accessToken":"","subscriptionType":"max","expiresAt":4000000000000,"refreshTokenExpiresAt":4300000000000}}\n' > "$W14l/cfg/.credentials.json"
+    rm -f "$CPF"/profiled.*
+    out=$(sess "$W14l" SESSION_ACCOUNTS_DIR="$W14l/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "1 none" "$rc $(cd "$CPF" && ls profiled.* 2>/dev/null | tr '\n' ' ' | sed 's/ $//' | grep . || echo none)" \
+        "case 14 [profile]: ... nor is a blank one, even with an expiry still ahead"
+
+    # A record is the sign-in it names, not any sign-in near it: a /login made
+    # 40 s after the one recorded, or a Team seat picked 5 s after its own
+    # email's Max plan, is asked about and recorded afresh.
+    W14t=$(pworld tok-t max 4000000000000)
+    jq -c '.oauthAccount.emailAddress = "t@example.com"' "$W14t/cfg/.claude.json" > "$W14t/cfg/.j" && mv "$W14t/cfg/.j" "$W14t/cfg/.claude.json"
+    printf 'login=a@example.com\nend=4299999960000\nplan=max\n' > "$W14t/cfg/.session-login-installed"
+    pbody "$CPF" tok-t t@example.com claude_max "T Org"
+    out=$(sess "$W14t" SESSION_ACCOUNTS_DIR="$W14t/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-t same" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14t/vault/t@example.com.json" 2>&1) $(cmp -s "$W14t/a-before.json" "$W14t/vault/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [profile]: a sign-in 40 s after the recorded one is its own, saved under its own login"
+    W14m=$(pworld tok-m team 4000000000000)
+    printf 'login=a@example.com\nend=4299999995000\nplan=max\n' > "$W14m/cfg/.session-login-installed"
+    pbody "$CPF" tok-m a@example.com claude_team "Example Org" '"team_standard"'
+    out=$(sess "$W14m" SESSION_ACCOUNTS_DIR="$W14m/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "0 tok-m same" \
+        "$rc $(jq -r '.claudeAiOauth.accessToken' "$W14m/vault/a@example.com+example-org.json" 2>&1) $(cmp -s "$W14m/a-before.json" "$W14m/vault/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [profile]: a seat signed in 5 s after its email's Max plan is not taken for the plan's sign-in"
+
+    # The answer is about the credential that was sent. One replaced while the
+    # endpoint was asked (a swap, a /login) is not saved under it, and nothing is
+    # recorded; the next save judges the new credential.
+    W14c2=$(pworld tok-c max 4000000000000)
+    pbody "$CPF" tok-c c@example.com claude_max "C Org"
+    printf '#!/bin/sh\nprintf %s > "%s"\n' "'{\"claudeAiOauth\":{\"accessToken\":\"tok-z\",\"subscriptionType\":\"max\",\"expiresAt\":4000000000000,\"refreshTokenExpiresAt\":4400000000000}}'" "$W14c2/cfg/.credentials.json" > "$CPF/during.tok-c"
+    chmod +x "$CPF/during.tok-c"
+    out=$(sess "$W14c2" SESSION_ACCOUNTS_DIR="$W14c2/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "1 absent absent same" \
+        "$rc $([ -e "$W14c2/vault/c@example.com.json" ] && echo present || echo absent) $([ -e "$W14c2/cfg/.session-login-installed" ] && echo present || echo absent) $(cmp -s "$W14c2/a-before.json" "$W14c2/vault/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [profile]: a credential replaced while the endpoint was asked is not saved under its answer"
+    W14c3=$(pworld tok-c3 max 4000000000000)
+    printf '401' > "$CPF/pstatus.tok-c3"
+    printf '#!/bin/sh\nprintf %s > "%s"\n' "'{\"claudeAiOauth\":{\"accessToken\":\"tok-z\",\"subscriptionType\":\"max\",\"expiresAt\":4000000000000,\"refreshTokenExpiresAt\":4400000000000}}'" "$W14c3/cfg/.credentials.json" > "$CPF/during.tok-c3"
+    chmod +x "$CPF/during.tok-c3"
+    out=$(sess "$W14c3" SESSION_ACCOUNTS_DIR="$W14c3/vault" PATH="$CPF:$PATH" -- account save 2>&1); rc=$?
+    report "1 same" "$rc $(cmp -s "$W14c3/a-before.json" "$W14c3/vault/a@example.com.json" && echo same || echo changed)" \
+        "case 14 [profile]: ... and neither is one replaced while the endpoint failed, under the identity read before it"
 
     out=$( (sess "$W14b" SESSION_ACCOUNTS_DIR="$V2" -- account use me@example >/dev/null) 2>&1 ); rc=$?
     report 1 "$rc" "case 14 [same email]: a substring both names contain is ambiguous"

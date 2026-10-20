@@ -147,12 +147,13 @@ SESSION_LOCK_WAIT="${SESSION_LOCK_WAIT:-15}"
 # autosave that would have filed its credential there). So every swap records
 # the login it installed and that sign-in's end in
 # <config dir>/.session-login-installed (acct_swap_locked), and while the
-# installed credential is that sign-in (ends within a minute) the record names
+# installed credential is that sign-in (ends within 10 s, the same plan) the record names
 # the live login, ahead of both rules here. It is what the swap installed, not
 # how the vault is filed: a vault entry that merely holds the credential would,
 # if it was ever filed under the wrong name, keep naming the login wrong for the
 # life of the sign-in. A credential of another sign-in, as after a /login,
-# leaves the record naming nothing. Only the live identity is checked: a file
+# leaves the record naming nothing until acct_save has asked the profile
+# endpoint whose it is and recorded the answer the same way. Only the live identity is checked: a file
 # passed in is a snapshot or a vault entry, and names itself.
 #
 # _SESSION_PLAN_CLASH is a jq fragment run on an oauthAccount with $cred bound
@@ -165,14 +166,21 @@ _SESSION_PLAN_CLASH='(try ($cred | fromjson | .claudeAiOauth.subscriptionType //
   | if $s != "" and $o != "" and $o != "claude_\($s)" then "claude_\($s)" else "" end'
 # _SESSION_INSTALLED is a jq fragment with $cred and $inst bound to the
 # credentials file's and the swap record's text. It yields the login the record
-# names when the installed credential's sign-in end is within a minute of the
-# recorded one, else "".
-_SESSION_INSTALLED='(try ($cred | fromjson | .claudeAiOauth.refreshTokenExpiresAt // 0) catch 0) as $le
+# names when the installed credential is the recorded sign-in, else "": its end
+# within 10 s of the recorded one, and its plan the recorded plan where both
+# carry one. Renewals of one sign-in were measured at ±1 s around its end, 5 s
+# at the widest across ~300 vaulted copies; a minute would take a second
+# /login made within it for the first (two accounts, or an email's Team seat
+# picked straight after its Max plan), and every save writes a record now.
+_SESSION_INSTALLED='(try ($cred | fromjson | .claudeAiOauth) catch {}) as $c
+  | (($c // {}).refreshTokenExpiresAt // 0) as $le | (($c // {}).subscriptionType // "") as $lp
   | ($inst | split("\n")) as $r
   | ($r | map(select(startswith("login=")) | .[6:]) | first // "") as $il
   | ($r | map(select(startswith("end=")) | .[4:] | (tonumber? // 0)) | first // 0) as $ie
+  | ($r | map(select(startswith("plan=")) | .[5:]) | first // "") as $ip
   | if $il != "" and ($ie | type) == "number" and $ie > 0 and ($le | type) == "number" and $le > 0
-       and (if $ie > $le then $ie - $le else $le - $ie end) <= 60000 then $il else "" end'
+       and (if $ie > $le then $ie - $le else $le - $ie end) <= 10000
+       and ($ip == "" or ($lp | type) != "string" or $lp == "" or $ip == $lp) then $il else "" end'
 session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and the
   local e t n w m v s l cred=/dev/null inst=/dev/null   # mid-wait flip check re-read the live value inside one process
   if [ $# -eq 0 ] && [ -s "$SESSION_CFG/.credentials.json" ] && [ -r "$SESSION_CFG/.credentials.json" ]; then
@@ -201,6 +209,13 @@ session_login_read() {  # [IDENTITY_FILE] — unmemoised: `session account` and 
     session_login_read "$v"; return 0
   fi
   printf '%s\n' "$l"
+}
+# The login the swap record names for the installed credential, or nothing:
+# whether a sign-in has already been named by a swap or a verified save.
+session_installed_login() {
+  local c="$SESSION_CFG/.credentials.json" r="$SESSION_CFG/.session-login-installed"
+  [ -s "$c" ] && [ -r "$c" ] && [ -s "$r" ] && [ -r "$r" ] || return 0
+  jq -nr --rawfile cred "$c" --rawfile inst "$r" "$_SESSION_INSTALLED" 2>/dev/null || true
 }
 # The one vault entry with this email and organisation type that holds the
 # credential's sign-in (the rule above), or a non-zero return for none, several,
