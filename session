@@ -3006,14 +3006,14 @@ if [ "${submode:-}" = time ]; then
     # consumer that books attended_s must be told that rather than handed a
     # zero (which reads as "you were not there") or an unlabelled substitute.
     # The fallback is the active time, and attended_basis says which it is.
-    # Decided on what the read actually produced, not on the live file's size:
-    # `ta` is computed from live AND archive, so testing the live file alone
-    # threw away a real archived measurement and labelled it `active` — the one
-    # word that tells a consumer there was no measurement. Spans found means a
-    # focus measurement happened for this window (this session's or another's);
-    # none means focus tracking produced nothing here, and the active time,
-    # labelled, is the honest substitute.
-    abasis=focus; [ -n "$fspans" ] || { ta=$tact; abasis=active; }
+    # Two facts each prove a measurement. Spans found in the window (live or
+    # archive: testing the live file alone once threw away a real archived
+    # measurement of a past day) are one. A live focus log with rows is the
+    # other: the machine is tracking, so a window with no spans measured zero.
+    # Deciding on the window alone read every session before the day's first
+    # focused minute, and every headless run, as a machine without tracking and
+    # handed a task logger their agent time as attention.
+    abasis=focus; [ -n "$fspans" ] || [ -s "$flog" ] || { ta=$tact; abasis=active; }
     open_s=0; [ "$tpend" != 0 ] && open_s=$((dayend-tpend))
     printf '{"sid":"%s","date":"%s","day":"%s","turns":%d,"active_s":%d,"longest_s":%d,"unclosed":%d,"open_turn_s":%d,"failed":%d,"prompts":%d,"subagents":%d,"waits_s":%d,"attended_s":%d,"attended_basis":"%s","watched_s":%d,"ended":%d}\n' \
       "$sid" "$(fmt_epoch "$midnight" %F)" "$dayword" \

@@ -2477,16 +2477,30 @@ else
         | grep -q 'attended 1m40s' && echo yes || echo no)" \
         "F2: ... and the text view still says the same thing"
 
-    # The other end of the trade: a focus log that exists but produced no spans
-    # for the window is not a measurement, so the basis falls back to active.
+    # A machine that is tracking focus but saw no focused minute in the window
+    # (the morning before anyone sits down, a headless run) measured zero: the
+    # active time is agent time, never attention.
     WF2b=$(world)
     printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\te\tp1\t-\t-\n' \
         $(( DAY0 + 3600 )) "$UUID" $(( DAY0 + 4200 )) "$UUID" > "$WF2b/data/turn-log.tsv"
     printf '%s.000\tin\tpts/9\tvsc-a\t%%14\t%s\n' $(( DAY0 - 5 * 86400 )) "$UUID" \
         > "$WF2b/data/focus-log.tsv"
     j=$(sess "$WF2b" SESSION_NOW=$NOON -- time --json)
+    report focus "$(printf '%s' "$j" | jq -r '.attended_basis')" \
+        "F2: a live focus log with nothing in the window is a measured zero — the basis is focus"
+    report "600 0" "$(printf '%s' "$j" | jq -r '[.active_s,.attended_s]|join(" ")')" \
+        "F2: ... and attended is 0, not the active time"
+
+    # Only a machine whose live focus log is empty (tracking off for longer than
+    # the live window) and whose read found no spans reports the active time.
+    WF2c=$(world); mkdir -p "$WF2c/data/archive"
+    printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\te\tp1\t-\t-\n' \
+        $(( DAY0 + 3600 )) "$UUID" $(( DAY0 + 4200 )) "$UUID" > "$WF2c/data/turn-log.tsv"
+    printf '%s.000\tin\tpts/9\tvsc-a\t%%14\t%s\n%s.000\tout\tpts/9\tvsc-a\t%%14\t%s\n' \
+        $(( OLDD + 3600 )) "$UUID" $(( OLDD + 3700 )) "$UUID" > "$WF2c/data/archive/focus-log.tsv"
+    j=$(sess "$WF2c" SESSION_NOW=$NOON -- time --json)
     report active "$(printf '%s' "$j" | jq -r '.attended_basis')" \
-        "F2: a focus log with nothing in the window is not a measurement — the basis is active"
+        "F2: an empty live focus log and no spans in the window — the basis is active"
     report "$(printf '%s' "$j" | jq -r '.active_s')" "$(printf '%s' "$j" | jq -r '.attended_s')" \
         "F2: ... and attended falls back to the active time"
 fi

@@ -63,7 +63,7 @@ When a cap is spent and another subscription is saved, `session account` lists e
 
 **active** is the sum of turn spans, start to end, tool time included and the gaps between turns excluded. **attended** is time the session's tmux tab was focused, stopping `SESSION_ATTEND_TAIL` seconds after the last keypress or scroll (default: `SESSION_ATTEND_GRACE`, 600). **watched** is their overlap. An interrupted turn can lack its end and shows as *unclosed*, adding nothing, so active is a floor.
 
-`session time --json` is what a task logger books worklog time against, reading `date`, `attended_s`, `active_s` and `attended_basis`. `attended_basis: active` means this machine has no focus tracking and `attended_s` is just `active_s`, an upper bound on attention: book it as an estimate (`~11m`), never as `11m04s`. The contract is README.md's "`time --json`" section; `session doctor` says which basis this machine is on.
+`session time --json` is what a task logger books worklog time against, reading `date`, `attended_s`, `active_s` and `attended_basis`. `attended_basis: active` means this machine has no focus tracking and `attended_s` is just `active_s`, the time the agent worked: never book it as attended time. On a machine that tracks focus, a session nobody looked at reads `attended_s: 0` with basis `focus`, which is the measurement, not a fault. The contract is README.md's "`time --json`" section; `session doctor` says which basis this machine is on.
 
 ## Surviving a reboot — `session reboot` + `session resume`
 
