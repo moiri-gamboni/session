@@ -321,6 +321,10 @@ C28e=$(mkcfg); B28e="$TMP/bin28e"
 if sudo -n true >/dev/null 2>&1; then
     NOTMINE="$TMP/notmine"
     cp -R "$CLONE" "$NOTMINE"
+    # Readable by everyone before it changes hands: under a 077 umask the copy
+    # is 700, and a root-owned 700 directory fails as unreadable (exit 126)
+    # before the installer's ownership check can refuse it.
+    chmod 755 "$NOTMINE"
     sudo -n chown 0 "$NOTMINE" >/dev/null 2>&1
     if [ -O "$NOTMINE" ]; then
         skip "case 28 [ownership]" "chown left the directory ours (running as root?)"
