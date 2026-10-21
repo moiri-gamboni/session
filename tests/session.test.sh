@@ -1871,7 +1871,7 @@ else
         "case 6: attended_basis is focus or active"
 
     # No focus log at all: attended is the active time, labelled as such, so a
-    # consumer books an upper bound knowingly instead of reading a real zero.
+    # consumer can tell it is the agent's working time, not a measure of attention.
     report "active" "$(printf '%s' "$j" | jq -r '.attended_basis')" "case 6: without a focus log the basis is active"
     report "$(printf '%s' "$j" | jq -r '.active_s')" "$(printf '%s' "$j" | jq -r '.attended_s')" \
         "case 6: ... and attended_s equals active_s"
