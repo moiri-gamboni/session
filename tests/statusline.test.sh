@@ -857,8 +857,8 @@ report no  "$(yesno has "$seg_both" 'fresher draft')" "task: ... and the pointer
 # The clip is by code point (jq), so the accented and curly characters survive a
 # C-locale render; the cut lands at a word boundary and drops the trailing comma.
 seg_draft=$(render "$PT2" SESSION_DATA_DIR="$DT")
-report yes "$(yesno has "$seg_draft" ' · A fresher draft about Zoë’s réunion… · ')" \
-    "task: a draft shows its H1, clipped at a word boundary with an ellipsis"
+report yes "$(yesno has "$seg_draft" ' · ⬜ A fresher draft about Zoë’s réunion… · ')" \
+    "task: a draft shows its H1, clipped at a word boundary with an ellipsis, after its status badge"
 report no "$(yesno has "$seg_draft" ']8;;')" "task: ... with no link, since a draft has no row"
 report no "$(yesno has "$seg_draft" '↗')"    "task: ... and no link marker"
 
@@ -907,9 +907,9 @@ report yes "$(yesno has "$seg_cfg" "$LINK")" "task: outside every workspace, a l
 report no  "$(yesno has "$seg_cfg" 'second store')" "task: ... the most recent one winning though an older one is listed after it"
 pointer2 $(( NOW + 60 ))
 seg_cfg2=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2:$WS")
-report yes "$(yesno has "$seg_cfg2" ' · A task in the second store')" "task: ... and though an older one is listed before it"
+report yes "$(yesno has "$seg_cfg2" ' · ✅ A task in the second store')" "task: ... and though an older one is listed before it"
 seg_cfg3=$(render "$PT2" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2")
-report yes "$(yesno has "$seg_cfg3" ' · A task in the second store')" "task: inside a workspace, a newer pointer in a listed one wins over its own"
+report yes "$(yesno has "$seg_cfg3" ' · ✅ A task in the second store')" "task: inside a workspace, a newer pointer in a listed one wins over its own"
 seg_cfg4=$(render "$PT1" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$WS2")
 report yes "$(yesno has "$seg_cfg4" "$LINK")" "task: ... while a cwd inside a task folder still wins over every pointer"
 pointer2 $(( NOW - 60 ))
@@ -919,7 +919,7 @@ seg_glob=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$TMP/ws
 report yes "$(yesno has "$seg_glob" "$LINK")" "task: a glob entry expands to the workspaces it matches"
 pointer2 $(( NOW + 60 ))
 seg_glob2=$(render "$PT3" SESSION_DATA_DIR="$DT" SESSION_TASK_WORKSPACES="$TMP/ws*")
-report yes "$(yesno has "$seg_glob2" ' · A task in the second store')" "task: ... every one of them"
+report yes "$(yesno has "$seg_glob2" ' · ✅ A task in the second store')" "task: ... every one of them"
 rm -rf "$WS2"
 
 # The pointer names a folder, never a path: a slug carrying "/" or starting with
@@ -956,6 +956,77 @@ jq -n --arg s "$TSLUG" --argjson t "$NOW" '{"99999999-9999-9999-9999-99999999999
     > "$WS/tasks/.sync/session-task.json"
 seg_other=$(render "$PT2" SESSION_DATA_DIR="$DT")
 report no "$(yesno has "$seg_other" ']8;;')" "task: another session's pointer is not this session's task"
+
+echo "--- the task badge: status, priority and due date ---"
+
+# task.md's frontmatter carries the row's state for a synced task and a draft
+# alike, each value a JSON string (tasksync's own format; the vocabulary is the
+# Notion Tasks database's). It shows as emoji between the separator and the
+# title: the status, the priority's colour, and the due date counted in days
+# from today in the render's time zone, which the suite pins to UTC.
+pointer "$TSLUG"
+BODY=$(printf '\033]8;;%s\a%s ↗\033]8;;\a' "$TURL" "Bias adjustment for incomplete judging")
+day() { jq -rn --argjson n "$1" 'now + $n * 86400 | strftime("%Y-%m-%d")'; }
+fm() {  # FRONTMATTER — the synced task's task.md, carrying that frontmatter
+    printf -- '---\n%s\n---\n\n# Bias adjustment for incomplete judging\n\nbody\n' "$1" > "$WS/tasks/$TSLUG/task.md"
+}
+badge() { render "$PT2" SESSION_DATA_DIR="$DT"; }
+
+fm "status: \"In Progress\"
+priority: \"HIGH\"
+project: [\"Judging\"]
+due_date: \"$(day 2)\""
+b_open=$(badge)
+report yes "$(yesno has "$b_open" " · 🚧🔴📅2d $BODY")" \
+    "badge: an open task shows status, priority and days to its due date ahead of the linked title"
+report 1 "$(printf '%s\n' "$b_open" | wc -l | tr -d ' ')" "badge: ... on one line"
+
+fm "status: \"Not Started\"
+priority: \"MED-LOW\"
+due_date: \"$(day 0)\""
+report yes "$(yesno has "$(badge)" " · ⬜🟢📅today $BODY")" "badge: a task due today says so"
+
+fm "status: \"Blocked\"
+priority: \"MED-HIGH\"
+due_date: \"$(day -3)\""
+report yes "$(yesno has "$(badge)" " · ⛔🟠⏰3d late $BODY")" "badge: a task past its due date counts the days it is late"
+
+fm "status: \"Done\"
+priority: \"MEDIUM\"
+due_date: \"$(day -3)\""
+report yes "$(yesno has "$(badge)" " · ✅🟡 $BODY")" "badge: a closed task shows no due date"
+fm "status: \"Archived\"
+priority: \"LOW\"
+due_date: \"$(day 4)\""
+report yes "$(yesno has "$(badge)" " · 📦🔵 $BODY")" "badge: ... nor does an archived one"
+
+fm "status: \"backlog\"
+priority: \"\"
+due_date: \"$(day 1)T14:00:00.000+02:00\""
+report yes "$(yesno has "$(badge)" " · 📥📅1d $BODY")" \
+    "badge: status is matched in any case, an empty priority shows nothing, a timed due date counts by its date"
+
+fm "status: \"In Review\"
+due_date: \"$(day -5) → $(day 4)\""
+report yes "$(yesno has "$(badge)" " · 👀📅4d $BODY")" "badge: a due date range is due at its end"
+
+for st in Scheduled:⏳ Rolling:🔁 Paused:💤; do
+    fm "status: \"${st%%:*}\""
+    report yes "$(yesno has "$(badge)" " · ${st#*:} $BODY")" "badge: ${st%%:*} is ${st#*:}"
+done
+
+fm "status: \"Someday\"
+priority: \"URGENT\"
+due_date: \"next week\""
+b_odd=$(badge)
+report yes "$(yesno has "$b_odd" " · $BODY")" "badge: values outside the vocabulary show nothing, and the title keeps its place"
+report yes "$(yesno has "$b_odd" "$MARK")" "badge: ... while the rest of the line renders"
+
+printf '# Bias adjustment for incomplete judging\n\nstatus: "Done"\n' > "$WS/tasks/$TSLUG/task.md"
+report yes "$(yesno has "$(badge)" " · $BODY")" "badge: a task.md with no frontmatter shows no badge"
+printf -- '---\nstatus: "Done"\n\n# never closed\n' > "$WS/tasks/$TSLUG/task.md"
+report yes "$(yesno has "$(badge)" " · $BODY")" "badge: ... nor does one whose frontmatter is never closed"
+rm -f "$WS/tasks/$TSLUG/task.md"
 
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
