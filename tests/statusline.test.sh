@@ -978,19 +978,19 @@ priority: \"HIGH\"
 project: [\"Judging\"]
 due_date: \"$(day 2)\""
 b_open=$(badge)
-report yes "$(yesno has "$b_open" " · 🚧🔴2d $BODY")" \
+report yes "$(yesno has "$b_open" " · 🚧🔴 2d $BODY")" \
     "badge: an open task shows status, priority and days to its due date ahead of the linked title"
 report 1 "$(printf '%s\n' "$b_open" | wc -l | tr -d ' ')" "badge: ... on one line"
 
 fm "status: \"Not Started\"
 priority: \"MED-LOW\"
 due_date: \"$(day 0)\""
-report yes "$(yesno has "$(badge)" " · ⬜🟢0d $BODY")" "badge: a task due today is due in 0d"
+report yes "$(yesno has "$(badge)" " · ⬜🟢 0d $BODY")" "badge: a task due today is due in 0d"
 
 fm "status: \"Blocked\"
 priority: \"MED-HIGH\"
 due_date: \"$(day -3)\""
-report yes "$(yesno has "$(badge)" " · ⛔🟠-3d $BODY")" "badge: a task past its due date counts the days it is late as negative"
+report yes "$(yesno has "$(badge)" " · ⛔🟠 -3d $BODY")" "badge: a task past its due date counts the days it is late as negative"
 
 fm "status: \"Done\"
 priority: \"MEDIUM\"
@@ -1004,12 +1004,15 @@ report yes "$(yesno has "$(badge)" " · 📦🔵 $BODY")" "badge: ... nor does a
 fm "status: \"backlog\"
 priority: \"\"
 due_date: \"$(day 1)T14:00:00.000+02:00\""
-report yes "$(yesno has "$(badge)" " · 📥1d $BODY")" \
+report yes "$(yesno has "$(badge)" " · 📥 1d $BODY")" \
     "badge: status is matched in any case, an empty priority shows nothing, a timed due date counts by its date"
 
 fm "status: \"In Review\"
 due_date: \"$(day -5) → $(day 4)\""
-report yes "$(yesno has "$(badge)" " · 👀4d $BODY")" "badge: a due date range is due at its end"
+report yes "$(yesno has "$(badge)" " · 👀 4d $BODY")" "badge: a due date range is due at its end"
+
+fm "due_date: \"$(day 6)\""
+report yes "$(yesno has "$(badge)" " · 6d $BODY")" "badge: a due date with no status or priority stands alone ahead of the title"
 
 for st in Scheduled:⏳ Rolling:🔁 Paused:💤; do
     fm "status: \"${st%%:*}\""

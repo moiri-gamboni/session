@@ -414,18 +414,18 @@ if [ -n "$_slug" ]; then
        else [] end) as $fm
     | def fm($k): first($fm[] | capture("^" + $k + ": *\"(?<v>[^\"]*)\"").v) // "";
       (fm("status") | ascii_downcase) as $st
-    | ({"not started": "⬜", "in progress": "🚧", "in review": "👀", "blocked": "⛔",
+    | [({"not started": "⬜", "in progress": "🚧", "in review": "👀", "blocked": "⛔",
         "paused": "💤", "backlog": "📥", "scheduled": "⏳", "rolling": "🔁",
         "done": "✅", "archived": "📦"}[$st] // "")
     + ({"HIGH": "🔴", "MED-HIGH": "🟠", "MEDIUM": "🟡", "MED-LOW": "🟢", "LOW": "🔵"}
-        [fm("priority") | ascii_upcase] // "")
-    + (if $st == "done" or $st == "archived" then "" else
+        [fm("priority") | ascii_upcase] // ""),
+       (if $st == "done" or $st == "archived" then "" else
          (fm("due_date") | split("→") | last // "" | ltrimstr(" ") | .[:10]) as $d
          | def day: . + "T00:00:00Z" | fromdateiso8601;
            (try ((($d | day) - (now | strflocaltime("%Y-%m-%d") | day)) / 86400 | floor)
             catch null) as $n
          | if $n == null then "" else "\($n)d" end
-       end)' < "$_tdir/task.md")
+       end)] | map(select(. != "")) | join(" ")' < "$_tdir/task.md")
   if [ -n "$_ttl" ] && [ -n "$_url" ]; then
     # BEL-terminated, the form Claude Code's own link helpers emit
     _task_seg=$(printf ' · %s\033]8;;%s\a%s ↗\033]8;;\a' "${_badge:+$_badge }" "$_url" "$_ttl")
