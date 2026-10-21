@@ -292,16 +292,16 @@ _dh() { local s=$1 h; [ "$s" -lt 0 ] && s=0
 _seg() {  # $1=label  $2=pct  $3=resets_at  $4=cadence secs (0 = not projectable)
   local p="${2%%.*}" r="$3" w="$4" left
   if [ -z "$p" ] || [ "$p" = "-1" ]; then return; fi
-  if [ "$r" -le 0 ]; then printf ' · %s %s%%' "$1" "$p"; return; fi
+  if [ "$r" -le 0 ]; then printf '│%s %s%%' "$1" "$p"; return; fi
   if [ "$r" -gt "$_now" ]; then
     left=$(( r - _now ))
-    if [ "$w" -gt 0 ]; then printf ' · %s %s%% %s' "$1" "$p" "$(_dh "$left")"
-    else                    printf ' · %s %s%% %s' "$1" "$p" "$(_hm "$left")"; fi
+    if [ "$w" -gt 0 ]; then printf '│%s %s%% %s' "$1" "$p" "$(_dh "$left")"
+    else                    printf '│%s %s%% %s' "$1" "$p" "$(_hm "$left")"; fi
   elif [ "$w" -gt 0 ]; then
     left=$(( r + w * ( (_now - r + w - 1) / w ) - _now ))
-    printf ' · %s %s%%? ~%s' "$1" "$p" "$(_dh "$left")"
+    printf '│%s %s%%? ~%s' "$1" "$p" "$(_dh "$left")"
   else
-    printf ' · %s %s%%?' "$1" "$p"
+    printf '│%s %s%%?' "$1" "$p"
   fi
 }
 _five_seg=$(_seg 5h "$_d_f5" "$_d_fr" 0)
@@ -437,7 +437,7 @@ fi
 # compaction and PostCompact removes it. Claude Code shows nothing itself for a
 # blocked compaction, so this is where the hold stays visible.
 _hold_seg=""
-[ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held · "
+[ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held│"
 
 jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag" \
       --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" '
@@ -447,9 +447,9 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
   (.model.display_name // .model.id // "") as $mn |
   (.effort.level // "") as $ef |
   (if $mn == "" and $ef == "" then ""
-   elif $ef == "" then $mn + " · "
-   elif $mn == "" then $ef + " · "
-   else "\($mn) \($ef) · " end) as $model |
+   elif $ef == "" then $mn + "│"
+   elif $mn == "" then $ef + "│"
+   else "\($mn) \($ef)│" end) as $model |
   (.context_window.current_usage // {}) as $cu |
   ([$cu.input_tokens, $cu.cache_creation_input_tokens, $cu.cache_read_input_tokens]
     | map(. // 0) | add) as $used |
