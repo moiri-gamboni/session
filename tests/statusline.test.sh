@@ -55,7 +55,7 @@ TAB=$'\t'
 # Only the percentages: the countdowns beside them are wall-clock differences
 # between fixture time and render time, so asserting those would pin the clock
 # rather than the selection. The pattern keeps its leading "· " because a
-# weekly countdown such as "↻ 4d15h" ends in "5h " too and would match without
+# weekly countdown such as "4d15h" ends in "5h " too and would match without
 # it. Empty output means the line had no 5h/wk pair at all, which is a legible
 # failure rather than a silent match.
 pcts() { printf '%s\n' "$1" | sed -n 's/.*· 5h \([^ ]*\).*· wk \([^ ]*\).*/\1 \2/p'; }
@@ -398,7 +398,7 @@ render "$PS1" SESSION_DATA_DIR="$DS" >/dev/null
 seg_fresh=$(render "$PS2" SESSION_DATA_DIR="$DS")
 report "47% 63%" "$(pcts "$seg_fresh")" \
     "seg: a proven-fresh tuple displays the payload's own percentages"
-report yes "$(yesno grep -qE '· 5h 47% ↻ [0-9]+h[0-9]+m · wk 63% ↻ [0-9]+[dh][0-9]+[hm]' <<<"$seg_fresh")" \
+report yes "$(yesno grep -qE '· 5h 47% [0-9]+h[0-9]+m · wk 63% [0-9]+[dh][0-9]+[hm]' <<<"$seg_fresh")" \
     "seg: ... each paired with a countdown, the weekly in days"
 
 # The 2026-08-05 shape: a session whose very first render can already be
@@ -423,9 +423,9 @@ report "55%? 60%?" "$(pcts "$seg_stale")" \
     "seg: an expired window keeps its percentage and is marked doubtful"
 report yes "$(yesno has "$seg_stale" '· 5h 55%? · wk')" \
     "seg: the usage-anchored 5h window keeps its ? with no countdown rather than a projected one"
-report yes "$(yesno grep -qE 'wk 60%\? ↻ ~[0-9]+d[0-9]+h' <<<"$seg_stale")" \
+report yes "$(yesno grep -qE 'wk 60%\? ~[0-9]+d[0-9]+h' <<<"$seg_stale")" \
     "seg: the weekly is stepped forward on its fixed cadence and marked ~"
-report no "$(yesno has "$seg_stale" '↻ 0h0m')" \
+report no "$(yesno has "$seg_stale" '0h0m')" \
     "seg: ... and neither window counts down to a bare zero"
 
 # No reset timestamp at all is a third state: the percentage is current, the
@@ -434,7 +434,7 @@ DSN="$TMP/dataseg-noreset"
 PSN="$TMP/psn.json"; mkpayload "$SID" 0.1 15 25 0 0 "seg" > "$PSN"
 seg_nores=$(render "$PSN" SESSION_DATA_DIR="$DSN")
 report "15% 25%" "$(pcts "$seg_nores")" "seg: with no reset timestamp the percentage still renders"
-report no "$(yesno has "$seg_nores" '↻')" "seg: ... with no countdown invented for it"
+report yes "$(yesno has "$seg_nores" ' · 5h 15% · wk 25% · ')" "seg: ... with no countdown invented for it"
 report no "$(yesno has "$seg_nores" '%?')"  "seg: ... and no ? marker either"
 
 # A window the payload omits entirely is skipped, not rendered as 0% or -1%.

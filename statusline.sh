@@ -260,7 +260,7 @@ session_prune_daily
 # rate_limits only refresh on an API RESPONSE, so a session that is idle — or
 # rate-limited, which is exactly when you check — keeps rendering the last window
 # it was told about. Once that resets_at passes, the countdown used to clamp to
-# "↻ 0h0m", which reads as "the cap is up" when it is not. Corrections:
+# "0h0m", which reads as "the cap is up" when it is not. Corrections:
 #   • the payload is trusted as-is only when it is provably fresh (_fresh). A
 #     same-account payload (_owner matches) competes per window with the shared
 #     cache — whichever resets_at is later wins, valid within one account; pct
@@ -295,11 +295,11 @@ _seg() {  # $1=label  $2=pct  $3=resets_at  $4=cadence secs (0 = not projectable
   if [ "$r" -le 0 ]; then printf ' · %s %s%%' "$1" "$p"; return; fi
   if [ "$r" -gt "$_now" ]; then
     left=$(( r - _now ))
-    if [ "$w" -gt 0 ]; then printf ' · %s %s%% ↻ %s' "$1" "$p" "$(_dh "$left")"
-    else                    printf ' · %s %s%% ↻ %s' "$1" "$p" "$(_hm "$left")"; fi
+    if [ "$w" -gt 0 ]; then printf ' · %s %s%% %s' "$1" "$p" "$(_dh "$left")"
+    else                    printf ' · %s %s%% %s' "$1" "$p" "$(_hm "$left")"; fi
   elif [ "$w" -gt 0 ]; then
     left=$(( r + w * ( (_now - r + w - 1) / w ) - _now ))
-    printf ' · %s %s%%? ↻ ~%s' "$1" "$p" "$(_dh "$left")"
+    printf ' · %s %s%%? ~%s' "$1" "$p" "$(_dh "$left")"
   else
     printf ' · %s %s%%?' "$1" "$p"
   fi
