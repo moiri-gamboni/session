@@ -961,9 +961,10 @@ echo "--- the task badge: status, priority and due date ---"
 
 # task.md's frontmatter carries the row's state for a synced task and a draft
 # alike, each value a JSON string (tasksync's own format; the vocabulary is the
-# Notion Tasks database's). It shows as emoji between the separator and the
-# title: the status, the priority's colour, and the due date counted in days
-# from today in the render's time zone, which the suite pins to UTC.
+# Notion Tasks database's). It shows between the separator and the title: the
+# status and the priority's colour as emoji, then the days to the due date,
+# negative once past, counted from today in the render's time zone, which the
+# suite pins to UTC.
 pointer "$TSLUG"
 BODY=$(printf '\033]8;;%s\a%s ↗\033]8;;\a' "$TURL" "Bias adjustment for incomplete judging")
 day() { jq -rn --argjson n "$1" 'now + $n * 86400 | strftime("%Y-%m-%d")'; }
@@ -977,19 +978,19 @@ priority: \"HIGH\"
 project: [\"Judging\"]
 due_date: \"$(day 2)\""
 b_open=$(badge)
-report yes "$(yesno has "$b_open" " · 🚧🔴📅2d $BODY")" \
+report yes "$(yesno has "$b_open" " · 🚧🔴2d $BODY")" \
     "badge: an open task shows status, priority and days to its due date ahead of the linked title"
 report 1 "$(printf '%s\n' "$b_open" | wc -l | tr -d ' ')" "badge: ... on one line"
 
 fm "status: \"Not Started\"
 priority: \"MED-LOW\"
 due_date: \"$(day 0)\""
-report yes "$(yesno has "$(badge)" " · ⬜🟢📅0d $BODY")" "badge: a task due today is due in 0d"
+report yes "$(yesno has "$(badge)" " · ⬜🟢0d $BODY")" "badge: a task due today is due in 0d"
 
 fm "status: \"Blocked\"
 priority: \"MED-HIGH\"
 due_date: \"$(day -3)\""
-report yes "$(yesno has "$(badge)" " · ⛔🟠⏰3d $BODY")" "badge: a task past its due date counts the days it is late under ⏰"
+report yes "$(yesno has "$(badge)" " · ⛔🟠-3d $BODY")" "badge: a task past its due date counts the days it is late as negative"
 
 fm "status: \"Done\"
 priority: \"MEDIUM\"
@@ -1003,12 +1004,12 @@ report yes "$(yesno has "$(badge)" " · 📦🔵 $BODY")" "badge: ... nor does a
 fm "status: \"backlog\"
 priority: \"\"
 due_date: \"$(day 1)T14:00:00.000+02:00\""
-report yes "$(yesno has "$(badge)" " · 📥📅1d $BODY")" \
+report yes "$(yesno has "$(badge)" " · 📥1d $BODY")" \
     "badge: status is matched in any case, an empty priority shows nothing, a timed due date counts by its date"
 
 fm "status: \"In Review\"
 due_date: \"$(day -5) → $(day 4)\""
-report yes "$(yesno has "$(badge)" " · 👀📅4d $BODY")" "badge: a due date range is due at its end"
+report yes "$(yesno has "$(badge)" " · 👀4d $BODY")" "badge: a due date range is due at its end"
 
 for st in Scheduled:⏳ Rolling:🔁 Paused:💤; do
     fm "status: \"${st%%:*}\""

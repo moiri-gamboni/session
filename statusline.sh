@@ -398,14 +398,15 @@ if [ -n "$_slug" ]; then
     _h1=$(awk '/^# /{sub(/^# /, ""); print; exit}' "$_tdir/task.md")
     [ -n "$_h1" ] && _ttl=$(jq -rn --arg t "$_h1" "$_short"'$t | short(40)')
   fi
-  # The badge ahead of the title: status, priority and due date as emoji, read
-  # from task.md's frontmatter, which a synced task and a draft both carry with
-  # each value a JSON string. The vocabulary is the Notion Tasks database's; a
-  # value outside it shows nothing. The due date is counted in whole days from
-  # today in the render's time zone, at the end of a "start → end" range and by
-  # the date part of a timed one, and is dropped once the task is closed. Every
-  # glyph is one that terminals draw two columns wide without a variation
-  # selector, so the line's width is the same everywhere.
+  # The badge ahead of the title: status and priority as emoji, then the days
+  # left to the due date, read from task.md's frontmatter, which a synced task
+  # and a draft both carry with each value a JSON string. The vocabulary is the
+  # Notion Tasks database's; a value outside it shows nothing. The days are
+  # whole days from today in the render's time zone, negative once past, taken
+  # at the end of a "start → end" range and by the date part of a timed one, and
+  # dropped once the task is closed. Every emoji is one that terminals draw two
+  # columns wide without a variation selector, so the line's width is the same
+  # everywhere.
   _badge=""
   [ -s "$_tdir/task.md" ] && _badge=$(jq -Rrn '
     [inputs] as $l
@@ -423,7 +424,7 @@ if [ -n "$_slug" ]; then
          | def day: . + "T00:00:00Z" | fromdateiso8601;
            (try ((($d | day) - (now | strflocaltime("%Y-%m-%d") | day)) / 86400 | floor)
             catch null) as $n
-         | if $n == null then "" elif $n >= 0 then "📅\($n)d" else "⏰\(-$n)d" end
+         | if $n == null then "" else "\($n)d" end
        end)' < "$_tdir/task.md")
   if [ -n "$_ttl" ] && [ -n "$_url" ]; then
     # BEL-terminated, the form Claude Code's own link helpers emit
