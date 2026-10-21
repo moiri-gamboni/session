@@ -54,9 +54,11 @@ TAB=$'\t'
 # The two displayed rate-limit percentages, pulled out of the rendered line.
 # Only the percentages: the countdowns beside them are wall-clock differences
 # between fixture time and render time, so asserting those would pin the clock
-# rather than the selection. Empty output means the line had no 5h/wk pair at
-# all, which is a legible failure rather than a silent match.
-pcts() { printf '%s\n' "$1" | sed -n 's/.*5h: \([^ ,]*\).*wk: \([^ ,]*\).*/\1 \2/p'; }
+# rather than the selection. The pattern keeps its leading "· " because a
+# weekly countdown such as "↻4d15h" ends in "5h " too and would match without
+# it. Empty output means the line had no 5h/wk pair at all, which is a legible
+# failure rather than a silent match.
+pcts() { printf '%s\n' "$1" | sed -n 's/.*· 5h \([^ ]*\).*· wk \([^ ]*\).*/\1 \2/p'; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -144,6 +146,12 @@ render() {  # render PAYLOAD_FILE [VAR=VAL ...] -> the status line on stdout
 
 mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
 
+# What every line rendered from a mkpayload payload carries, after any hold
+# marker: model, effort, then the context the last request carried (2 + 36063 +
+# 21710 tokens, floored to thousands). Cases that only need "a status line came
+# out" look for it.
+MARK='Fable 5 high · 57k'
+
 echo "--- case 20: the cache carries only what is read back ---"
 
 D20="$TMP/data20"           # deliberately absent: the render has to create it
@@ -158,6 +166,8 @@ line20a=$(render "$P20a" SESSION_DATA_DIR="$D20")
 report absent "$(exists "$CACHE20")" "case 20: a first-sighting render writes no cache (the tuple is unowned)"
 report yes "$(yesno test -n "$line20a")" "case 20: it still renders a status line"
 report 1 "$(printf '%s\n' "$line20a" | wc -l | tr -d ' ')" "case 20: the render is exactly one line"
+report yes "$(yesno has "$line20a" "$MARK · 5h ")" \
+    "case 20: the line reads model, effort, context size, then the 5h window, separated by ·"
 
 # Second render, moved windows: a changed tuple proves a response arrived under
 # the live login, so this one writes the cache.
@@ -354,7 +364,7 @@ report "30 40 $FR ${WR}${TAB}-" "$(cat "$D23/sessions/$SID.p2.limits")" \
 line23_p2=$(render "$P23b" SESSION_DATA_DIR="$D23" TMUX_PANE=%2)
 report "50% 60%" "$(pcts "$line23_p2")" \
     "case 23: pane 2's unowned re-render displays the account's newest proven windows"
-report no "$(yesno has "$line23_p2" '5h: 30%')" \
+report no "$(yesno has "$line23_p2" '5h 30%')" \
     "case 23: ... never the frozen 30% its own payload carries"
 report 50 "$(jq -r '.rate_limits.five_hour.used_percentage' "$D23/last-status.$ACCT.json")" \
     "case 23: ... and that render does not write the cache back down to it"
@@ -388,7 +398,7 @@ render "$PS1" SESSION_DATA_DIR="$DS" >/dev/null
 seg_fresh=$(render "$PS2" SESSION_DATA_DIR="$DS")
 report "47% 63%" "$(pcts "$seg_fresh")" \
     "seg: a proven-fresh tuple displays the payload's own percentages"
-report yes "$(yesno grep -qE '5h: 47% \([0-9]+h[0-9]+m left\), wk: 63% \([0-9]+[dh][0-9]+[hm] left\)' <<<"$seg_fresh")" \
+report yes "$(yesno grep -qE '· 5h 47% ↻[0-9]+h[0-9]+m · wk 63% ↻[0-9]+[dh][0-9]+[hm]' <<<"$seg_fresh")" \
     "seg: ... each paired with a countdown, the weekly in days"
 
 # The 2026-08-05 shape: a session whose very first render can already be
@@ -399,8 +409,8 @@ PSF="$TMP/psf.json"; mkpayload "$SIDF" 0.3 3 4 "$FR" "$WR" "seg" > "$PSF"
 seg_foreign=$(render "$PSF" SESSION_DATA_DIR="$DS")
 report "47% 63%" "$(pcts "$seg_foreign")" \
     "seg: an unowned first sighting displays the account's cache, not the payload's windows"
-report no "$(yesno has "$seg_foreign" '5h: 3%')" "seg: ... so the foreign 5h number never reaches the line"
-report no "$(yesno has "$seg_foreign" 'wk: 4%')" "seg: ... nor the foreign weekly one"
+report no "$(yesno has "$seg_foreign" '5h 3%')" "seg: ... so the foreign 5h number never reaches the line"
+report no "$(yesno has "$seg_foreign" 'wk 4%')" "seg: ... nor the foreign weekly one"
 
 # An expired window is flagged, never zeroed. The weekly runs on a fixed
 # cadence so it can be stepped forward (marked ~ and ?); the 5h is
@@ -411,11 +421,11 @@ PSS="$TMP/pss.json"; mkpayload "$SID" 0.1 55 60 "$PFR" "$PWR" "seg" > "$PSS"
 seg_stale=$(render "$PSS" SESSION_DATA_DIR="$DST")
 report "55%? 60%?" "$(pcts "$seg_stale")" \
     "seg: an expired window keeps its percentage and is marked doubtful"
-report yes "$(yesno has "$seg_stale" '5h: 55%? (stale)')" \
-    "seg: the usage-anchored 5h window is flagged stale rather than projected"
-report yes "$(yesno grep -qE 'wk: 60%\? \(~[0-9]+d[0-9]+h left\)' <<<"$seg_stale")" \
+report yes "$(yesno has "$seg_stale" '· 5h 55%? · wk')" \
+    "seg: the usage-anchored 5h window keeps its ? with no countdown rather than a projected one"
+report yes "$(yesno grep -qE 'wk 60%\? ↻~[0-9]+d[0-9]+h' <<<"$seg_stale")" \
     "seg: the weekly is stepped forward on its fixed cadence and marked ~"
-report no "$(yesno has "$seg_stale" '0h0m left')" \
+report no "$(yesno has "$seg_stale" '↻0h0m')" \
     "seg: ... and neither window counts down to a bare zero"
 
 # No reset timestamp at all is a third state: the percentage is current, the
@@ -424,16 +434,16 @@ DSN="$TMP/dataseg-noreset"
 PSN="$TMP/psn.json"; mkpayload "$SID" 0.1 15 25 0 0 "seg" > "$PSN"
 seg_nores=$(render "$PSN" SESSION_DATA_DIR="$DSN")
 report "15% 25%" "$(pcts "$seg_nores")" "seg: with no reset timestamp the percentage still renders"
-report no "$(yesno has "$seg_nores" 'left)')" "seg: ... with no countdown invented for it"
-report no "$(yesno has "$seg_nores" 'stale')"  "seg: ... and no stale marker either"
+report no "$(yesno has "$seg_nores" '↻')" "seg: ... with no countdown invented for it"
+report no "$(yesno has "$seg_nores" '%?')"  "seg: ... and no ? marker either"
 
 # A window the payload omits entirely is skipped, not rendered as 0% or -1%.
 DSA="$TMP/dataseg-absent"
 PSA="$TMP/psa.json"
 mkpayload "$SID" 0.1 41 25 "$FR" "$WR" "seg" | jq 'del(.rate_limits.five_hour.used_percentage)' > "$PSA"
 seg_absent=$(render "$PSA" SESSION_DATA_DIR="$DSA")
-report no  "$(yesno has "$seg_absent" '5h:')"     "seg: a window the payload omits is not rendered at all"
-report yes "$(yesno has "$seg_absent" 'wk: 25%')" "seg: ... and the other window still is"
+report no  "$(yesno has "$seg_absent" '· 5h ')"     "seg: a window the payload omits is not rendered at all"
+report yes "$(yesno has "$seg_absent" 'wk 25%')" "seg: ... and the other window still is"
 
 # Owned but not proven fresh: per window, the later reset wins, and each
 # percentage travels with its own reset so the pair stays coherent. This is the
@@ -637,7 +647,7 @@ cd_line=$(cd "$CDR/real" && env -i PATH="$PATH" HOME="$FH" TZ=UTC CDPATH="$CDR/d
           bash shome/statusline.sh < "$P20b")
 report absent "$(exists "$TMP/decoy-was-sourced")" \
     "CDPATH: an inherited CDPATH does not resolve SESSION_HOME into a foreign tree"
-report yes "$(yesno has "$cd_line" 'tkns')" "CDPATH: ... and the render still produces its line"
+report yes "$(yesno has "$cd_line" "$MARK")" "CDPATH: ... and the render still produces its line"
 
 echo "--- the multi-login tag ---"
 
@@ -652,7 +662,7 @@ report yes "$(yesno endswith "$tag_line" " · ${CFG##*/}")" \
 notag_line=$(render "$P20b" SESSION_DATA_DIR="$D26" SESSION_PRIMARY_CFG="$CFG")
 report no "$(yesno endswith "$notag_line" " · ${CFG##*/}")" \
     "tag: the primary config dir renders no tag"
-report yes "$(yesno grep -q 'tkns' <<<"$notag_line")" "tag: the untagged line is still a status line"
+report yes "$(yesno grep -q "$MARK" <<<"$notag_line")" "tag: the untagged line is still a status line"
 
 echo "--- the compaction hold ---"
 
@@ -667,7 +677,7 @@ report no "$(yesno has "$nohold_line" 'compaction held')" "hold: no marker, no s
 hold_line=$(render "$PH" SESSION_DATA_DIR="$DH")
 report yes "$(yesno has "$hold_line" '⏸ compaction held · ')" \
     "hold: a marker for this session shows the hold"
-report yes "$(yesno has "$hold_line" 'tkns')" "hold: ... on the line that still carries the token count"
+report yes "$(yesno has "$hold_line" "$MARK")" "hold: ... on the line that still carries the token count"
 report 1 "$(printf '%s\n' "$hold_line" | wc -l | tr -d ' ')" "hold: ... and it is still one line"
 : > "$DH/sessions/22222222-2222-2222-2222-222222222222.hold"
 rm -f "$DH/sessions/$SID.hold"
@@ -826,7 +836,7 @@ PT2="$TMP/pt2.json"; at_cwd "$WS" "$PT2"
 seg_none=$(render "$PT2" SESSION_DATA_DIR="$DT")
 report no "$(yesno has "$seg_none" ']8;;')" "task: at the workspace root with no pointer, no link"
 report no "$(yesno has "$seg_none" 'Bias adjustment')" "task: ... and no title"
-report yes "$(yesno has "$seg_none" 'tkns')" "task: ... while the rest of the line renders"
+report yes "$(yesno has "$seg_none" "$MARK")" "task: ... while the rest of the line renders"
 
 # The pointer: `tasks new` / `tasks log` / adopt record the session's task, so a
 # session at the repo root — the usual place — shows it from the moment the row
@@ -863,10 +873,10 @@ report yes "$(yesno has "$seg_short" "$(printf '\a%s ↗\033]8;;' 'Improvements 
 pointer "2026-01-01-a-folder-that-was-deleted"
 seg_gone=$(render "$PT2" SESSION_DATA_DIR="$DT")
 report no  "$(yesno has "$seg_gone" 'deleted')" "task: a pointer to a vanished folder shows nothing"
-report yes "$(yesno has "$seg_gone" 'tkns')"    "task: ... and the line still renders"
+report yes "$(yesno has "$seg_gone" "$MARK")"    "task: ... and the line still renders"
 printf 'not json' > "$WS/tasks/.sync/session-task.json"
 seg_bad=$(render "$PT2" SESSION_DATA_DIR="$DT")
-report yes "$(yesno has "$seg_bad" 'tkns')" "task: a malformed pointer file still renders the line"
+report yes "$(yesno has "$seg_bad" "$MARK")" "task: a malformed pointer file still renders the line"
 report no  "$(yesno has "$seg_bad" ']8;;')" "task: ... with no link invented"
 
 # Outside any workspace nothing is shown unless SESSION_TASK_WORKSPACES lists

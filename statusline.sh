@@ -260,7 +260,7 @@ session_prune_daily
 # rate_limits only refresh on an API RESPONSE, so a session that is idle — or
 # rate-limited, which is exactly when you check — keeps rendering the last window
 # it was told about. Once that resets_at passes, the countdown used to clamp to
-# "0h0m left", which reads as "the cap is up" when it is not. Corrections:
+# "↻0h0m", which reads as "the cap is up" when it is not. Corrections:
 #   • the payload is trusted as-is only when it is provably fresh (_fresh). A
 #     same-account payload (_owner matches) competes per window with the shared
 #     cache — whichever resets_at is later wins, valid within one account; pct
@@ -292,16 +292,16 @@ _dh() { local s=$1 h; [ "$s" -lt 0 ] && s=0
 _seg() {  # $1=label  $2=pct  $3=resets_at  $4=cadence secs (0 = not projectable)
   local p="${2%%.*}" r="$3" w="$4" left
   if [ -z "$p" ] || [ "$p" = "-1" ]; then return; fi
-  if [ "$r" -le 0 ]; then printf ', %s: %s%%' "$1" "$p"; return; fi
+  if [ "$r" -le 0 ]; then printf ' · %s %s%%' "$1" "$p"; return; fi
   if [ "$r" -gt "$_now" ]; then
     left=$(( r - _now ))
-    if [ "$w" -gt 0 ]; then printf ', %s: %s%% (%s left)' "$1" "$p" "$(_dh "$left")"
-    else                    printf ', %s: %s%% (%s left)' "$1" "$p" "$(_hm "$left")"; fi
+    if [ "$w" -gt 0 ]; then printf ' · %s %s%% ↻%s' "$1" "$p" "$(_dh "$left")"
+    else                    printf ' · %s %s%% ↻%s' "$1" "$p" "$(_hm "$left")"; fi
   elif [ "$w" -gt 0 ]; then
     left=$(( r + w * ( (_now - r + w - 1) / w ) - _now ))
-    printf ', %s: %s%%? (~%s left)' "$1" "$p" "$(_dh "$left")"
+    printf ' · %s %s%%? ↻~%s' "$1" "$p" "$(_dh "$left")"
   else
-    printf ', %s: %s%%? (stale)' "$1" "$p"
+    printf ' · %s %s%%?' "$1" "$p"
   fi
 }
 _five_seg=$(_seg 5h "$_d_f5" "$_d_fr" 0)
@@ -422,7 +422,7 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
   (if $mn == "" and $ef == "" then ""
    elif $ef == "" then $mn + " · "
    elif $mn == "" then $ef + " · "
-   else "\($mn) (\($ef)) · " end) as $model |
+   else "\($mn) \($ef) · " end) as $model |
   (.context_window.current_usage // {}) as $cu |
   ([$cu.input_tokens, $cu.cache_creation_input_tokens, $cu.cache_read_input_tokens]
     | map(. // 0) | add) as $used |
@@ -433,5 +433,5 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
     elif . >= 1000 then
       "\(. / 1000 | floor)k"
     else "\(.)" end;
-  "\($hold_seg)\($model)\($used | fmt) tkns\($five_seg)\($week_seg)\($task_seg)\($atag)"
+  "\($hold_seg)\($model)\($used | fmt)\($five_seg)\($week_seg)\($task_seg)\($atag)"
 ' <<< "$input"
