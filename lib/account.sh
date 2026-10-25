@@ -80,8 +80,8 @@ ACCT_PROBATION_S=600
 # moves before any turn dies on the cap, and a candidate this close to its cap
 # is not worth moving every session onto. A login at 90% of its week still has
 # hours of work in it, and switching away from one, or refusing to switch to
-# one, would strand that, so this is deliberately not USAGE_WARN_PCT, which
-# decides when a session is warned, not when a login is out.
+# one, would strand that, so this is deliberately not the 90% the StopFailure
+# waiter uses to guess which window a dead turn hit.
 ACCT_SPENT_PCT=98
 
 # ── 3. pure selector ──────────────────────

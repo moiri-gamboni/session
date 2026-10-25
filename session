@@ -129,13 +129,12 @@ set -uo pipefail
 #   discarded from here on, ahead of the lib sourcing below that is itself one
 #   of the producers.
 #
-#   Nothing may REFUSE with exit 2 either, which is what conf_refuse is for: a
-#   single malformed line in session.conf would otherwise wake every session on
-#   the box, on every prompt, with a configuration complaint. On that entry the
-#   waiter fails closed instead — exit 0, arming nothing. What keeps the
-#   misconfiguration visible is the synchronous --hook entry, which refuses on
-#   every prompt and blocks it; `session doctor` adds a line for the warn
-#   threshold alone, having dispatched long before the guard specs are read.
+#   Nothing may REFUSE with exit 2 either, which is what conf_refuse is for: an
+#   argument this build does not know (an install whose settings.json has
+#   drifted from its binary) would otherwise wake the session with a complaint.
+#   On that entry the waiter fails closed instead — exit 0, arming nothing. No
+#   configuration value is refused on its path: the guard specs are validated
+#   only by the paths that use them, and the one number it needs is a constant.
 #
 # Keyed off the flag anywhere in the argument list, which is how the parser
 # below resolves `mode=rewake` too — so fd 9 is open wherever rewake_done can be
@@ -406,14 +405,6 @@ FIVE_GUARD="${FIVE_GUARD:-linear}"
 WEEK_GUARD="${WEEK_GUARD:-linear}"
 FIVE_WINDOW="${FIVE_WINDOW:-18000}"
 WEEK_WINDOW="${WEEK_WINDOW:-604800}"
-# The used-% at or above which --hook injects its line and advisory and
-# --rewake-waiter arms. One default, here, rather than a copy at each use site:
-# the copies drift, and the consumer left holding the stale one gates at a
-# threshold nobody chose. The environment-wins form is the lib's, and is what
-# lets a session.conf line set this with no further plumbing — the conf being
-# the only channel that reaches a hook, which inherits no shell environment.
-# Above 100 disables the hook's output entirely.
-USAGE_WARN_PCT="${USAGE_WARN_PCT:-90}"
 
 # Duration formatters, shared by the overview and `session account`.
 hm()  { local s=$(( $1<0 ? 0 : $1 )); printf '%dh%02dm' $(( s/3600 ))  $(( (s%3600)/60 )); }
@@ -1709,7 +1700,7 @@ doctor_main() {
     *) echo "session doctor: unknown arg '$1' (it takes none)" >&2; exit 2 ;;
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
-        newest_s have_e plat miss age crdl warnsrc \
+        newest_s have_e plat miss age crdl \
         swmode swnote swlast swcap swts swev vaultn probeable capd scoped lockf vlive
 
   echo "-- session doctor -------------------------------------------------"
@@ -1789,22 +1780,6 @@ doctor_main() {
       doc FAIL "session.conf" "$cf is not valid shell — the lib sources it, so every path silently falls back to its default"
     fi
   fi
-
-  # The warn threshold, beside the two places that set it. `doctor` dispatches
-  # before the CLI's own validation loop runs — which is what lets a broken
-  # install be diagnosed at all, and is exactly why the value has to be checked
-  # here too: one that is not a whole number makes the synchronous
-  # UserPromptSubmit hook exit 2 and block the prompt — and leaves the waiter on
-  # the same event unarmed, silently, because exit 2 there is a wake-up — while
-  # every other line in this report reads fine. The pattern is the validation's,
-  # so the two cannot disagree.
-  case "$USAGE_WARN_PCT" in
-    *[!0-9]*)
-      warnsrc="the environment"
-      [ -r "$cf" ] && grep -q 'USAGE_WARN_PCT' "$cf" && warnsrc="$cf, which sets it"
-      doc FAIL "warn pct" "USAGE_WARN_PCT='$USAGE_WARN_PCT' is not a whole number of percent ($warnsrc) — every prompt is blocked with exit 2 until it is, and the auto-resume waiter, where exit 2 would mean 'wake the session' instead, quietly does not arm"
-      ;;
-  esac
 
   # The EFFECTIVE statusLine, not the one in the user settings: a project
   # settings file in the directory a session runs from silently wins, and a
@@ -2544,9 +2519,9 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
 Exit codes:
   0  success (plumbing modes: unconditionally)
   1  no data yet, not inside a Claude Code session, or a failed `doctor` check
-  2  bad arguments / invalid guard spec or warn threshold — never from
-     --rewake-waiter, where exit 2 means "wake the session": there every one
-     of those refusals is a silent exit 0 that arms no waiter
+  2  bad arguments / invalid guard spec — never from --rewake-waiter, where
+     exit 2 means "wake the session": there an argument this build does not
+     know is a silent exit 0 that arms no waiter
   3  PAUSE (from --guard)
 HELP
       exit 0 ;;
@@ -2564,7 +2539,7 @@ acct=$(session_login)
 # unkeyed fallback file: a shared cache would report another login's windows.
 [ -n "$cache" ] || cache=$(session_cache_path)
 
-# validate guard specs up front (a typo errors instead of silently disabling)
+# a typo in a guard spec errors instead of silently disabling pacing
 valid_spec() {
   local s; s=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
   case "$s" in
@@ -2573,26 +2548,17 @@ valid_spec() {
     *)     printf '%s' "$s" | grep -qE '^[0-9]+$' ;;                    # flat int
   esac
 }
-for pair in "FIVE_GUARD=$FIVE_GUARD" "WEEK_GUARD=$WEEK_GUARD"; do
-  if ! valid_spec "${pair#*=}"; then
-    conf_refuse "invalid ${pair%%=*}='${pair#*=}' (use: linear | sqrt | pow:P | <int> | off)"
-  fi
-done
-# Same reason, sharper failure: the warn threshold is used in arithmetic
-# ((fp >= thr)). A non-numeric value is re-expanded as a VARIABLE NAME, and an
-# unset one kills the shell under `set -u` — inside a hook, where the death
-# surfaces as neither output nor error; a decimal is quieter still, failing the
-# arithmetic so the gate never fires. Both are refused here, in front of the
-# hook path and the rewake path alike — silently on the latter, where exit 2
-# would be a wake-up rather than a refusal (conf_refuse, top of the file). No
-# upper bound: above 100 is the documented way to turn the hook's output off.
-case "$USAGE_WARN_PCT" in
-  *[!0-9]*) conf_refuse "invalid USAGE_WARN_PCT='$USAGE_WARN_PCT' (use a whole number of percent; above 100 disables the hook's output)" ;;
-esac
-# Digits are not yet a number: bash reads a leading zero as octal, so 070 would
-# gate at 56 and 09 would not parse at all. Fix the base once, here, so both
-# consumers read a canonical decimal.
-USAGE_WARN_PCT=$(( 10#$USAGE_WARN_PCT ))
+# Called by the paths that read the specs (--guard, --wait guard, and the
+# overview and --json, which print the caps), and by no other: a typo here must
+# not stop the waiter from arming or a prompt from being logged.
+check_guard_specs() {
+  local pair
+  for pair in "FIVE_GUARD=$FIVE_GUARD" "WEEK_GUARD=$WEEK_GUARD"; do
+    if ! valid_spec "${pair#*=}"; then
+      conf_refuse "invalid ${pair%%=*}='${pair#*=}' (use: linear | sqrt | pow:P | <int> | off)"
+    fi
+  done
+}
 
 # ── session time — per-turn tracking for today (since local midnight) ────────
 # Pairs s/e events per session; active = Σ closed start→end spans, so idle gaps
@@ -3515,12 +3481,18 @@ if [ "$mode" = rewake ]; then
     esac
   done
   [ "$seen" = 1 ] || exit 0
-  thr=$USAGE_WARN_PCT
-  f_warn=0; w_warn=0; fb_warn=0
-  [ "$f_stale" = 0 ] && (( fp >= thr )) && f_warn=1
-  [ "$w_stale" = 0 ] && (( wp >= thr )) && w_warn=1
+  # A window at this used-% or more counts as the one that killed the turn. It
+  # sits below 100 because the cached figure lags the real one at the moment of
+  # death: the status line wrote it before the request that hit the cap, so a
+  # window that has just run out still reads a few points low. A fixed number
+  # and not a setting: nothing else reads it, and the switcher's own bar for a
+  # login being out is ACCT_SPENT_PCT (lib/account.sh).
+  CAP_NEAR_PCT=90
+  f_near=0; w_near=0; fb_near=0
+  [ "$f_stale" = 0 ] && (( fp >= CAP_NEAR_PCT )) && f_near=1
+  [ "$w_stale" = 0 ] && (( wp >= CAP_NEAR_PCT )) && w_near=1
   # Fable has its own weekly window, and neither generic reset lifts it. Consulted
-  # only when neither generic window is warned, which is what a model-scoped cap
+  # only when neither generic window is near its cap, which is what a model-scoped cap
   # death looks like from here: the 5h reset is normally still ahead, so the
   # waiter sleeps to it, wakes into the same Fable cap and dies again (53 of 68
   # such deaths over 53 days), and where the 5h stamp has gone stale it falls
@@ -3543,12 +3515,12 @@ if [ "$mode" = rewake ]; then
     [ -s "$f" ] || return 1
     IFS=$'\t' read -r p r < <(jq -r '[(.fable.used_percentage // -1), (.fable.resets_at // 0)] | @tsv' "$f" 2>/dev/null) || return 1
     p=${p%%.*}; r=${r%%.*}   # the endpoint's figures are JSON numbers, not integers
-    # Anything that is not a whole number is no figure at all. `(( p >= thr ))`
+    # Anything that is not a whole number is no figure at all. `(( p >= CAP_NEAR_PCT ))`
     # re-expands a non-numeric p as a variable NAME, and an unset one kills the
     # waiter under `set -u` — silently, taking auto-resume with it.
     case "$p" in ''|*[!0-9]*) return 1 ;; esac
     case "$r" in ''|*[!0-9]*) return 1 ;; esac
-    (( p >= thr && r > now + 60 )) || return 1
+    (( p >= CAP_NEAR_PCT && r > now + 60 )) || return 1
     FBRESET=$r
   }
   # What a woken session is told about a switch. The tier is in the sentence
@@ -3623,10 +3595,9 @@ if [ "$mode" = rewake ]; then
   authtail="This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the failure, continue that work."
   pidf="$snapdir/$hsid.rewaiter"
   # a turn that died on a usage cap is capped whatever the (possibly lagging)
-  # cache says — this is the only arming path for a cap that arrives mid-turn
-  # with no prompt ever submitted in the warned band. Failures that are neither
-  # a cap nor an authentication death (API errors etc.) are not a reason to
-  # wait for anything, and not a reason to move either: exit.
+  # cache says. Failures that are neither a cap nor an authentication death
+  # (API errors etc.) are not a reason to wait for anything, and not a reason
+  # to move either: exit.
   case "$herr" in
     *rate_limit*|*usage_limit*) htrig=cap ;;
     # The authentication family. These decide on the ORDINARY cooldown rather
@@ -3668,15 +3639,15 @@ if [ "$mode" = rewake ]; then
     REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
   fi
   if [ -z "$REWSWITCH" ] && [ "$htrig" = cap ]; then
-    # When neither window shows warned, the Fable window decides if it is
+    # When neither window reads near its cap, the Fable window decides if it is
     # spent, and otherwise whichever generic reset is still ahead (5h first —
     # it is the cap the harness itself attributes these deaths to); no future
     # reset at all means the cache can't say when to wake, so don't arm.
-    if ! (( f_warn || w_warn )); then
+    if ! (( f_near || w_near )); then
       now=$(date +%s)
-      if fable_capped "$now"; then fb_warn=1
-      elif (( fivereset > now )); then f_warn=1
-      elif (( weekreset > now )); then w_warn=1
+      if fable_capped "$now"; then fb_near=1
+      elif (( fivereset > now )); then f_near=1
+      elif (( weekreset > now )); then w_near=1
       else exit 0; fi
     fi
   fi
@@ -3730,9 +3701,9 @@ if [ "$mode" = rewake ]; then
   # leaves without waking anyone. A prompt in the meantime ends it (above).
   if [ "$htrig" = auth ]; then
     target=$(( $(date +%s) + 86400 )); wlabel=""
-  elif [ "$fb_warn" = 1 ]; then
+  elif [ "$fb_near" = 1 ]; then
     target=$FBRESET; wlabel="Fable weekly"
-  elif [ "$f_warn" = 1 ] && { [ "$w_warn" = 0 ] || (( fivereset <= weekreset )); }; then
+  elif [ "$f_near" = 1 ] && { [ "$w_near" = 0 ] || (( fivereset <= weekreset )); }; then
     target=$fivereset; wlabel="5h"
   else
     target=$weekreset; wlabel="weekly (7-day)"
@@ -3789,6 +3760,7 @@ if [ "$mode" = wait ]; then
   # cap never moves, so its only pass time is the window reset; a window that
   # goes stale mid-wait counts as unknown and stops gating, mirroring --guard.
   if [ "$waitwin" = guard ]; then
+    check_guard_specs
     pass_time() {  # $1=spec $2=window $3=resets_at $4=used% -> earliest epoch the cap reaches used%
       awk -v spec="$(printf '%s' "$1" | tr 'A-Z' 'a-z')" -v win="$2" -v r="$3" -v p="$4" -v now="$now" 'BEGIN{
         if (spec=="off" || spec=="none" || spec=="disabled" || spec=="no") { print now; exit }
@@ -3861,6 +3833,7 @@ if [ "$mode" = wait ]; then
   exit 0
 fi
 
+check_guard_specs
 resolve "$FIVE_GUARD" "$FIVE_WINDOW" "$left5"; F_DIS=$GDIS; F_CAP=$GCAP; F_LBL=$GLABEL
 resolve "$WEEK_GUARD" "$WEEK_WINDOW" "$leftw"; W_DIS=$GDIS; W_CAP=$GCAP; W_LBL=$GLABEL
 # A stale snapshot's % belongs to the window that already closed, so pacing on it

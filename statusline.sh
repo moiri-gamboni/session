@@ -39,8 +39,8 @@ _u="$SESSION_DATA"
 # The render creates the data root when nothing else has, so it is the one that
 # has to set the root's posture: 700 comes from the lib's umask, and the
 # .gitignore keeps a store that lands inside a tracked config dir out of a
-# commit. The second guard is on the FILE, not the directory — --hook, the
-# rewake waiter and the resume queue all create the root without writing one,
+# commit. The second guard is on the FILE, not the directory — the rewake
+# waiter and the resume queue both create the root without writing one,
 # and a directory-keyed guard would then never fire again. `-s` rather than the
 # installer's content comparison because this runs every ten seconds and a `cat`
 # per render buys nothing: a populated .gitignore someone put there is theirs.

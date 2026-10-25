@@ -3331,18 +3331,11 @@ else
     report 1 "$(printf '%s' "$out" | grep -c . )" "cov: ... on exactly one line"
 fi
 
-echo "--- warn-thr: USAGE_WARN_PCT is one declaration, validated for both consumers ---"
+echo "--- warn-thr: the waiter's 90% is a constant, and a USAGE_WARN_PCT left behind is ignored ---"
 
 if ! have jq; then
-    skip "warn-thr: USAGE_WARN_PCT" "no jq"
+    skip "warn-thr: the waiter's threshold" "no jq"
 else
-    # One default, in one place. Two copies drift, and the consumer holding the
-    # stale one gates at a threshold nobody chose. Counted over every shipped
-    # script rather than over the CLI alone: the second copy this check was
-    # written against lived in lib/account.sh, where counting one file read green.
-    report 1 "$(cat "$BIN" "$SDIR"/lib/*.sh "$SDIR/statusline.sh" | grep -c 'USAGE_WARN_PCT:-90')" \
-        "warn-thr: the default 90 is written exactly once, across every shipped script"
-
     WWT=$(world); mklogin "$WWT" me@example.com
     WTREW=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
 
@@ -3362,25 +3355,90 @@ WTEOF
             CLAUDE_CODE_SESSION_ID="$UUID" $e \
             bash -c 'exec -a claude bash "$@"' _ "$TMP/wt-asclaude.sh" "$BIN" "$@"
     }
+    # What a cap death wakes on, and with what.
+    wt_wake() {  # [VAR=VAL ...] — "<exit status> <window the wake-up names>"
+        local err rc
+        err=$( (printf '%s' "$WTREW" | wt_rewake "$@" -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
+        printf '%s %s' "$rc" "$(printf '%s' "$err" | sed -n 's/^The Claude \(.*\) rate-limit window has reset.*/\1/p')"
+    }
 
+    # Both windows are over 90% and the weekly one resets first, so a waiter
+    # that reads both as near their caps sleeps to the weekly reset and says so.
+    # A threshold of 99 taken from anywhere would leave neither near, and the
+    # fall-through would send the wait to the 5h reset an hour away.
     NOWI=$(date +%s)
-    mkcache "$WWT" me@example.com 95 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
+    mkcache "$WWT" me@example.com 95 92 $(( NOWI + 3600 )) $(( NOWI + 5 ))
+    report "2 weekly (7-day)" "$(wt_wake)" "warn-thr: with nothing set, 92% counts as near the cap and the earlier reset wins"
+    NOWI=$(date +%s)
+    mkcache "$WWT" me@example.com 95 92 $(( NOWI + 3600 )) $(( NOWI + 5 ))
+    report "2 weekly (7-day)" "$(wt_wake USAGE_WARN_PCT=99)" "warn-thr: a USAGE_WARN_PCT of 99 in the environment changes nothing"
+    NOWI=$(date +%s)
+    mkcache "$WWT" me@example.com 95 92 $(( NOWI + 3600 )) $(( NOWI + 5 ))
+    report "2 weekly (7-day)" "$(wt_wake USAGE_WARN_PCT=ninety)" "warn-thr: ... nor does one that is not a number, and nothing is refused"
+    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-99}"\n' > "$WWT/cfg/session.conf"
+    chmod 600 "$WWT/cfg/session.conf"
+    NOWI=$(date +%s)
+    mkcache "$WWT" me@example.com 95 92 $(( NOWI + 3600 )) $(( NOWI + 5 ))
+    report "2 weekly (7-day)" "$(wt_wake)" "warn-thr: ... nor does a line in session.conf"
+    rm -f "$WWT/cfg/session.conf"
 
-    # An ALPHABETIC value is the case that matters. `(( fp >= thr ))` re-expands
-    # a non-numeric thr as a variable name, and under `set -u` an unset one kills
-    # the shell — inside a hook, where nothing surfaces the death. The rewake
-    # entry must NOT refuse with exit 2: on an asyncRewake hook that is a
-    # wake-up delivered into a live session, and every session on the box runs
-    # this hook, so one malformed conf line would wake the whole box. The waiter
-    # fails closed instead.
-    err=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=ninety -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
-    report 0 "$rc" "warn-thr: the rewake path refuses the same value without waking the session"
-    report "" "$err" "warn-thr: ... and says nothing, that channel being the wake message itself"
+    # The other consumers of a usage figure never read it.
+    NOWI=$(date +%s)
+    out=$(sess "$WWT" USAGE_WARN_PCT=ninety -- --compact); rc=$?
+    report "0 yes" "$rc $(printf '%s' "$out" | grep -q '5h 95% used' && echo yes || echo no)" \
+        "warn-thr: --compact prints its line whatever USAGE_WARN_PCT holds"
+fi
 
-    # Non-integer generally, not just alphabetic. A decimal is the quiet half of
-    # the same bug: the arithmetic itself fails, so the gate never fires.
-    rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=90.5 -- --rewake-waiter >/dev/null 2>&1); echo $? )
-    report 0 "$rc" "warn-thr: a decimal is refused too, and wakes nobody on the rewake path"
+echo "--- guard-scope: a malformed guard spec stops only the paths that read it ---"
+
+if ! have jq; then
+    skip "guard-scope" "no jq"
+else
+    WGS=$(world); mklogin "$WGS" me@example.com
+    NOWI=$(date +%s)
+    mkcache "$WGS" me@example.com 95 20 $(( NOWI - 600 )) $(( NOWI + 6000 ))
+    slog_row $(( NOWI - 100 )) "$UUID" 3.0 30 9 $(( NOWI + 600 )) $(( NOWI + 6000 )) 2000 me@example.com > "$WGS/data/session-log.tsv"
+    printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\te\tp1\t-\t-\n' $(( NOWI - 60 )) "$UUID" $(( NOWI - 30 )) "$UUID" > "$WGS/data/turn-log.tsv"
+    WGSREW=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
+    # The waiter fails closed without a claude ancestor; same shape as case 17's.
+    cat > "$TMP/gs-asclaude.sh" <<'GSEOF'
+b=$1; shift
+timeout 60 bash "$b" "$@"
+GSEOF
+
+    for bad in FIVE_GUARD=lienar WEEK_GUARD=pow:x; do
+        var=${bad%%=*}
+        # The paths that print or apply a guard cap refuse, naming the variable.
+        for args in "--guard" "--json" "" "--wait guard"; do
+            err=$( (sess "$WGS" "$bad" -- $args >/dev/null) 2>&1 ); rc=$?
+            report "2 yes" "$rc $(printf '%s' "$err" | grep -q "invalid $var=" && echo yes || echo no)" \
+                "guard-scope: $bad refuses ${args:-the overview}, naming the variable"
+        done
+        # The ones that never read a spec go on.
+        for args in "--compact" "--wait 5h" "usage" "usage --all --json" "time --json" "whoami --id"; do
+            out=$( (sess "$WGS" "$bad" -- $args) 2>&1 ); rc=$?
+            report "0 no" "$rc $(printf '%s' "$out" | grep -q 'invalid' && echo yes || echo no)" \
+                "guard-scope: $bad does not stop $args"
+        done
+        # The prompt hook logs its turn.
+        : > "$WGS/data/turn-log.tsv"
+        out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$WGS" "$bad" -- --hook 2>&1); rc=$?
+        report "0 [] 1" "$rc [$out] $(grep -c '	s	p1	' "$WGS/data/turn-log.tsv")" "guard-scope: $bad does not stop the hook logging the turn"
+        # And the waiter still arms and wakes, with the wake-up alone on its channel.
+        NOWI=$(date +%s)
+        mkcache "$WGS" me@example.com 95 20 $(( NOWI + 5 )) $(( NOWI + 6000 ))
+        err=$( (printf '%s' "$WGSREW" | env -i PATH="$PATH" HOME="$FH" TZ=UTC \
+                CLAUDE_CONFIG_DIR="$WGS/cfg" SESSION_DATA_DIR="$WGS/data" \
+                CLAUDE_CODE_SESSION_ID="$UUID" $bad \
+                bash -c 'exec -a claude bash "$@"' _ "$TMP/gs-asclaude.sh" "$BIN" --rewake-waiter >/dev/null) 2>&1 ); rc=$?
+        report "2 1" "$rc $(printf '%s\n' "$err" | grep -c .)" "guard-scope: $bad does not stop the waiter, whose wake-up is the only line on its channel"
+        report yes "$(printf '%s' "$err" | grep -q '5h rate-limit window has reset' && echo yes || echo no)" "guard-scope: ... and it names the window"
+        mkcache "$WGS" me@example.com 95 20 $(( NOWI - 600 )) $(( NOWI + 6000 ))
+        printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\te\tp1\t-\t-\n' $(( NOWI - 60 )) "$UUID" $(( NOWI - 30 )) "$UUID" > "$WGS/data/turn-log.tsv"
+    done
+
+    # The control: well-formed specs run.
+    report 0 "$( (sess "$WGS" FIVE_GUARD=pow:0.5 WEEK_GUARD=off -- --json >/dev/null) 2>&1; echo $? )" "guard-scope: well-formed specs are accepted"
 fi
 
 echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"
@@ -5099,20 +5157,18 @@ else
     report 0 "$(dasked "$CD11" tok-e)" \
         "decide: ... and an entry with no expiry is never even asked"
 
-    # ── spent means 98%, whatever USAGE_WARN_PCT says ────────────────────────
-    # The warn threshold decides when a session is warned. A login at 97% of a
-    # window still has work in it, so it neither counts as out when live nor
-    # disqualifies a candidate, and a warn threshold the CLI would refuse does
-    # not stop the switcher either. At 98% it is out on both sides.
+    # ── spent means 98% ───────────────────────────────────────────────────────
+    # A login at 97% of a window still has work in it, so it neither counts as
+    # out when live nor disqualifies a candidate. At 98% it is out on both sides.
     WD12=$(dworld); CD12=$(curlstub)
     dlive "$WD12" a@example.com tok-a
     dvent "$WD12" a@example.com tok-a; dvent "$WD12" b@example.com tok-b
     dbody "$CD12" tok-a 100 10 10; dbody "$CD12" tok-b 10 97 97
     out=$(sess "$WD12" PATH="$CD12:$PATH" SESSION_ACCOUNTS_DIR="$WD12/vault" SESSION_NOW="$DNOW" \
-            SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=ninety -- account auto --trigger cap 2>&1); rc=$?
+            SESSION_SWITCH_NOTIFY="" -- account auto --trigger cap 2>&1); rc=$?
     report 0 "$rc" "decide: a candidate at 97% of its week and its Fable is not spent"
     report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
-        "decide: ... so the box moves to it, whatever the warn threshold holds"
+        "decide: ... so the box moves to it"
 
     WD12b=$(dworld); CD12b=$(curlstub)
     dlive "$WD12b" a@example.com tok-a
@@ -5376,19 +5432,6 @@ DFAILEOF
     report 1 "$(dkv tier "$out")" "decide: ... and the box stays on the tier it had"
     report "$DE2" "$(dkv next_eligible_at "$out")" \
         "decide: ... with next_eligible_at taken from the Fable reset that would promote one of them"
-
-    # ── the threshold is read as decimal, not as octal ───────────────────────
-    # A leading zero is what a human writes; `$(( 070 ))` is 56, and a switcher
-    # gating at 56% instead of 70% would move the box on windows nobody called spent.
-    WD24=$(dworld); CD24=$(curlstub)
-    dlive "$WD24" a@example.com tok-a
-    dvent "$WD24" a@example.com tok-a; dvent "$WD24" b@example.com tok-b
-    dbody "$CD24" tok-a 60 10 10; dbody "$CD24" tok-b 10 10 10
-    out=$(sess "$WD24" PATH="$CD24:$PATH" SESSION_ACCOUNTS_DIR="$WD24/vault" SESSION_NOW="$DNOW" \
-            SESSION_SWITCH_NOTIFY="" USAGE_WARN_PCT=070 -- account auto --trigger cap 2>&1); rc=$?
-    report 3 "$rc" "decide: a threshold written 070 gates at 70, so a live login at 60% is not spent"
-    report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
-        "decide: ... and the box holds rather than moving on an octal reading of it"
 
     # ── an option the verb does not have ─────────────────────────────────────
     WD25=$(dworld); CD25=$(curlstub)
@@ -6063,7 +6106,7 @@ ATURNEOF
     fi
 fi
 
-echo "--- doctor: the switcher, the warn threshold, and the vault's own identities ---"
+echo "--- doctor: the switcher and the vault's own identities ---"
 
 if ! have jq; then
     skip "doctor: the switcher check" "needs jq"
@@ -6266,22 +6309,10 @@ else
 
     report "" "$(dcstate "$DCOK" vault)" "doctor: a vault with nothing mislabelled says nothing"
 
-    # ── the warn threshold, which `doctor` dispatches before the CLI validates
+    # ── a setting nothing reads is not the doctor's business ────────────────
     out=$(ddoc "$WDC" USAGE_WARN_PCT=ninety); rc=$?
-    report 1 "$rc" "doctor: a warn threshold that is not a whole number is a failure"
-    report FAIL "$(dcstate "$out" 'warn pct')" \
-        "doctor: ... named on its own line — until it is fixed every prompt is blocked with exit 2"
-    report yes "$(dcsays "$out" 'warn pct' ninety)" "doctor: ... quoting the value it read"
-    out=$(ddoc "$WDC" USAGE_WARN_PCT=95)
-    report "" "$(dcstate "$out" 'warn pct')" "doctor: a threshold that is a whole number says nothing"
-
-    WDC14=$(dcworld)
-    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-ninety}"\n' > "$WDC14/cfg/session.conf"
-    chmod 600 "$WDC14/cfg/session.conf"
-    out=$(ddoc "$WDC14"); rc=$?
-    report 1 "$rc" "doctor: the same value out of session.conf is caught, which is the case that used to report everything fine"
-    report FAIL "$(dcstate "$out" 'warn pct')" "doctor: ... as a failure"
-    report yes "$(dcsays "$out" 'warn pct' 'session.conf')" "doctor: ... naming the file that sets it"
+    report 0 "$rc" "doctor: a USAGE_WARN_PCT that is not a number is not a failure"
+    report "" "$(dcstate "$out" 'warn pct')" "doctor: ... and has no line of its own"
 fi
 
 echo "--- swap-save: the blank-credential refusal inside a locked decision ---"
@@ -6436,21 +6467,17 @@ WCEOF
     }
 
     # ── a refusal is not a wake-up ────────────────────────────────────────────
-    # A guard spec the CLI cannot read is validated in front of both consumers,
-    # so the rewake entry reaches it too. Refusing there with exit 2 would be
-    # indistinguishable from a wake-up, and the text would be its message. Exit
-    # 0 is also what says no waiter was armed: this world's reset is an hour
-    # out, so a spawn that armed would still be sleeping when `timeout 60` cut
-    # it down, and the status would be 124.
+    # Exit 2 on this entry would be a wake-up carrying the refusal as its
+    # message, so a spawn that cannot go on exits 0. It is also what says no
+    # waiter was armed: this world's reset is an hour out, so a spawn that armed
+    # would still be sleeping when `timeout 60` cut it down, and the status
+    # would be 124.
     NOWC=$(date +%s)
     mkcache "$WWC" me@example.com 95 10 $(( NOWC + 3600 )) $(( NOWC + 36000 ))
-    err=$( (printf '%s' "$WCREW" | wc_sess "$WWC" FIVE_GUARD=lienar -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
-    report 0 "$rc" "wake-channel: a guard spec the CLI cannot read does not wake the session"
-    report "" "$err" "wake-channel: ... and writes nothing to the channel that carries the wake"
 
-    # An argument this build does not know is the same hazard by another door —
-    # and the one an install whose settings.json has drifted from its binary
-    # would take. Silence beats a wake-up carrying an empty message.
+    # An argument this build does not know: the door an install whose
+    # settings.json has drifted from its binary would take. Silence beats a
+    # wake-up carrying an empty message.
     err=$( (printf '%s' "$WCREW" | wc_sess "$WWC" -- --rewake-waiter --no-such-flag >/dev/null) 2>&1 ); rc=$?
     report 0 "$rc" "wake-channel: an argument this build does not know does not wake the session"
     report "" "$err" "wake-channel: ... nor put its complaint where the wake-up goes"
@@ -6460,7 +6487,7 @@ WCEOF
     # the lib emits it at source time, long before any wake is decided.
     NOWC=$(date +%s)
     mkcache "$WWC" me@example.com 95 10 $(( NOWC + 6 )) $(( NOWC + 8 ))
-    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-90}"\n' > "$WWC/cfg/session.conf"
+    printf 'SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-on}"\n' > "$WWC/cfg/session.conf"
     chmod 666 "$WWC/cfg/session.conf"
     printf '%s' "$WCREW" | wc_sess "$WWC" -- --rewake-waiter >/dev/null 2>"$WCERR"; rc=$?
     report 2 "$rc" "wake-channel: a group-writable session.conf still lets the reset wake fire"
