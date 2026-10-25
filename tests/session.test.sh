@@ -1803,52 +1803,111 @@ TTYEOF
     fi
 fi
 
-echo "--- case 5: the warn gate and the advisory's armed-waiter claim ---"
+echo "--- case 5: the hook logs the turn, ends what a prompt ends, and promotes the title ---"
 
 if ! have jq; then
-    skip "case 5: warn gate" "no jq"
+    skip "case 5: hook" "no jq"
 else
     W5=$(world); mklogin "$W5" me@example.com
     HOOKIN=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
-    hook5() { printf '%s' "$HOOKIN" | sess "$W5" -- --hook 2>/dev/null; }
+    H5ERR="$TMP/h5.err"
+    hook5() {  # [VAR=VAL ...] — the prompt payload on stdin, stderr kept separate
+        printf '%s' "$HOOKIN" | sess "$W5" "$@" -- --hook 2>"$H5ERR"
+    }
+    SNAP5="$W5/data/sessions"
+
+    # Nothing to promote: no output, whatever the usage says. The cache is at
+    # 95% on both windows and the settings carry an armed waiter, the state in
+    # which the hook once injected a line and an advisory.
     NOWI=$(date +%s)
+    mkcache "$W5" me@example.com 95 95 $(( NOWI + 600 )) $(( NOWI + 6000 ))
+    printf '%s\n' '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash /x/session/session --rewake-waiter","asyncRewake":true}]}]}}' \
+        > "$W5/cfg/settings.json"
+    out=$(hook5); rc=$?
+    report "0 [] []" "$rc [$out] [$(cat "$H5ERR")]" "case 5: a window at 95% injects nothing and writes nothing to stderr"
+    report "s	p1" "$(awk -F'\t' 'END{print $3 "\t" $4}' "$W5/data/turn-log.tsv")" \
+        "case 5: ... and the turn start is the row it logs"
+    report 1 "$(grep -c . "$W5/data/turn-log.tsv")" "case 5: ... exactly one"
+    report 0 "$(ls "$SNAP5" | grep -c . || true)" \
+        "case 5: ... keeping no state of its own (the warn file is gone)"
 
-    mkcache "$W5" me@example.com 10 10 $(( NOWI + 600 )) $(( NOWI + 6000 ))
-    report "" "$(hook5)" "case 5: below the threshold the hook injects nothing at all"
+    # It reads no usage cache, login, credentials, settings or configuration,
+    # so a malformed one of each changes nothing.
+    printf '{"rate_limits":{' > "$W5/data/last-status.me@example.com.json"
+    printf '{' > "$W5/cfg/.claude.json"
+    printf '{' > "$W5/cfg/.credentials.json"
+    printf '{' > "$W5/cfg/settings.json"
+    : > "$W5/data/turn-log.tsv"
+    out=$(hook5 USAGE_WARN_PCT=ninety FIVE_GUARD=lienar WEEK_GUARD=pow:x); rc=$?
+    report "0 [] []" "$rc [$out] [$(cat "$H5ERR")]" \
+        "case 5: a torn cache, login, credentials, settings, warn threshold and guard specs change nothing"
+    report 1 "$(grep -c "	s	p1	" "$W5/data/turn-log.tsv")" "case 5: ... and the turn start is still logged"
+    mklogin "$W5" me@example.com
+    rm -f "$W5/cfg/.credentials.json" "$W5/cfg/settings.json" "$W5/data/last-status.me@example.com.json"
 
-    mkcache "$W5" me@example.com 90 10 $(( NOWI + 600 )) $(( NOWI + 6000 ))
-    out=$(hook5)
-    report "true" "$(printf '%s' "$out" | jq -r '.suppressOutput')" \
-        "case 5: at the threshold it emits one hook object with suppressOutput"
-    report "UserPromptSubmit" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" \
-        "case 5: ... naming the event"
-    ctx=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')
-    report yes "$(printf '%s' "$ctx" | grep -q '5h rate limit at 90%' && echo yes || echo no)" \
-        "case 5: ... and the advisory names the window that crossed"
-    report yes "$(printf '%s' "$ctx" | grep -q 'FIRST launch' && echo yes || echo no)" \
-        "case 5: with no rewake entry wired, the advisory tells the model to launch the wait itself"
-
-    # The armed-waiter sentence is a promise: claim it only when an entry that
-    # the harness will actually background is present. grep cannot tell.
-    armed='{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash /x/session/session --rewake-waiter","asyncRewake":true,"timeout":700000}]}]}}'
-    printf '%s\n' "$armed" > "$W5/cfg/settings.json"
-    ctx=$(hook5 | jq -r '.hookSpecificOutput.additionalContext')
-    report yes "$(printf '%s' "$ctx" | grep -q 'auto-resume waiter is already armed' && echo yes || echo no)" \
-        "case 5: a real asyncRewake entry earns the armed-waiter sentence"
-
-    for bad in \
-        '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash /x/session/session --rewake-waiter","timeout":700000}]}]}}' \
-        '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash /x/session/session --rewake-waiter","asyncRewake":false}]}]}}' \
-        '{"env":{"NOTE":"the rewake-waiter is not installed here"}}' \
-        '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo rewake-waiter"}]}]}}' ; do
-        printf '%s\n' "$bad" > "$W5/cfg/settings.json"
-        ctx=$(hook5 | jq -r '.hookSpecificOutput.additionalContext')
-        report yes "$(printf '%s' "$ctx" | grep -q 'FIRST launch' && echo yes || echo no)" \
-            "case 5: a settings.json that only greps for rewake-waiter gets the fallback text"
-        report no "$(printf '%s' "$ctx" | grep -q 'already armed' && echo yes || echo no)" \
-            "case 5: ... and never the armed-waiter promise"
+    # A payload without a prompt id still logs the start.
+    : > "$W5/data/turn-log.tsv"
+    printf '{"session_id":"%s"}' "$UUID" | sess "$W5" -- --hook >/dev/null 2>&1
+    report "s	-" "$(awk -F'\t' 'END{print $3 "\t" $4}' "$W5/data/turn-log.tsv")" "case 5: no prompt id logs a dash"
+    for bad in "" "not json" '{"prompt_id":"p1"}'; do
+        : > "$W5/data/turn-log.tsv"
+        out=$(printf '%s' "$bad" | sess "$W5" -- --hook 2>&1); rc=$?
+        report "0 []" "$rc [$out]" "case 5 [stdin='$bad']: exits 0 and says nothing"
+        report 0 "$(grep -c . "$W5/data/turn-log.tsv")" "case 5 [stdin='$bad']: ... and logs no turn"
     done
-    rm -f "$W5/cfg/settings.json"
+
+    # The compaction hold stands only while requests keep asking for it.
+    touch "$SNAP5/$UUID.hold" "$SNAP5/$UUID2.hold"
+    hook5 >/dev/null
+    report "absent present" "$([ -e "$SNAP5/$UUID.hold" ] && echo present || echo absent) $([ -e "$SNAP5/$UUID2.hold" ] && echo present || echo absent)" \
+        "case 5: a prompt clears this session's compaction hold and no other session's"
+
+    # A prompt means the session is running again: an authentication waiter has
+    # nothing left to wait for, a reset waiter still has its reset.
+    printf '4242 auth\n' > "$SNAP5/$UUID.rewaiter"
+    hook5 >/dev/null
+    report absent "$([ -e "$SNAP5/$UUID.rewaiter" ] && echo present || echo absent)" \
+        "case 5: a prompt removes an authentication waiter's pidfile"
+    printf '4242 reset\n' > "$SNAP5/$UUID.rewaiter"
+    hook5 >/dev/null
+    report "4242 reset" "$(cat "$SNAP5/$UUID.rewaiter")" "case 5: ... and leaves a reset waiter's alone"
+    printf '4242\n' > "$SNAP5/$UUID.rewaiter"
+    hook5 >/dev/null
+    report "4242" "$(cat "$SNAP5/$UUID.rewaiter")" "case 5: ... and one written before kinds existed, which is a reset waiter"
+    rm -f "$SNAP5/$UUID.rewaiter"
+
+    # The title is promoted once, by printing the one object Claude Code reads.
+    mkdir -p "$W5/cfg/projects/-w-x"
+    printf '{"type":"ai-title","aiTitle":"Port the session CLI"}\n' > "$W5/cfg/projects/-w-x/$UUID.jsonl"
+    reg5() {  # NAMESOURCE-FIELD — this session's presence record
+        printf '{"pid":%d,"sessionId":"%s","name":"w-x"%s,"kind":"interactive","updatedAt":1}\n' \
+            "$$" "$UUID" "$1" > "$W5/cfg/sessions/$$.json"
+    }
+    reg5 ',"nameSource":"derived"'
+    out=$(hook5 USAGE_WARN_PCT=ninety FIVE_GUARD=lienar); rc=$?
+    report '0 {"suppressOutput":true,"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","sessionTitle":"Port the session CLI"}}' \
+        "$rc $out" "case 5: a derived name is promoted to the title in one object, whatever the configuration"
+    report "" "$(cat "$H5ERR")" "case 5: ... with nothing on stderr"
+
+    reg5 ',"nameSource":"user"'
+    report "" "$(hook5)" "case 5: a name the user chose is left alone"
+    reg5 ''
+    report "" "$(hook5)" "case 5: ... and so is one whose record carries no source"
+    reg5 ',"nameSource":"derived"'
+    rm -f "$W5/cfg/projects/-w-x/$UUID.jsonl"
+    report "" "$(hook5)" "case 5: a derived name with no title in a transcript yet prints nothing"
+    printf '{"type":"ai-title","aiTitle":"Later title"}\n' > "$W5/cfg/projects/-w-x/$UUID.jsonl"
+    rm -f "$W5/cfg/sessions/$$.json"
+    report "" "$(hook5)" "case 5: no presence record prints nothing"
+
+    # The hook is dispatched ahead of the account library, so a tree that has
+    # none still runs it.
+    NOACC=$(mktemp -d "$TMP/noacc.XXXXXX"); mkdir -p "$NOACC/lib"
+    cp "$BIN" "$NOACC/session"; cp "$SDIR/lib/common.sh" "$NOACC/lib/"
+    : > "$W5/data/turn-log.tsv"
+    printf '%s' "$HOOKIN" | env -i PATH="$PATH" HOME="$FH" TZ=UTC CLAUDE_CONFIG_DIR="$W5/cfg" \
+        SESSION_DATA_DIR="$W5/data" bash "$NOACC/session" --hook >/dev/null 2>&1
+    report 1 "$(grep -c "	s	p1	" "$W5/data/turn-log.tsv")" "case 5: ... and it needs nothing from the account library"
 fi
 
 echo "--- case 6: the time --json contract ---"
@@ -3229,7 +3288,7 @@ else
     report 0 "$( (sess "$WCM" FIVE_GUARD='pow:0.5' WEEK_GUARD=off -- --guard >/dev/null) 2>&1; echo $? )" \
         "cov: ... while a well-formed one runs (the control)"
 
-    # --compact over a populated cache: the frugal line every prompt hook emits.
+    # --compact over a populated cache: the frugal one-line read of the limits.
     out=$(sess "$WCM" -- --compact); rc=$?
     report 0 "$rc" "cov: --compact over a populated cache exits 0"
     report yes "$(printf '%s' "$out" | grep -q '5h 50% used' && echo yes || echo no)" \
@@ -3256,7 +3315,6 @@ else
         "warn-thr: the default 90 is written exactly once, across every shipped script"
 
     WWT=$(world); mklogin "$WWT" me@example.com
-    WTHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
     WTREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
 
     # The waiter fails closed without a claude ancestor, so reaching its use of
@@ -3281,71 +3339,25 @@ WTEOF
 
     # An ALPHABETIC value is the case that matters. `(( fp >= thr ))` re-expands
     # a non-numeric thr as a variable name, and under `set -u` an unset one kills
-    # the shell — inside a hook, where nothing surfaces the death. Refusing with
-    # exit 2 and a named variable is what makes the typo visible.
-    out=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=ninety -- --hook) 2>"$TMP/wt.err" ); rc=$?
-    report 2 "$rc" "warn-thr: an alphabetic USAGE_WARN_PCT exits 2 on the hook path"
-    report yes "$(grep -q "invalid USAGE_WARN_PCT='ninety'" "$TMP/wt.err" && echo yes || echo no)" \
-        "warn-thr: ... naming the variable and the value it refused"
-    report no "$(grep -q 'unbound variable' "$TMP/wt.err" && echo yes || echo no)" \
-        "warn-thr: ... instead of dying inside the arithmetic"
-    report "" "$out" "warn-thr: ... and emitting no hook JSON"
-
-    # The rewake entry reaches the same validation and must NOT speak there: on
-    # an asyncRewake hook exit 2 is not a refusal, it is a wake-up delivered
-    # into a live session, and every session on the box runs this hook — so one
-    # malformed conf line would wake the whole box on every prompt. The waiter
-    # fails closed instead, and the entry above is where the typo still shows.
+    # the shell — inside a hook, where nothing surfaces the death. The rewake
+    # entry must NOT refuse with exit 2: on an asyncRewake hook that is a
+    # wake-up delivered into a live session, and every session on the box runs
+    # this hook, so one malformed conf line would wake the whole box. The waiter
+    # fails closed instead.
     err=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=ninety -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
     report 0 "$rc" "warn-thr: the rewake path refuses the same value without waking the session"
     report "" "$err" "warn-thr: ... and says nothing, that channel being the wake message itself"
 
     # Non-integer generally, not just alphabetic. A decimal is the quiet half of
-    # the same bug: the arithmetic itself fails, so the gate never fires and the
-    # hook stays silent at any usage at all.
-    rc=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=90.5 -- --hook >/dev/null 2>&1); echo $? )
-    report 2 "$rc" "warn-thr: a decimal is refused too"
+    # the same bug: the arithmetic itself fails, so the gate never fires.
     rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=90.5 -- --rewake-waiter >/dev/null 2>&1); echo $? )
-    report 0 "$rc" "warn-thr: ... and wakes nobody on the rewake path either"
+    report 0 "$rc" "warn-thr: a decimal is refused too, and wakes nobody on the rewake path"
 
-    # Above 100 is not an error: it is the documented way to turn the hook's
-    # output off, and no consumer may break on it.
-    out=$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=150 -- --hook 2>/dev/null); rc=$?
-    report 0 "$rc" "warn-thr: a threshold above 100 leaves the hook exiting 0"
-    report "" "$out" "warn-thr: ... injecting nothing at 95% used"
+    # Above 100 is not an error, and no consumer may break on it.
     rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=150 -- --rewake-waiter >/dev/null 2>&1); echo $? )
-    report 0 "$rc" "warn-thr: ... and the waiter exits 0"
+    report 0 "$rc" "warn-thr: a threshold above 100 leaves the waiter exiting 0"
     report absent "$([ -e "$WWT/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
         "warn-thr: ... arming nothing"
-
-    # Digits only is not yet a number: bash reads a leading zero as octal, so an
-    # unnormalised 070 gates at 56 and 09 fails the arithmetic outright. That is
-    # the same silent mis-gating the check above exists to close, one base later.
-    mkcache "$WWT" me@example.com 60 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
-    report "" "$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=070 -- --hook 2>/dev/null)" \
-        "warn-thr: 070 is seventy, not octal fifty-six, so 60% used stays quiet"
-    mkcache "$WWT" me@example.com 95 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
-    err=$( (printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=09 -- --hook >"$TMP/wt09.out") 2>&1 )
-    report yes "$(jq -r '.hookSpecificOutput.additionalContext // ""' "$TMP/wt09.out" | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
-        "warn-thr: ... and 09 is nine, not a base error that silences the gate"
-    report "" "$err" "warn-thr: ... leaving nothing on stderr"
-
-    # The control: with nothing set, 95% still crosses the default 90.
-    ctx=$(printf '%s' "$WTHOOK" | sess "$WWT" -- --hook 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext')
-    report yes "$(printf '%s' "$ctx" | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
-        "warn-thr: with nothing set the default 90 still gates"
-
-    # session.conf is the only channel that reaches a hook — tmux, cron and the
-    # harness inherit no shell environment — and the declaration's
-    # environment-wins form is what makes a conf line land without any plumbing.
-    printf 'USAGE_WARN_PCT="${USAGE_WARN_PCT:-98}"\n' > "$WWT/cfg/session.conf"
-    chmod 600 "$WWT/cfg/session.conf"
-    report "" "$(printf '%s' "$WTHOOK" | sess "$WWT" -- --hook 2>/dev/null)" \
-        "warn-thr: session.conf raises the threshold, and 95% no longer warns"
-    report yes "$(printf '%s' "$WTHOOK" | sess "$WWT" USAGE_WARN_PCT=50 -- --hook 2>/dev/null \
-        | jq -r '.hookSpecificOutput.additionalContext' | grep -q '5h rate limit at 95%' && echo yes || echo no)" \
-        "warn-thr: ... while the environment still wins over the conf"
-    rm -f "$WWT/cfg/session.conf"
 fi
 
 echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"
@@ -6372,7 +6384,6 @@ if ! have jq; then
 else
     WWC=$(world); mkdir -p "$WWC/vault"; mklogin "$WWC" me@example.com
     WCREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
-    WCHOOK=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
     WCERR="$TMP/wake-channel.err"
 
     # The waiter fails closed without a claude ancestor, so reaching the channel
@@ -6406,10 +6417,6 @@ WCEOF
     err=$( (printf '%s' "$WCREW" | wc_sess "$WWC" FIVE_GUARD=lienar -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
     report 0 "$rc" "wake-channel: a guard spec the CLI cannot read does not wake the session"
     report "" "$err" "wake-channel: ... and writes nothing to the channel that carries the wake"
-    err=$( (printf '%s' "$WCHOOK" | wc_sess "$WWC" FIVE_GUARD=lienar -- --hook >/dev/null) 2>&1 ); rc=$?
-    report 2 "$rc" "wake-channel: ... while the synchronous entry still refuses loudly"
-    report yes "$(printf '%s' "$err" | grep -q "invalid FIVE_GUARD='lienar'" && echo yes || echo no)" \
-        "wake-channel: ... naming the variable, which is what makes the typo visible"
 
     # An argument this build does not know is the same hazard by another door —
     # and the one an install whose settings.json has drifted from its binary

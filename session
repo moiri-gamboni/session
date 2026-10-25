@@ -52,34 +52,19 @@
 #                     is ok, pending (nothing has produced it yet) or FAIL, and
 #                     only a FAIL exits 1.
 #   session --compact one line: date/time + 5h & weekly %s (token-frugal, always
-#                     exits 0 so it can never block a prompt)
-#   session --hook    UserPromptSubmit plumbing, warn-gated: silent (no output at
-#                     all) while both windows are below USAGE_WARN_PCT. At/above
-#                     it, emits that line + a ⚠ advisory wrapped as
-#                     hook JSON (hookSpecificOutput.additionalContext +
-#                     suppressOutput:true — injected into the model's context,
-#                     kept out of the user's transcript). ONE advisory whatever
-#                     the window or reset distance — only the lead sentence
-#                     names which window(s) crossed: keep working, fan-out
-#                     included; the auto-resume waiter (--rewake-waiter below)
-#                     is armed by the harness, so no action is asked of the
-#                     model (fallback text still instructs a manual `--wait`
-#                     when settings.json lacks the asyncRewake entry). Once a
-#                     warned window's resets_at passes — or the login switches
-#                     to an account that isn't warning — the next turn gets a
-#                     one-line refresh notice (no breakdown) telling the model
-#                     the cap is fresh and work can resume; per-session warn
-#                     state (reset ts + login) lives in sessions/<sid>.warn.
-#                     Independently of the gate, the same envelope carries
-#                     hookSpecificOutput.sessionTitle ONCE per session, to make
-#                     the session addressable by its title: it promotes the
-#                     auto-title to the presence registry's `name` — what
-#                     ListAgents prints and SendMessage addresses — while that
-#                     name is still the app's cwd slug. `claude --name` and
-#                     `/rename` set the same field themselves and are never
-#                     overwritten; rename is how you change it afterwards.
-#                     Side effect every turn, gated or not: appends this turn's
-#                     START event to the turn log.
+#                     exits 0)
+#   session --hook    UserPromptSubmit plumbing: appends this turn's START event to
+#                     the turn log, removes the compaction-hold marker, and ends an
+#                     authentication waiter (a prompt means the session runs again).
+#                     Once per session it also promotes the auto-title to the
+#                     presence registry's `name` — what ListAgents prints and
+#                     SendMessage addresses — while that name is still the app's cwd
+#                     slug, by printing hookSpecificOutput.sessionTitle with
+#                     suppressOutput:true. `claude --name` and `/rename` set the same
+#                     field themselves and are never overwritten; rename is how you
+#                     change it afterwards. Prints nothing otherwise, always exits 0,
+#                     and reads no usage data, so it fits the entry's 2 s timeout on
+#                     a loaded box.
 #   session --rewake-waiter  asyncRewake hook plumbing (second UserPromptSubmit
 #                     entry AND second StopFailure entry): the harness
 #                     backgrounds it and treats exit 2 as "wake the model with
@@ -254,6 +239,105 @@ if [ "${1:-}" = --post-tool-batch ]; then
   exit 0
 fi
 
+transcript_of() {  # $1=sid -> its transcript path (empty if none readable)
+  local jsonl
+  [ -d "$SESSION_CFG/projects" ] || return 0
+  jsonl=$(find "$SESSION_CFG/projects" -name "$1.jsonl" -print -quit)
+  { [ -n "$jsonl" ] && [ -r "$jsonl" ]; } && printf '%s' "$jsonl"
+}
+# The FIRST auto-title, for the one-shot peer-name promotion in the hook below.
+# Read from a bounded prefix: the app writes the title right after the opening
+# exchange (over the 1,492 titled session transcripts of Aug 2026 the entry sat
+# p50 32 KB / p99 386 KB / max 1.4 MB in, so the cap has never truncated a real
+# one), and the bound exists for the other shape — the ~4% of sessions that
+# never get a title at all, where an unbounded scan would re-read a transcript
+# that can reach tens of MB on every single prompt.
+TITLE_SCAN_BYTES=${TITLE_SCAN_BYTES:-2000000}
+first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
+  local jsonl line
+  jsonl=$(transcript_of "$1")
+  [ -n "$jsonl" ] || return 0
+  # grep reads a process substitution rather than a pipe: `head | grep -m1`
+  # SIGPIPEs head on a match, and under pipefail that turns a HIT into a
+  # non-zero pipeline that reads as "no title".
+  line=$(grep -m1 '"type":"ai-title"' < <(head -c "$TITLE_SCAN_BYTES" "$jsonl")) || return 0
+  printf '%s' "$line" | jq -r '.aiTitle // empty'
+}
+
+# UserPromptSubmit ("--hook"). It runs before every prompt of every session on
+# the box inside the entry's 2 s timeout, so it does only what something reads,
+# and it sits ahead of the account library like the batch stop above. It reads
+# no usage cache, login, session log or settings.json and validates no
+# configuration, because each of those can cost more than the timeout on a
+# loaded box (the usage scans it once ran took 2.5 of 3.4 s at load 30 on 8
+# cores). Always exits 0, and prints only when it promotes a title.
+#
+# Stdin is read exactly once, and the turn START row is written before anything
+# that can fail: `session time` pairs it with the Stop hook's end row (they
+# share the prompt id), and a start that goes missing reports a worked day as
+# empty. The write is silent because it runs on every prompt and nothing reads
+# its error: a redirect that fails reports when it is set up, so the group
+# carries the 2>/dev/null, and `session doctor` names a missing root.
+if [ "${1:-}" = --hook ]; then
+  [ -t 0 ] && exit 0
+  IFS=$'\t' read -r hsid hpid < <(jq -r '[(.session_id//"-"),(.prompt_id//"-")]|@tsv' 2>/dev/null || true)
+  hsid=${hsid:-}; [ "$hsid" = "-" ] && hsid=""
+  [ -n "$hsid" ] || exit 0
+  { printf '%s\t%s\ts\t%s\t-\t-\n' "$(date +%s)" "$hsid" "${hpid:--}" >> "$SESSION_TLOG"; } 2>/dev/null
+  # A compaction hold stands only while requests keep asking for it; the next
+  # one that does touches the marker again. Without this, a context that fell
+  # back under the threshold without a compaction (/model, a rewind) keeps the
+  # status line saying held.
+  rm -f "$SESSION_SNAPDIR/$hsid.hold"
+  # A prompt means the session is running again, so an authentication waiter
+  # (kind `auth`, see the rewake block) has nothing left to wait for: removing
+  # its pidfile makes it leave. A reset waiter is left to the wake it is for.
+  hpidf="$SESSION_SNAPDIR/$hsid.rewaiter"
+  if [ -s "$hpidf" ] && read -r _ hkind < "$hpidf" && [ "${hkind:-}" = auth ]; then
+    rm -f "$hpidf"
+  fi
+  # ── peer name ← session title, once ────────────────────────────────────────
+  # $cfg/sessions/<pid>.json is Claude Code's presence registry, and its `name`
+  # is what ListAgents prints and what SendMessage addresses. Left alone that
+  # name is a cwd slug ("work-2a"): the app derives it from the directory and
+  # deliberately never promotes the readable title into it (the registry write
+  # is skipped for title source "auto"), so peers are addressable only by a code
+  # the user never sees, while the title they DO see lives in the transcript.
+  # Returning sessionTitle from this hook sets both, with source "hook".
+  #
+  # Once per session: the gate fires only while every registry record for this
+  # id still reads `derived`, so `claude --name` and `/rename` (source "user",
+  # and both already set the name natively) always win and are never
+  # overwritten — rename is how you change it afterwards. Cost once promoted is
+  # the one jq below (~11ms); the transcript read happens only in the turn or
+  # two before a title exists.
+  hregs=("$SESSION_CFG"/sessions/*.json)
+  if [ -e "${hregs[0]}" ]; then
+    # stderr is dropped because the app rewrites these records in place and a
+    # read can catch one mid-write: a hook that printed a jq parse error would
+    # put it in the model's context. A bad read yields "" and simply retries
+    # next turn.
+    #
+    # Only an EXPLICIT "derived" promotes. An absent nameSource is a named
+    # session, not an unnamed one: the app writes the field only when the name
+    # is derived, and a record rebuilt after a promotion comes back with it
+    # omitted — reading absent as derived re-fired the promotion on every
+    # prompt, re-running the transcript read each turn for exactly the sessions
+    # that were already done.
+    hnsrc=$(jq -rs --arg s "$hsid" \
+      '[.[] | select(.sessionId == $s) | .nameSource // "named"] | unique | join(",")' \
+      "${hregs[@]}" 2>/dev/null || true)
+    if [ "$hnsrc" = derived ]; then
+      # Bounded before it goes anywhere: this becomes the peer name every other
+      # session addresses, and the value is whatever the titler wrote.
+      htitle=$(first_title "$hsid" | tr -d '\000-\037\177' | cut -c1-80)
+      [ -z "$htitle" ] || jq -cn --arg t "$htitle" \
+        '{suppressOutput: true, hookSpecificOutput: {hookEventName: "UserPromptSubmit", sessionTitle: $t}}'
+    fi
+  fi
+  exit 0
+fi
+
 . "$SESSION_HOME/lib/account.sh" || { echo "session: cannot read $SESSION_HOME/lib/account.sh" >&2; exit 1; }
 
 # cache resolution is deferred until after arg parsing: it depends on the login
@@ -358,13 +442,6 @@ resolve_sid() {
   [ -n "$sid" ] || return 1
   printf '%s\n' "$sid"
 }
-transcript_of() {  # $1=sid -> its transcript path (empty if none readable)
-  local cfg jsonl
-  cfg="$SESSION_CFG"
-  [ -d "$cfg/projects" ] || return 0
-  jsonl=$(find "$cfg/projects" -name "$1.jsonl" -print -quit)
-  { [ -n "$jsonl" ] && [ -r "$jsonl" ]; } && printf '%s' "$jsonl"
-}
 # A session's title, from its transcript under
 # $CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl. Two kinds of entry
 # carry one and the app prefers the custom over the auto-generated one, so this
@@ -382,24 +459,6 @@ session_title() {  # $1=sid ; empty output if no title yet
            END {print (c != "" ? c : a)}')
   [ -n "$line" ] || return 0
   printf '%s' "$line" | jq -r '.customTitle // .aiTitle // empty'
-}
-# The FIRST auto-title, for the one-shot peer-name promotion in the hook below.
-# Read from a bounded prefix: the app writes the title right after the opening
-# exchange (over the 1,492 titled session transcripts of Aug 2026 the entry sat
-# p50 32 KB / p99 386 KB / max 1.4 MB in, so the cap has never truncated a real
-# one), and the bound exists for the other shape — the ~4% of sessions that
-# never get a title at all, where an unbounded scan would re-read a transcript
-# that can reach tens of MB on every single prompt.
-TITLE_SCAN_BYTES=${TITLE_SCAN_BYTES:-2000000}
-first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
-  local jsonl line
-  jsonl=$(transcript_of "$1")
-  [ -n "$jsonl" ] || return 0
-  # grep reads a process substitution rather than a pipe: `head | grep -m1`
-  # SIGPIPEs head on a match, and under pipefail that turns a HIT into a
-  # non-zero pipeline that reads as "no title".
-  line=$(grep -m1 '"type":"ai-title"' < <(head -c "$TITLE_SCAN_BYTES" "$jsonl")) || return 0
-  printf '%s' "$line" | jq -r '.aiTitle // empty'
 }
 whoami_usage() {
   cat >&2 <<'EOF'
@@ -2299,7 +2358,6 @@ mode=text; waitwin=five; submode=""; target_sid=""; all=0; yday=0; datearg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --compact|--oneline) mode=compact ;;
-    --hook)  mode=hook ;;
     --json)  mode=json ;;
     --guard) mode=guard ;;
     --wait)  mode='wait'
@@ -2433,8 +2491,8 @@ Guard config (environment, per window):
   FIVE_WINDOW / WEEK_WINDOW        window sizes in seconds (18000 / 604800)
 
 Plumbing (wired into settings.json + tmux by install.sh; not for interactive use):
-  session --hook                   UserPromptSubmit: log turn start; inject usage
-                                   line + ⚠ only at >=USAGE_WARN_PCT (default 90);
+  session --hook                   UserPromptSubmit: log turn start; clear the
+                                   compaction hold and an authentication waiter;
                                    promote the auto-title to the peer name once
                                    (TITLE_SCAN_BYTES caps the transcript read)
   session --rewake-waiter          UserPromptSubmit + StopFailure (asyncRewake
@@ -2526,24 +2584,6 @@ esac
 # gate at 56 and 09 would not parse at all. Fix the base once, here, so both
 # consumers read a canonical decimal.
 USAGE_WARN_PCT=$(( 10#$USAGE_WARN_PCT ))
-
-# emit a status line either plain (compact) or wrapped in the UserPromptSubmit hook
-# JSON (hook): additionalContext is injected into the model's context; suppressOutput
-# keeps the JSON envelope out of the user's transcript. sessionTitle ($ptitle, set
-# by the peer-name block below) rides the same envelope — a hook gets one JSON
-# object, so the two cannot be emitted separately. Either half may be absent: an
-# empty line with a title is the common case (a promotion below the warn gate).
-ptitle=""
-emit() {  # $1 = the status line (may be empty when only $ptitle is being set)
-  if [ "$mode" = hook ]; then
-    jq -cn --arg c "$1" --arg t "$ptitle" \
-      '{suppressOutput: true, hookSpecificOutput: ({hookEventName: "UserPromptSubmit"}
-         + (if $c == "" then {} else {additionalContext: $c} end)
-         + (if $t == "" then {} else {sessionTitle: $t} end))}'
-  else
-    printf '%s\n' "$1"
-  fi
-}
 
 # ── session time — per-turn tracking for today (since local midnight) ────────
 # Pairs s/e events per session; active = Σ closed start→end spans, so idle gaps
@@ -3053,34 +3093,12 @@ if [ "${submode:-}" = time ]; then
   exit 0
 fi
 
-# The turn START row is the hook's own output and owes nothing to the cache the
-# statusline writes. It is logged BEFORE the guard below, which returns early
-# without one: otherwise a machine with no statusline — or any session before
-# its first render — silently records ends without starts, and `session time`
-# reports a worked day as empty. Stdin is read exactly once, here; the blocks
-# further down use $hsid/$hpid rather than re-reading a consumed stream.
-if [ "$mode" = hook ] && [ ! -t 0 ]; then
-  # quiet jq: stdin may be empty/non-JSON on odd manual invocations
-  IFS=$'\t' read -r hsid hpid < <(jq -r '[(.session_id//"-"),(.prompt_id//"-")]|@tsv' 2>/dev/null || true)
-  hsid=${hsid:-}; [ "$hsid" = "-" ] && hsid=""
-  # the Stop hook (--turn-end) logs the matching end, sharing prompt_id so
-  # turns join to sample-log rows by id
-  # Silent for the same reason as the lifecycle write, and more so: this one
-  # runs on every prompt.
-  [ -n "$hsid" ] && { printf '%s\t%s\ts\t%s\t-\t-\n' "$(date +%s)" "$hsid" "${hpid:--}" >> "$tlog"; } 2>/dev/null
-  # A hold stands only while requests keep asking for it; the next one that
-  # does touches the marker again. Without this a context that fell back under
-  # the threshold without a compaction (/model, a rewind) keeps the status line
-  # saying held.
-  [ -n "$hsid" ] && rm -f "$snapdir/$hsid.hold"
-fi
-
 if [ ! -s "$cache" ]; then
-  # hook is warn-gated: no data = nothing to warn about — exit silently (never
-  # block a prompt). compact stays display-only: emit date/time, never error.
-  { [ "$mode" = hook ] || [ "$mode" = rewake ]; } && exit 0
+  # The rewake entry never prints (its stderr is the wake message); compact
+  # stays display-only: date/time, never an error.
+  [ "$mode" = rewake ] && exit 0
   if [ "$mode" = compact ]; then
-    emit "Claude usage limits · $(date '+%Y-%m-%d %H:%M %Z') · n/a (no statusline render yet)"
+    printf '%s\n' "Claude usage limits · $(date '+%Y-%m-%d %H:%M %Z') · n/a (no statusline render yet)"
     exit 0
   fi
   echo "session: no cache at $cache" >&2
@@ -3204,8 +3222,8 @@ ws5=$(( fivereset - FIVE_WINDOW )); wsw=$(( weekreset - WEEK_WINDOW ))
 # arrays by them — no string ordering, length or regex on field text — so the
 # locale cannot change its output; re-check that before adding any. gawk under a
 # UTF-8 locale takes ~3x as long over the log (2026-10, 36k rows on a loaded
-# box: 0.6s against 0.2s a pass), and `session --hook` runs both scans whenever
-# a window is at or above the warning threshold, inside its 2s timeout.
+# box: 0.6s against 0.2s a pass), and the overview and `session usage` run both
+# scans on every call.
 est_sessions() {
   [ -s "$slog" ] || return 1
   LC_ALL=C sort -t$'\t' -k1,1n "$slog" | LC_ALL=C awk -F'\t' -v ws5="$ws5" -v wsw="$wsw" -v acct="$acct" '
@@ -3374,8 +3392,8 @@ if [ -n "$submode" ]; then
   exit 0
 fi
 
-if [ "$mode" = compact ] || [ "$mode" = hook ]; then
-  # One frugal, self-identifying line for a per-turn hook:
+if [ "$mode" = compact ]; then
+  # One frugal, self-identifying line:
   #   "Claude usage limits · <date> <time> TZ · 5h X% used (resets to 0% in ..) · wk Y% ..".
   # "resets to 0%" (not just "resets in") because a bare countdown next to a limit
   # reads like a work deadline to a cold model — agents were wrapping up as the
@@ -3401,163 +3419,7 @@ if [ "$mode" = compact ] || [ "$mode" = hook ]; then
     "$(seg 5h "$five" "$f_stale" "$(cd5)")" \
     "$(seg wk "$week" "$w_stale" "$(cdw)")" \
     "$aline" "$stale")
-  # Hook output is gated behind the warning threshold (USAGE_WARN_PCT): below it
-  # the hook injects nothing — the every-turn line was context noise — and only
-  # the turn-start side effect below runs. A stale window's % belongs to a
-  # window that already closed, so it neither warns nor un-gates.
-  f_warn=0; w_warn=0; warn=0; refresh=""
-  if [ "$mode" = hook ]; then
-    thr=$USAGE_WARN_PCT
-    [ "$f_stale" = 0 ] && (( fp >= thr )) && f_warn=1
-    [ "$w_stale" = 0 ] && (( wp >= thr )) && w_warn=1
-    warn=$(( f_warn || w_warn ))
-  fi
-  # Hook only: append this session's estimated share of each window, so the
-  # emitted line carries "how much of the burn is mine" alongside the global %s
-  # (skipped when gated — est_sessions scans the whole sample log). The session
-  # id comes from the hook's stdin JSON (the -t guard keeps a manual TTY run
-  # from hanging on a stdin read). ≈ marks it as a tracked-share estimate; see
-  # `session usage --all` for the method and its caveats. Silent on any failure —
-  # this segment must never break the injected line.
-  if [ "$mode" = hook ] && [ ! -t 0 ]; then
-    # ── peer name ← session title, once ──────────────────────────────────────
-    # $cfg/sessions/<pid>.json is Claude Code's presence registry, and its
-    # `name` is what ListAgents prints and what SendMessage addresses. Left
-    # alone that name is a cwd slug ("work-2a"): the app derives it
-    # from the directory and deliberately never promotes the readable title
-    # into it (the registry write is skipped for title source "auto"), so peers
-    # are addressable only by a code the user never sees, while the title they
-    # DO see lives in the transcript. Returning sessionTitle from this hook
-    # sets both, with source "hook".
-    #
-    # Once per session: the gate fires only while every registry record for
-    # this id still reads `derived`, so `claude --name` and `/rename` (source
-    # "user", and both already set the name natively) always win and are never
-    # overwritten — rename is how you change it afterwards. Cost once promoted
-    # is the one jq below (~11ms); the transcript read happens only in the
-    # turn or two before a title exists.
-    if [ -n "$hsid" ]; then
-      regs=("$cfg"/sessions/*.json)
-      if [ -e "${regs[0]}" ]; then
-        # stderr is dropped because the app rewrites these records in place and
-        # a read can catch one mid-write: a hook that printed a jq parse error
-        # would put it in the model's context. A bad read yields "" and simply
-        # retries next turn.
-        # Only an EXPLICIT "derived" promotes. An absent nameSource is a named
-        # session, not an unnamed one: the app writes the field only when the
-        # name is derived, and a record rebuilt after a promotion comes back
-        # with it omitted — reading absent as derived re-fired the promotion on
-        # every prompt, re-running the transcript read each turn for exactly
-        # the sessions that were already done.
-        nsrc=$(jq -rs --arg s "$hsid" \
-          '[.[] | select(.sessionId == $s) | .nameSource // "named"] | unique | join(",")' \
-          "${regs[@]}" 2>/dev/null || true)
-        # Bounded before it goes anywhere: this becomes the peer name every
-        # other session addresses, and the value is whatever the titler wrote.
-        if [ "$nsrc" = derived ]; then
-          ptitle=$(first_title "$hsid")
-          ptitle=$(printf '%s' "$ptitle" | tr -d '\000-\037\177' | cut -c1-80)
-        fi
-      fi
-    fi
-    # Reset-refresh notice: a session that was warned about a window is told,
-    # once, when that window's resets_at has passed — otherwise a model that
-    # paused on the cap has no signal that it turned over (the gate keeps the
-    # hook silent below the threshold). Warn state is per session
-    # ("five_ts<TAB>week_ts<TAB>login", 0 = no outstanding warn) in
-    # sessions/<sid>.warn, which the statusline's existing mtime+8d sweep
-    # cleans up. A window that is warning again right now (new window already
-    # >= thr) skips its notice. The login column exists because a warn issued
-    # under another account is settled by the account SWITCH, not by the old
-    # account's countdown: after `session account use`, f_warn/w_warn are
-    # computed from the new login's windows, so comparing now against the old
-    # login's reset timestamps would sit silent for days on a weekly warn when
-    # the switch itself already supplied the fresh window.
-    if [ -n "$hsid" ]; then
-      wfile="$snapdir/$hsid.warn"
-      rf=0; rw=0; racct=""
-      [ -s "$wfile" ] && IFS=$'\t' read -r rf rw racct < "$wfile"
-      case "$rf" in ''|*[!0-9]*) rf=0 ;; esac
-      case "$rw" in ''|*[!0-9]*) rw=0 ;; esac
-      if [ -n "$racct" ] && [ "$racct" != "$acct" ] && (( rf > 0 || rw > 0 )); then
-        [ "$f_warn" = 0 ] && [ "$w_warn" = 0 ] && refresh="the login has switched to $acct, whose rate-limit windows are below the warning threshold"
-        rf=0; rw=0
-      fi
-      [ "$f_warn" = 0 ] && (( rf > 0 && now >= rf )) && { refresh="the 5h rate-limit window has reset to 0%"; rf=0; }
-      [ "$w_warn" = 0 ] && (( rw > 0 && now >= rw )) && { refresh="${refresh:+$refresh, and }the weekly (7-day) rate-limit window has reset to 0%"; rw=0; }
-      [ "$f_warn" = 1 ] && rf=$fivereset
-      [ "$w_warn" = 1 ] && rw=$weekreset
-      if (( rf > 0 || rw > 0 )); then [ -d "$snapdir" ] || mkdir -p "$snapdir"; printf '%s\t%s\t%s\n' "$rf" "$rw" "$acct" > "$wfile"
-      else rm -f "$wfile"; fi
-    fi
-    if [ "$warn" = 1 ] && [ -n "$hsid" ] && sest=$(est_sessions); then
-      IFS=$'\t' read -r hb5 hbw < <(base_pcts)
-      hc5=$(covered "$five" "$hb5"); hcw=$(covered "$week" "$hbw")
-      line="$line$(awk -F'\t' -v s="$hsid" -v c5="$hc5" -v cw="$hcw" -v fs="$f_stale" -v ws="$w_stale" '
-        {t5+=$2; tw+=$3; if ($1==s) {o5=$2; ow=$3}}
-        END {
-          out=""
-          if (fs==0 && c5+0>=0 && t5>0) out = sprintf("≈%.1f%%/5h", c5*o5/t5)
-          if (ws==0 && cw+0>=0 && tw>0) out = out (out=="" ? "" : " ") sprintf("≈%.1f%%/wk", cw*ow/tw)
-          if (out != "") printf " · this session %s", out
-        }' <<<"$sest")"
-    fi
-  fi
-  # Hook only: when a window nears its hard cap, tell Claude the right reaction.
-  # ONE advisory, identical for every window and reset distance — only the lead
-  # sentence names which window(s) crossed the threshold. Models otherwise
-  # pattern-match "high % + small countdown" to "stop now", the exact wrong
-  # reading: the cap never makes stopping useful — worst case is a pause the
-  # auto-resume waiter rides out — so the policy is always keep working,
-  # fan-out included. The waiter is armed DETERMINISTICALLY by the asyncRewake
-  # hook entry (see the rewake block), so the advisory is information, not an
-  # instruction the model has to execute correctly — the observed failure mode
-  # of the instruction era was a model narrating "I'll wait for the reset"
-  # while launching nothing. The launch-it-yourself text survives only as the
-  # fallback for a config without the asyncRewake entry. The probe is
-  # STRUCTURAL rather than a grep for the string: promising an armed waiter
-  # that is not wired would put the session to sleep for days, and
-  # `rewake-waiter` can appear in a settings.json that arms nothing — a
-  # commented-out entry, an env value, an entry on another event, or the entry
-  # itself with asyncRewake absent or false (which the harness then runs
-  # synchronously, so it never wakes anyone). Threshold via USAGE_WARN_PCT
-  # (set it above 100 to disable the hook's output entirely).
-  if [ "$warn" = 1 ]; then
-    if [ "$f_warn" = 1 ] && [ "$w_warn" = 1 ]; then
-      lead="⚠ 5h rate limit at ${fp}% (resets to 0% in $(hm "$left5")) and weekly (7-day) at ${wp}% (resets to 0% in $(dh "$leftw"))."
-      wcmd="\`session --wait 5h\` and \`session --wait week\` in the background (one Bash call each, run_in_background: true; skip any already running)"
-    elif [ "$f_warn" = 1 ]; then
-      lead="⚠ 5h rate limit at ${fp}% (resets to 0% in $(hm "$left5"))."
-      wcmd="\`session --wait 5h\` in the background (Bash run_in_background: true; skip if one is already running)"
-    else
-      lead="⚠ weekly (7-day) rate limit at ${wp}% (resets to 0% in $(dh "$leftw"))."
-      wcmd="\`session --wait week\` in the background (Bash run_in_background: true; skip if one is already running)"
-    fi
-    if jq -e '[.hooks.UserPromptSubmit[]?.hooks[]?
-                | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)]
-               | length > 0' "$cfg/settings.json" >/dev/null 2>&1; then
-      line="$line"$'\n'"$lead This is not a reason to stop, wind down, or hold back parallel/fan-out work — worst case is a pause until the reset, and an auto-resume waiter is already armed: if this session is paused by the cap, it will be woken automatically when the window resets or the login switches. No action needed; keep working, fan-out included. Also: any usage-limit error's reset time — in this session or a subagent's failure message — is scoped to the current login; a login switch (\`session account\`) lifts the cap immediately, so never treat a quoted reset time as a deadline or a planning constraint."
-    else
-      line="$line"$'\n'"$lead This is not a reason to stop, wind down, or hold back parallel/fan-out work — worst case is a pause until the reset. FIRST launch $wcmd: a \`--wait\`'s exit is the only signal that auto-resumes you — ending a turn saying \"I'll wait for the reset\" launches nothing and sleeps until a human returns, and once paused you cannot launch anything. Then keep working, fan-out included. Also: any usage-limit error's reset time — in this session or a subagent's failure message — is scoped to the current login; a login switch (\`session account\`) lifts the cap immediately, so never treat a quoted reset time as a deadline or a planning constraint."
-    fi
-  fi
-  # Below the threshold the hook emits nothing at all (for UserPromptSubmit, no
-  # stdout = no context injected) — unless a refresh notice is pending, which
-  # un-gates on its own and deliberately WITHOUT the usage breakdown: the one
-  # thing the model needs to hear is that the cap turned over. compact always
-  # prints the full line.
-  if [ "$mode" = hook ]; then
-    if [ "$warn" = 1 ]; then
-      [ -n "$refresh" ] && line="$line"$'\n'"Also: $refresh."
-      emit "$line"
-    elif [ -n "$refresh" ]; then
-      emit "Claude usage limits: $refresh — a fresh window is available. Work can continue normally, fan-out included; the earlier ⚠ warning no longer applies."
-    elif [ -n "$ptitle" ]; then
-      emit ""   # nothing to say about usage, but a peer name to set
-    fi
-    exit 0
-  fi
-  emit "$line"
+  printf '%s\n' "$line"
   exit 0
 fi
 
