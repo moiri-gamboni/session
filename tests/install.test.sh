@@ -263,10 +263,14 @@ rewake_events() {  # SETTINGS — the events carrying the waiter command
 
 CRT=$(mkcfg); BRT="$TMP/binrt"
 out=$(inst "$CRT" --bindir "$BRT")
+report no "$(yesno grep -q 'UserPromptSubmit --rewake-waiter entry' <<<"$out")" "retired: a fresh install has nothing to say about it"
 oldpair "$CRT/settings.json"
+CRT4=$(mkcfg); cp "$CRT/settings.json" "$CRT4/settings.json"
 report "StopFailure UserPromptSubmit" "$(rewake_events "$CRT/settings.json")" "retired: the fixture carries the old pair"
 out=$(inst "$CRT" --bindir "$BRT"); rc=$?
 report 0 "$rc" "retired: a re-run over the old pair exits 0"
+report yes "$(yesno grep -q 'removed the UserPromptSubmit --rewake-waiter entry' <<<"$out")" \
+    "retired: ... and says it removed the UserPromptSubmit entry"
 report "StopFailure" "$(rewake_events "$CRT/settings.json")" "retired: ... and leaves the waiter on StopFailure alone"
 report 1 "$(jq "$REWAKE | length" "$CRT/settings.json")" "retired: ... as one entry, still asyncRewake"
 report 1 "$(jq "$REWAKE | map(select(.asyncRewake == true)) | length" "$CRT/settings.json")" "retired: ... armed"
@@ -275,6 +279,14 @@ report 1 "$(jq '[.hooks.UserPromptSubmit[]?.hooks[]? | select(.command | test("-
 cp "$CRT/settings.json" "$TMP/before.rt"
 out=$(inst "$CRT" --bindir "$BRT")
 report yes "$(yesno cmp -s "$TMP/before.rt" "$CRT/settings.json")" "retired: the next run is a no-op"
+report no "$(yesno grep -q 'UserPromptSubmit --rewake-waiter entry' <<<"$out")" "retired: ... with nothing to say about it"
+
+# A dry run says what it would remove, and writes nothing.
+cp "$CRT4/settings.json" "$TMP/before.rt4"
+out=$(inst "$CRT4" --bindir "$BRT" --dry-run)
+report yes "$(yesno grep -q 'would remove the UserPromptSubmit --rewake-waiter entry' <<<"$out")" \
+    "retired [--dry-run]: a dry run says it would remove the UserPromptSubmit entry"
+report yes "$(yesno cmp -s "$TMP/before.rt4" "$CRT4/settings.json")" "retired [--dry-run]: ... and writes nothing"
 
 # A gate that cannot be checked leaves the armed entry as it is, and the
 # retired one goes anyway: it arms nothing, so no check stands behind it.
@@ -285,6 +297,8 @@ FAKE_CLAUDE_VERSION=2.1.99
 out=$(inst "$CRT2" --bindir "$BRT2"); rc=$?
 FAKE_CLAUDE_VERSION=2.1.251
 report 1 "$rc" "retired [old claude]: the re-run refuses the gate"
+report yes "$(yesno grep -q 'removed the UserPromptSubmit --rewake-waiter entry' <<<"$out")" \
+    "retired [old claude]: ... and still says it removed the UserPromptSubmit entry"
 report "StopFailure" "$(rewake_events "$CRT2/settings.json")" "retired [old claude]: ... keeps the StopFailure entry and drops the other"
 report 1 "$(jq '[.hooks.UserPromptSubmit[]?.hooks[]? | select(.command | test("--hook"))] | length' "$CRT2/settings.json")" \
     "retired [old claude]: ... and the --hook entry is intact"

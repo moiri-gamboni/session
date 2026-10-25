@@ -562,10 +562,19 @@ DROPEOF
             printf '%s' "$drop_body" | sed 's/^/          /'
         fi
         armed_note="auto-resume: armed on StopFailure — remove it with uninstall.sh, or re-run with --no-rewake"
+        # The waiter entry on UserPromptSubmit comes out of every run that finds
+        # one, by the drop list or the retire list, and the refusal that keeps
+        # the armed entry says nothing about it, so this run names it.
+        ups_waiter=$(printf '%s' "$cur_json" | jq --argjson drop "$drop" --argjson retire "$retire" '
+            [ .hooks.UserPromptSubmit[]?.hooks[]? | (.command // "") as $c
+              | select(($c | endswith(" --rewake-waiter")) and ((($drop + $retire) | index($c)) != null)) ]
+            | length')
+        ups_note="the UserPromptSubmit --rewake-waiter entry (the waiter arms on StopFailure alone)"
         if [ "$dry_run" = 1 ]; then
             plan "settings.json: the merge would change $settings:"
             diff <(printf '%s' "$cur_json" | jq -S .) <(printf '%s\n' "$merged" | jq -S .)
             [ "$rewake" = true ] && plan "auto-resume: would arm the waiter on StopFailure"
+            [ "$ups_waiter" -gt 0 ] && plan "auto-resume: would remove $ups_note"
         elif [ "$(printf '%s' "$cur_json" | jq -S .)" = "$(printf '%s\n' "$merged" | jq -S .)" ]; then
             skipstep "settings.json: already carries exactly this — nothing written"
             [ "$rewake" = true ] && ok "$armed_note"
@@ -587,6 +596,7 @@ DROPEOF
                 && mv -f "$settings.session-tmp" "$settings"; then
                 ok "settings.json: updated (previous copy at $settings.session-bak)"
                 [ "$rewake" = true ] && ok "$armed_note"
+                [ "$ups_waiter" -gt 0 ] && ok "auto-resume: removed $ups_note"
             else
                 rm -f "$settings.session-bak.tmp" "$settings.session-tmp"
                 refuse "cannot write $settings" "$WRITE_REMEDY"
