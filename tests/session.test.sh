@@ -1844,6 +1844,12 @@ else
     mklogin "$W5" me@example.com
     rm -f "$W5/cfg/.credentials.json" "$W5/cfg/settings.json" "$W5/data/last-status.me@example.com.json"
 
+    # The entry is recognised wherever it stands among the arguments.
+    : > "$W5/data/turn-log.tsv"
+    out=$(printf '%s' "$HOOKIN" | sess "$W5" -- --file "$W5/data/nothing.json" --hook 2>&1); rc=$?
+    report "0 [] 1" "$rc [$out] $(grep -c "	s	p1	" "$W5/data/turn-log.tsv")" \
+        "case 5: --hook after another option still logs the turn, exits 0 and says nothing"
+
     # A payload without a prompt id still logs the start.
     : > "$W5/data/turn-log.tsv"
     printf '{"session_id":"%s"}' "$UUID" | sess "$W5" -- --hook >/dev/null 2>&1
