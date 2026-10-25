@@ -797,6 +797,9 @@ runs_lab='review https://example.com/an-organisation/a-repository/pull/12345'
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/code-${runs_lab}")")
 report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:47}…")" \
     "runs: a long label is cut to 48 characters"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/code-${runs_lab}")" "!python3|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:47}… · tasksync")" \
+    "runs: each label is cut to 48 on its own, so a long first one leaves the next on the marker"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv $'/code-review \033]8;;x\ahigh')")
 report no "$(yesno has "$runs_line" $'\033')" "runs: a control character in the prompt never reaches the terminal"
 runs_line=$(render_session "$SL_RUNS" "$PR" 'claude-monitor|-p|8080')

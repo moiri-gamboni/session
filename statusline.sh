@@ -670,11 +670,13 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
   # narrows it further) and cuts what is longer with an ellipsis, so a rest
   # that leaves the marker no room is cut first, from the end Claude Code would
   # have cut. With COLUMNS unset the marker follows the rest after two spaces.
-  # Its label comes out of a process argv: no control or format character in it
-  # reaches the terminal, and it is cut by code point, as bash in a C locale
-  # cannot.
+  # Its labels come out of a process argv: no control or format character in
+  # them reaches the terminal, and each is cut to 48 code points on its own, as
+  # bash in a C locale cannot, so a long one leaves the next its place.
   if $runs_lab == "" then $rest else
-    ($runs_lab | gsub("[\\p{Cc}\\p{Cf}]"; "") | if length > 48 then .[:47] + "…" else . end) as $l
+    ($runs_lab | split(" · ")
+       | map(gsub("[\\p{Cc}\\p{Cf}]"; "") | if length > 48 then .[:47] + "…" else . end)
+       | join(" · ")) as $l
     | "⟳ \($l)" as $m
     | ($cols | tonumber? // 0) as $c
     | if $c <= 0 then $rest + "  " + $m
