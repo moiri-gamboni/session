@@ -343,6 +343,7 @@ case "$_cwd" in
         _d="${_d%/*}"
       done ;;
 esac
+_wsabove=$_wsroot   # kept for the runs marker: a pointer below may move _wsroot
 _slug=""
 if [ -n "$_wsroot" ]; then
   case "$_cwd" in
@@ -440,12 +441,14 @@ fi
 _hold_seg=""
 [ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held│"
 
-# Headless runs (`claude -p`) this session started, such as a review its Bash
-# tool runs in the background. Claude Code shows a background shell only as a
-# count in its footer, so the line ends, at its right edge, with the first
-# run's slash command and that command's first argument (`⟳ code-review high`),
-# `+N` for the others, and `claude -p` for a prompt that is no slash command.
-# Placed at the right edge, it shifts nothing else when it comes and goes.
+# The session's `/code-review` runs and tasksync's model runs, headless
+# (`claude -p`) and easy to miss: Claude Code shows a background shell only as
+# a count in its footer, and tasksync runs its model calls from a detached
+# process of its own, which no shell of the session holds. While one is going,
+# the line ends, at its right edge, with `review <first argument>` (`⟳ review
+# high`) or `tasksync`, each distinct label once; no other headless run is
+# shown. Placed at the right edge, the marker shifts nothing else when it comes
+# and goes.
 #   The tree is walked from this session's own process, the status line's
 # nearest ancestor whose argv[0] is Claude Code's: `claude` (`claude.exe` from
 # the npm package), or `claude <role>` for the processes it starts itself (read
@@ -453,18 +456,26 @@ _hold_seg=""
 # background-session daemon hosts, and the daemon runs under whichever session
 # started it). Below it, such a process is a run when -p or --print is one of
 # its argv words, and either way the walk stops there: a run's own runs are its
-# business, and any other is another session. The process decides rather than
-# the session id, which a /clear changes under a run that is still going.
-#   Linux walks /proc without forking, in tens of milliseconds for a session
-# running several MCP servers, where a `ps` of the whole machine costs about 50
-# ms of CPU on every render; argv past argv[0] is read for Claude Code
-# processes alone. A child is listed under the thread that started it, so every
-# thread's children file is read: Claude Code starts its children from its main
-# thread today, but a release that did not, or a script below the session that
-# starts runs from worker threads, would otherwise hide them. A kernel built
-# without those files, like a system without /proc, gets the tree from one
-# `ps`, which joins argv into one line it cannot split back exactly.
-_runs=()
+# business, and any other is another session. The tree rather than the session
+# id decides, since a /clear changes the id under a run that is still going.
+#   tasksync's detached processes (`tasks gate` and `tasks push` start one and
+# return at once, and init or a subreaper adopts it) are found from the markers
+# tasksync keeps beside its verdict caches, tasks/.sync/gate/<key>.running and
+# <key>.pushing, each naming the process's pid, in the task workspaces the task
+# segment reads. One is this session's when its environment carries the
+# session's id in CLAUDE_CODE_SESSION_ID, which it inherits from the session's
+# Bash, so a /clear hides one started before it.
+#   Linux walks /proc without forking, in about ten milliseconds for a session
+# running several MCP servers, where a `ps` of the whole machine costs about
+# 50 ms of CPU on every render; argv past argv[0] is read for Claude Code
+# processes alone, and a tasksync marker a few reads. A child is listed under
+# the thread that started it, so every thread's children file is read: Claude
+# Code starts its children from its main thread today, but a release that did
+# not, or a script below the session that starts runs from worker threads,
+# would otherwise hide them. A kernel built without those files, like a system
+# without /proc, gets the tree from one `ps`, which joins argv into one line it
+# cannot split back exactly, and does not look for detached runs.
+_runs_lab=""; _runpids=""
 # ARGV WORDS -> _pr: the prompt, from the first word whose first token is
 # `/name` to the end of the argv, or empty. A word naming an existing path is an
 # option's value (`--add-dir /tmp`), not a command.
@@ -477,6 +488,33 @@ _run_prompt() {
     esac
     shift
   done
+}
+# _lab added to _runs_lab, once.
+_add_label() {
+  case " · $_runs_lab · " in
+    *" · $_lab · "*) ;;
+    *) _runs_lab="${_runs_lab:+$_runs_lab · }$_lab" ;;
+  esac
+}
+# A run's label, added to _runs_lab, from its argv in _w and its parent's in _s:
+# `review <first argument>` for /code-review, the first argument left out when
+# it is an option, and `tasksync` for a run the tasksync CLI started (`tasks`, a
+# Python script run through its shebang, which calls `claude` directly). Any
+# other run adds nothing.
+_run_label() {
+  _lab=""
+  _run_prompt "${_w[@]}"
+  case "$_pr" in
+    /code-review|"/code-review "*)
+      read -r _ _arg _ <<< "$_pr"
+      case "$_arg" in -*) _arg="" ;; esac
+      _lab="review${_arg:+ $_arg}" ;;
+    *)
+      case "${_s[0]##*/}" in
+        python*) [ "${_s[1]##*/}" = tasks ] && _lab=tasksync ;;
+      esac ;;
+  esac
+  [ -z "$_lab" ] || _add_label
 }
 if session_have_proc && [ -r "/proc/$$/task/$$/children" ]; then
   _root=""; _p=$$
@@ -503,20 +541,55 @@ if session_have_proc && [ -r "/proc/$$/task/$$/children" ]; then
         } < "/proc/$_c/cmdline"
         if [ "$_isclaude" = 0 ]; then _q="${_q:+$_q }$_c"; continue; fi
         for _x in "${_w[@]}"; do
-          case "$_x" in -p|--print) _run_prompt "${_w[@]}"; _runs[${#_runs[@]}]=$_pr; break ;; esac
+          case "$_x" in -p|--print) _runpids="$_runpids $_c"; break ;; esac
         done
       done
     done
   done
+  # tasksync's detached runs, outside the tree: the marker each holds beside
+  # its verdict cache names its pid, written by Python's json.dumps, so read
+  # here without a fork, and the pid's environment the session it was started
+  # from. A marker can outlive its process and the pid be reused, so the pid
+  # must still be `tasks`. Read under /proc alone.
+  if [ -n "$_sid" ] && [ "$_sid" != - ]; then
+    _seen="|"; _ifs=$IFS; IFS=:
+    for _w in "$_wsabove" $SESSION_TASK_WORKSPACES; do
+      IFS=$_ifs
+      case "$_seen" in *"|$_w|"*) continue ;; esac
+      _seen="$_seen$_w|"
+      for _f in "$_w"/tasks/.sync/gate/*.running "$_w"/tasks/.sync/gate/*.pushing; do
+        _x=""; read -r _x < "$_f"
+        _c=${_x#*\"pid\": }; _c=${_c%%[!0-9]*}
+        if [ -z "$_c" ] || [ ! -r "/proc/$_c/environ" ]; then continue; fi
+        _x=""; { IFS= read -r -d '' _x; IFS= read -r -d '' _x; } < "/proc/$_c/cmdline"
+        [ "${_x##*/}" = tasks ] || continue
+        while IFS= read -r -d '' _x; do
+          case "$_x" in
+            CLAUDE_CODE_SESSION_ID=*) [ "${_x#*=}" = "$_sid" ] && { _lab=tasksync; _add_label; }; break ;;
+          esac
+        done < "/proc/$_c/environ"
+      done
+    done
+    IFS=$_ifs
+  fi
+  for _c in $_runpids; do
+    _w=(); while IFS= read -r -d '' _x; do _w[${#_w[@]}]=$_x; done < "/proc/$_c/cmdline"
+    _s=(); _st=""
+    _p=0
+    if read -r _st < "/proc/$_c/stat"; then _st=${_st##*) }; _st=${_st#* }; _p=${_st%% *}; fi
+    if [ "${_p:-0}" -gt 1 ]; then
+      while IFS= read -r -d '' _x; do _s[${#_s[@]}]=$_x; done < "/proc/$_p/cmdline"
+    fi
+    _run_label
+  done
 else
-  while IFS= read -r _x; do
-    read -r -a _w <<< "$_x"; _run_prompt "${_w[@]}"; _runs[${#_runs[@]}]=$_pr
+  while IFS=$'\t' read -r _x _y; do
+    read -r -a _w <<< "$_x"; read -r -a _s <<< "$_y"; _run_label
   done < <(
     ps -A -ww -o pid= -o ppid= -o command= | awk -v self=$$ '
-      function claude(c,  w, b, n) {
-        split(c, w, " "); n = split(w[1], b, "/"); return b[n] == "claude" || b[n] == "claude.exe"
-      }
-      { pid = $1; ppid = $2; $1 = ""; $2 = ""; sub(/^ +/, "")
+      function base(c,  w, b, n) { split(c, w, " "); n = split(w[1], b, "/"); return b[n] }
+      function claude(c) { return base(c) == "claude" || base(c) == "claude.exe" }
+      { pid = $1; ppid = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); gsub(/\t/, " ")
         par[pid] = ppid; cmd[pid] = $0; kids[ppid] = kids[ppid] " " pid }
       END {
         p = self; root = ""
@@ -525,27 +598,18 @@ else
         n = split(kids[root], q, " "); h = 1
         while (h <= n) {
           c = q[h++]
-          if (claude(cmd[c])) { if ((" " cmd[c] " ") ~ / (-p|--print) /) print cmd[c]; continue }
+          if (claude(cmd[c])) {
+            if ((" " cmd[c] " ") ~ / (-p|--print) /) print cmd[c] "\t" cmd[par[c]]
+            continue
+          }
           m = split(kids[c], k, " "); for (i = 1; i <= m; i++) q[++n] = k[i]
         }
       }')
 fi
-# The first run's label; an argument after the command that starts with `-` is
-# an option, not shown. jq cleans, cuts and places it below.
-_runs_lab=""; _runs_more=""
-if [ "${#_runs[@]}" -gt 0 ]; then
-  _runs_lab="claude -p"
-  if [ -n "${_runs[0]}" ]; then
-    read -r _cmd _arg _ <<< "${_runs[0]#/}"
-    case "$_arg" in -*) _arg="" ;; esac
-    _runs_lab="$_cmd${_arg:+ $_arg}"
-  fi
-  [ "${#_runs[@]}" -gt 1 ] && _runs_more=" +$(( ${#_runs[@]} - 1 ))"
-fi
 
 jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag" \
       --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" \
-      --arg runs_lab "$_runs_lab" --arg runs_more "$_runs_more" --arg cols "${COLUMNS:-}" '
+      --arg runs_lab "$_runs_lab" --arg cols "${COLUMNS:-}" '
   # model + effort come fresh in every render payload, so this tracks
   # mid-session switches (Fable safeguard fallback to Opus, /model, /effort)
   # without any caching
@@ -610,8 +674,8 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
   # reaches the terminal, and it is cut by code point, as bash in a C locale
   # cannot.
   if $runs_lab == "" then $rest else
-    ($runs_lab | gsub("[\\p{Cc}\\p{Cf}]"; "") | if length > 32 then .[:31] + "…" else . end) as $l
-    | "⟳ \($l)\($runs_more)" as $m
+    ($runs_lab | gsub("[\\p{Cc}\\p{Cf}]"; "") | if length > 48 then .[:47] + "…" else . end) as $l
+    | "⟳ \($l)" as $m
     | ($cols | tonumber? // 0) as $c
     | if $c <= 0 then $rest + "  " + $m
       else (($c - 4) - ($m | cells) - 2) as $room

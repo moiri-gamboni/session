@@ -686,25 +686,30 @@ report no "$(yesno has "$(render "$PH" SESSION_DATA_DIR="$DH")" 'compaction held
 
 echo "--- headless runs the session started ---"
 
-# A headless run (`claude -p`) the session started, such as a review its Bash
-# tool runs in the background, ends the line while it runs. The fixture stands
-# in for a session with the process shapes seen on a live one: the session is a
-# process whose argv[0] is `claude`, a run sits under a shell of its own with
-# the argv `claude -p --safe-mode --model opus <prompt>` (plus the `-c` script
-# that keeps the stand-in alive), and the status line runs through
+# A `/code-review` run or a tasksync model run the session started ends the
+# line while it runs; no other headless run (`claude -p`) is shown. The fixture
+# stands in for a session with the process shapes seen on a live one: the
+# session is a process whose argv[0] is `claude`, a run sits under a shell of
+# its own with the argv `claude -p --safe-mode --model opus <prompt>` (plus the
+# `-c` script that keeps the stand-in alive), and the status line runs through
 # `/bin/sh -c`, with COLUMNS set where a case gives COLS (Claude Code always
-# sets it). Each SPEC given starts one process under a
-# shell below the session, kept alive until the render has returned: its argv,
-# words joined by `|`, then optionally `>` and the SPEC of a process held below
-# it behind another shell. With `-` for the status line the session renders
-# nothing: it holds its processes until $HOLD goes, as another session would,
-# and says it is up by writing $HOLD.up. With RENDER_AS set, the session acts
-# as Claude Code's background-session daemon: the line is rendered by a session
-# it hosts, a child whose argv[0] is RENDER_AS, beside the processes it holds.
+# sets it). Each SPEC given starts one process under a shell below the session,
+# kept alive until the render has returned: its argv, words joined by `|`, then
+# optionally `>` and the SPEC of a process held below it behind another shell.
+# With `-` for the status line the session renders nothing: it holds its
+# processes until $HOLD goes, as another session would, and says it is up by
+# writing $HOLD.up. A SPEC led by `!` is a script and its arguments, run under
+# the argv[0] given first, as a shebang line runs one (the tasks stand-in
+# below). With RENDER_AS set, the session acts as Claude Code's
+# background-session daemon: the line is rendered by a session it hosts, a
+# child whose argv[0] is RENDER_AS, beside the processes it holds.
 cat > "$TMP/fake-session.sh" <<'EOF'
 start() {  # SPEC -> a process with SPEC's argv, in the background
   local own="${1%%>*}" child="" w
   case "$1" in *'>'*) child="${1#*>}" ;; esac
+  case "$own" in
+    '!'*) IFS='|' read -r -a w <<< "${own#!}"; ( exec -a "${w[0]}" bash "${w[@]:1}" ) & return ;;
+  esac
   IFS='|' read -r -a w <<< "$own"
   ( export CHILD="$child"; exec -a "${w[0]}" bash -c "$HELD" "${w[@]:1}" ) &
 }
@@ -735,6 +740,20 @@ fi
 rm -f "$RUNNING" "$RUNNING".up.*
 wait
 EOF
+# The tasksync CLI makes its model call, `claude -p` with its own system prompt
+# and the prompt on stdin, as a child it waits for; run through the shebang
+# `/usr/bin/python3`, it is `python3 <dir>/tasks <verb> ...`. The stand-in holds
+# until $RUNNING goes; with MARKER set, it first writes there the marker
+# tasksync keeps beside a detached run, naming its own pid. A copy named outbox
+# stands in for another such program.
+mkdir -p "$TMP/opt"
+cat > "$TMP/opt/tasks" <<'EOF'
+[ -z "${MARKER:-}" ] || printf '{"pid": %s, "started": "00:00:00", "digest": null}' $$ > "$MARKER"
+( exec -a claude bash -c ': > "$RUNNING.up.$$"; while [ -e "$RUNNING" ]; do sleep 0.05; done' \
+    -p --safe-mode --system-prompt 'Answer the request in the message.' --model sonnet ) &
+wait
+EOF
+cp "$TMP/opt/tasks" "$TMP/opt/outbox"
 DR="$TMP/dataruns"; mkdir -p "$DR"
 HOLD="$TMP/hold-runs"
 render_session() {  # STATUSLINE PAYLOAD [SPEC ...] -> the line of a session running these
@@ -742,6 +761,7 @@ render_session() {  # STATUSLINE PAYLOAD [SPEC ...] -> the line of a session run
     env -i PATH="$PATH" HOME="$FH" TZ=UTC \
         CLAUDE_CONFIG_DIR="$CFG" SESSION_ACCOUNTS_DIR="$VAULT" SESSION_DATA_DIR="$DR" \
         TMP_RUNS="$TMP" HOLD="$HOLD" RENDER_AS="${RENDER_AS:-}" ${COLS:+COLUMNS="$COLS"} \
+        ${TASKWS:+SESSION_TASK_WORKSPACES="$TASKWS"} \
         bash -c 'exec -a claude bash "$@"' _ "$TMP/fake-session.sh" "$sl" "$pf" ${1+"$@"}
 }
 run_argv() { printf 'claude|-p|--safe-mode|--model|opus|%s' "$1"; }  # PROMPT -> a run's SPEC
@@ -753,28 +773,36 @@ runs_line=$(render_session "$SL_RUNS" "$PR")
 report no "$(yesno has "$runs_line" '⟳')" "runs: a session that started none shows no marker"
 report yes "$(yesno has "$runs_line" "$MARK")" "runs: (fixture) the stand-in session renders a status line"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
-    "runs: a run of /code-review ends the line with the command and its first argument"
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
+    "runs: a run of /code-review ends the line with the command, shortened to review, and its first argument"
 report yes "$(yesno startswith "$runs_line" "$MARK")" "runs: ... and the line still starts where it did"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "$(run_argv '/plan-day prepare')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high +1')" \
-    "runs: a second run is counted after the first one's label"
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
+    "runs: another slash command is not shown"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv 'summarise this file')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ claude -p')" \
-    "runs: a run whose prompt is no slash command reads claude -p"
-runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/plan-day|--add-dir|/tmp')
-report yes "$(yesno endswith "$runs_line" '  ⟳ plan-day')" \
+report no "$(yesno has "$runs_line" '⟳')" "runs: nor a prompt that is no slash command"
+runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" \
+    "runs: a run the tasksync CLI (tasks) started reads tasksync"
+runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/outbox|--for|the team")
+report no "$(yesno has "$runs_line" '⟳')" "runs: ... and one another program started is not shown"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "!python3|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high · tasksync')" "runs: a review and a tasksync run are both named"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "$(run_argv '/code-review high 8')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" "runs: ... and a label two runs share, once"
+runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/code-review|--add-dir|/tmp')
+report yes "$(yesno endswith "$runs_line" '  ⟳ review')" \
     "runs: a root-level path before the prompt is no command, and an option after it no argument"
-runs_lab='review https://example.com/org/repository/pull/12345'
-runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/$runs_lab")")
-report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:31}…")" \
-    "runs: a long label is cut to 32 characters"
+runs_lab='review https://example.com/an-organisation/a-repository/pull/12345'
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/code-${runs_lab}")")
+report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:47}…")" \
+    "runs: a long label is cut to 48 characters"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv $'/code-review \033]8;;x\ahigh')")
 report no "$(yesno has "$runs_line" $'\033')" "runs: a control character in the prompt never reaches the terminal"
 runs_line=$(render_session "$SL_RUNS" "$PR" 'claude-monitor|-p|8080')
 report no "$(yesno has "$runs_line" '⟳')" "runs: only claude itself counts, not another tool named after it"
-runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')>$(run_argv '/plan-day prepare')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')>$(run_argv '/code-review medium 8')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
     "runs: a run started by a run is that run's, not counted here"
 
 # With COLUMNS known the marker is padded to the right edge of the COLUMNS - 4
@@ -784,7 +812,7 @@ report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
 width_of() { printf '%s' "$1" | jq -Rrs 'gsub("\u001b\\][^\u0007]*\u0007"; "") | length'; }
 runs_line=$(COLS=100 render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
 report 96 "$(width_of "$runs_line")" "runs: with COLUMNS=100 the line fills the 96 cells Claude Code draws"
-report yes "$(yesno endswith "$runs_line" ' ⟳ code-review high')" "runs: ... the marker last, at the right edge"
+report yes "$(yesno endswith "$runs_line" ' ⟳ review high')" "runs: ... the marker last, at the right edge"
 report yes "$(yesno startswith "$runs_line" "$MARK")" "runs: ... and the line starts where it does without one"
 PW="$TMP/pruns-wide.json"; jq '.model.display_name = "Fable 5 🚧漢字⚠️🈁"' "$PR" > "$PW"
 runs_line=$(COLS=100 render_session "$SL_RUNS" "$PW" "$(run_argv '/code-review high 7')")
@@ -792,9 +820,9 @@ report 92 "$(width_of "$runs_line")" \
     "runs: emoji, CJK and a symbol shown as emoji count two cells each (92 code points in 96 cells)"
 runs_line=$(COLS=40 render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
 report 36 "$(width_of "$runs_line")" "runs: with no room left the rest is cut to fit the marker"
-report yes "$(yesno endswith "$runs_line" '…  ⟳ code-review high')" \
+report yes "$(yesno endswith "$runs_line" '…  ⟳ review high')" \
     "runs: ... marked cut, two spaces before the marker"
-report yes "$(yesno startswith "$runs_line" 'Fable 5 high│57…')" "runs: ... from its end"
+report yes "$(yesno startswith "$runs_line" "$MARK")" "runs: ... from its end"
 WSR="$TMP/wsruns"; mkdir -p "$WSR/tasks/.sync" "$WSR/tasks/t1"
 jq -n '{url: "https://example.com/t1", title: "A long task title that runs well past the edge of a narrow line"}' \
     > "$WSR/tasks/t1/identity.json"
@@ -802,14 +830,57 @@ PT="$TMP/pruns-task.json"; jq --arg d "$WSR/tasks/t1" '.cwd = $d' "$PR" > "$PT"
 runs_line=$(COLS=70 render_session "$SL_RUNS" "$PT" "$(run_argv '/code-review high 7')")
 report 66 "$(width_of "$runs_line")" "runs: a cut inside the task link still fits the line"
 report yes "$(yesno has "$runs_line" $'\033]8;;\a')" "runs: ... and the link is still closed"
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" "runs: ... before the marker"
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" "runs: ... before the marker"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
     "runs: with COLUMNS unset the marker follows the rest after two spaces"
 report no "$(yesno has "$runs_line" '…')" "runs: ... and nothing is cut"
 runs_line=$(COLS=100 render_session "$SL_RUNS" "$PR")
 report no "$(yesno has "$runs_line" '⟳')" "runs: ... and with no run there is nothing to pad"
 report no "$(yesno endswith "$runs_line" ' ')" "runs: ... not even trailing spaces"
+
+# tasksync runs its model calls from a detached process of its own: `tasks gate`
+# and `tasks push` start it and return at once, and it is adopted by init or a
+# subreaper, outside the session's tree. Each holds a marker beside its verdict
+# cache, tasks/.sync/gate/<key>.running (or .pushing), naming its pid, and
+# inherits CLAUDE_CODE_SESSION_ID from the session's Bash. The status line looks
+# for those markers in the task workspaces it reads (the one above the working
+# directory here) and needs /proc to read the id: the ps branch does not look.
+STOP="$TMP/detached"; : > "$STOP"; GATED="$WSR/tasks/.sync/gate"; mkdir -p "$GATED"
+( env -i PATH="$PATH" RUNNING="$STOP" MARKER="$GATED/t1.running" CLAUDE_CODE_SESSION_ID="$SID" \
+    setsid bash -c 'exec -a python3 bash "$0" gate t1 --inner' "$TMP/opt/tasks" & )
+up_count() { local n=0 f; for f in "$1".up.*; do [ -e "$f" ] && n=$((n + 1)); done; echo "$n"; }
+i=0; while [ "$(up_count "$STOP")" = 0 ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i + 1)); done
+report 1 "$(up_count "$STOP")" "runs: (fixture) a detached run is up"
+if [ -d /proc/self ]; then
+    runs_line=$(render_session "$SL_RUNS" "$PT")
+    report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" \
+        "runs: a detached tasksync run whose marker names a process with this session's id is shown"
+    runs_line=$(render_session "$SL_RUNS" "$PR")
+    report no "$(yesno has "$runs_line" '⟳')" "runs: ... only from a workspace the status line reads"
+    PT2="$TMP/pruns-task-other.json"; jq '.session_id = "22222222-2222-2222-2222-222222222222"' "$PT" > "$PT2"
+    runs_line=$(render_session "$SL_RUNS" "$PT2")
+    report no "$(yesno has "$runs_line" '⟳')" "runs: ... and not on a session with another id"
+    mv "$GATED/t1.running" "$GATED/t1.pushing"
+    runs_line=$(TASKWS="$TMP/none:$WSR" render_session "$SL_RUNS" "$PR")
+    report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" \
+        "runs: ... a push's marker too, in a workspace SESSION_TASK_WORKSPACES lists"
+    rm -f "$GATED/t1.pushing"
+    printf '{"pid": 999999999, "started": "00:00:00", "digest": null}' > "$GATED/t2.pushing"
+    runs_line=$(render_session "$SL_RUNS" "$PT")
+    report no "$(yesno has "$runs_line" '⟳')" "runs: ... nor for a marker whose process is gone"
+    rm -f "$GATED/t2.pushing"
+    # A marker left behind whose pid now names some other process of the session.
+    ( env -i PATH="$PATH" STOP="$STOP" MARKER="$GATED/t3.running" CLAUDE_CODE_SESSION_ID="$SID" setsid bash -c \
+        'printf "{\"pid\": %s}" $$ > "$MARKER"; : > "$STOP.other"; while [ -e "$STOP" ]; do sleep 0.05; done' & )
+    i=0; while [ ! -e "$STOP.other" ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i + 1)); done
+    runs_line=$(render_session "$SL_RUNS" "$PT")
+    report no "$(yesno has "$runs_line" '⟳')" "runs: ... nor for a marker whose pid is now another program's"
+    rm -f "$GATED/t3.running" "$STOP.other"
+else
+    skip "runs: detached runs" "no /proc"
+fi
+rm -f "$STOP" "$STOP".up.*
 
 # Another session's run is not this one's: one elsewhere on the machine, and
 # one of a session below this one, as Claude Code's background-session daemon
@@ -836,12 +907,14 @@ SHOME_PS="$TMP/shome-ps"; cp -R "$SHOME" "$SHOME_PS"
 printf '\nsession_have_proc() { return 1; }\n' >> "$SHOME_PS/lib/common.sh"
 SL_RUNS="$SHOME_PS/statusline.sh"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "$(run_argv '/plan-day prepare')")
-report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high +1')" \
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
     "runs: without /proc, ps finds the same runs"
 runs_line=$(render_session "$SL_RUNS" "$PR")
 report no "$(yesno has "$runs_line" '⟳')" "runs: ... and none where there are none"
-runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/plan-day|--add-dir|/tmp')
-report yes "$(yesno endswith "$runs_line" '  ⟳ plan-day')" "runs: ... reads the prompt past a path the same way"
+runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/code-review|--add-dir|/tmp')
+report yes "$(yesno endswith "$runs_line" '  ⟳ review')" "runs: ... reads the prompt past a path the same way"
+runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" "runs: ... and names a tasksync run the same way"
 runs_line=$(render_session "$SL_RUNS" "$PR" "claude|daemon|run|--origin|transient>$(run_argv '/code-review medium 9')")
 report no "$(yesno has "$runs_line" '⟳')" "runs: ... and leaves a hosted session's runs to it"
 
