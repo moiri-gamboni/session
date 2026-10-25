@@ -41,7 +41,7 @@ Run `session --guard` before each wave and inside each agent: exit 0 is go, exit
 
 ## When a cap is near or hit
 
-**A cap is never a reason to stop, wind down or hold back parallel work.** The install arms a background waiter (the `session --rewake-waiter` hook entries) once a window passes `USAGE_WARN_PCT` (default 90) or a turn dies on a cap; it wakes the session, even an idle one, when the window resets or the login switches. The worst case is a pause that ends by itself. The per-turn hook is silent below the threshold, so no ⚠ in context means usage is under it; above it, the ⚠ advisory says what this section says.
+**A cap is never a reason to stop, wind down or hold back parallel work.** The install arms a background waiter (the `session --rewake-waiter` hook entry on `StopFailure`) that starts when a turn dies on a cap; it wakes the session, even an idle one, when the window resets or the login switches. The worst case is a pause that ends by itself. Nothing warns a session before a cap bites, so a usage figure near the cap is no cue to change course.
 
 A reset time quoted in a usage-limit error, this session's or a subagent's, belongs to the current login: a login switch lifts the cap at once, so the time is never a deadline or a planning constraint.
 

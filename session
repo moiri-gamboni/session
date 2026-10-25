@@ -262,7 +262,7 @@ first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
 # and it sits ahead of the account library like the batch stop above. It reads
 # no usage cache, login, session log or settings.json and validates no
 # configuration, because each of those can cost more than the timeout on a
-# loaded box (the usage scans it once ran took 2.5 of 3.4 s at load 30 on 8
+# loaded box (two scans of the session log took 2.5 of 3.4 s at load 30 on 8
 # cores). Always exits 0, and prints only when it promotes a title.
 #
 # Stdin is read exactly once, and the turn START row is written before anything
@@ -331,11 +331,11 @@ if [ "${1:-}" = --hook ]; then
   exit 0
 fi
 
-# `--rewake-waiter` arms on StopFailure alone. Spawned from UserPromptSubmit,
-# which installs made before that entry was retired still carry until they are
-# re-run, it has nothing to do, so it leaves before anything is resolved. Stdin
-# is read once, here, for the waiter below (stderr is already discarded: the
-# wake message owns that channel).
+# `--rewake-waiter` arms on StopFailure alone. Spawned from UserPromptSubmit (an
+# entry earlier installs wrote, and a re-run of install.sh removes) it has
+# nothing to do, so it leaves before anything is resolved. Stdin is read once,
+# here, for the waiter below (stderr is already discarded: the wake message owns
+# that channel).
 if [ "$rewake_entry" = 1 ]; then
   [ -t 0 ] && exit 0
   IFS=$'\t' read -r hsid hev herr < <(jq -r \

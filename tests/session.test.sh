@@ -1817,8 +1817,7 @@ else
     SNAP5="$W5/data/sessions"
 
     # Nothing to promote: no output, whatever the usage says. The cache is at
-    # 95% on both windows and the settings carry an armed waiter, the state in
-    # which the hook once injected a line and an advisory.
+    # 95% on both windows and the settings carry an armed waiter.
     NOWI=$(date +%s)
     mkcache "$W5" me@example.com 95 95 $(( NOWI + 600 )) $(( NOWI + 6000 ))
     printf '%s\n' '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash /x/session/session --rewake-waiter","asyncRewake":true}]}]}}' \

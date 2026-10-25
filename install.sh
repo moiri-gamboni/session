@@ -468,9 +468,9 @@ if [ "$settings_ok" = 1 ]; then
         if [ "$p" = "$CLI" ]; then
             # Matched on the path rather than on a regex over the command, so a
             # re-run stays idempotent from a clone directory of any name.
-            # The waiter entry kept armed is the StopFailure one; the same
-            # command on UserPromptSubmit arms nothing any more and is retired
-            # whether or not the version gate could be checked (below).
+            # The waiter entry kept armed is the StopFailure one. The same
+            # command on UserPromptSubmit arms nothing, so it goes whether or
+            # not the version gate could be checked (below).
             if [ "$keep_armed" = 1 ]; then
                 case "$c" in *" --rewake-waiter") retire_body="$retire_body$c$NL"; continue ;; esac
             fi
