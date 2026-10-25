@@ -274,8 +274,7 @@ first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
 if [ "${1:-}" = --hook ]; then
   [ -t 0 ] && exit 0
   IFS=$'\t' read -r hsid hpid < <(jq -r '[(.session_id//"-"),(.prompt_id//"-")]|@tsv' 2>/dev/null || true)
-  hsid=${hsid:-}; [ "$hsid" = "-" ] && hsid=""
-  [ -n "$hsid" ] || exit 0
+  case "${hsid:--}" in -) exit 0 ;; esac
   { printf '%s\t%s\ts\t%s\t-\t-\n' "$(date +%s)" "$hsid" "${hpid:--}" >> "$SESSION_TLOG"; } 2>/dev/null
   # A compaction hold stands only while requests keep asking for it; the next
   # one that does touches the marker again. Without this, a context that fell
@@ -286,11 +285,11 @@ if [ "${1:-}" = --hook ]; then
   # (kind `auth`, see the rewake block) has nothing left to wait for: removing
   # its pidfile makes it leave. A reset waiter is left to the wake it is for.
   hpidf="$SESSION_SNAPDIR/$hsid.rewaiter"
-  if [ -s "$hpidf" ] && read -r _ hkind < "$hpidf" && [ "${hkind:-}" = auth ]; then
+  if [ -s "$hpidf" ] && { read -r _ hkind < "$hpidf"; } 2>/dev/null && [ "${hkind:-}" = auth ]; then
     rm -f "$hpidf"
   fi
   # ── peer name ← session title, once ────────────────────────────────────────
-  # $cfg/sessions/<pid>.json is Claude Code's presence registry, and its `name`
+  # <config dir>/sessions/<pid>.json is Claude Code's presence registry, and its `name`
   # is what ListAgents prints and what SendMessage addresses. Left alone that
   # name is a cwd slug ("work-2a"): the app derives it from the directory and
   # deliberately never promotes the readable title into it (the registry write

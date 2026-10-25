@@ -817,7 +817,7 @@ sess() {
 }
 
 # A statusline cache for one login. Percentages and reset stamps are arguments
-# because the guard, the stale branches and the warn gate all key on them.
+# because the guard and the stale branches key on them.
 mkcache() {  # WORLD LOGIN FIVE% WEEK% FIVE_RESET WEEK_RESET
     printf '{"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}},"context_window":{"used_percentage":42},"model":{"display_name":"Fable 5"},"version":"2.1.233"}\n' \
         "$3" "$5" "$4" "$6" > "$1/data/last-status.$2.json"
@@ -1828,7 +1828,7 @@ else
         "case 5: ... and the turn start is the row it logs"
     report 1 "$(grep -c . "$W5/data/turn-log.tsv")" "case 5: ... exactly one"
     report 0 "$(ls "$SNAP5" | grep -c . || true)" \
-        "case 5: ... keeping no state of its own (the warn file is gone)"
+        "case 5: ... keeping no state of its own"
 
     # It reads no usage cache, login, credentials, settings or configuration,
     # so a malformed one of each changes nothing.
@@ -1873,6 +1873,14 @@ else
     printf '4242\n' > "$SNAP5/$UUID.rewaiter"
     hook5 >/dev/null
     report "4242" "$(cat "$SNAP5/$UUID.rewaiter")" "case 5: ... and one written before kinds existed, which is a reset waiter"
+    if [ "$(id -u)" != 0 ]; then
+        printf '4242 auth\n' > "$SNAP5/$UUID.rewaiter"; chmod 000 "$SNAP5/$UUID.rewaiter"
+        out=$(hook5); rc=$?
+        report "0 [] []" "$rc [$out] [$(cat "$H5ERR")]" "case 5: a pidfile it cannot read is left alone and says nothing"
+        chmod 600 "$SNAP5/$UUID.rewaiter"
+    else
+        skip "case 5: an unreadable pidfile" "running as root: a mode-000 file is still readable"
+    fi
     rm -f "$SNAP5/$UUID.rewaiter"
 
     # The title is promoted once, by printing the one object Claude Code reads.
