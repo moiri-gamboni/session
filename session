@@ -65,27 +65,21 @@
 #                     change it afterwards. Prints nothing otherwise, always exits 0,
 #                     and reads no usage data, so it fits the entry's 2 s timeout on
 #                     a loaded box.
-#   session --rewake-waiter  asyncRewake hook plumbing (second UserPromptSubmit
-#                     entry AND second StopFailure entry): the harness
-#                     backgrounds it and treats exit 2 as "wake the model with
-#                     stderr as a system reminder" (task-notification channel —
-#                     wakes even an idle session; verified on 2.1.233 for
-#                     UserPromptSubmit; StopFailure rides the same
-#                     schema-generic asyncRewake field). From UserPromptSubmit:
-#                     below the warn threshold every spawn exits 0 immediately;
-#                     above it the first spawn per session becomes the waiter
-#                     (pidfile-deduped). From StopFailure: arms only when the
-#                     turn died on a usage cap (error ~ rate_limit), and then
-#                     regardless of the warn threshold — the one path that
-#                     covers a cap arriving mid-turn with no prompt ever
-#                     submitted in the warned band. The waiter sleeps to the
-#                     earliest warned reset and exits 2 = auto-resume — also on
-#                     a mid-wait login switch, detected within ~1s via an
-#                     inotify watch on the config dir (15s polling without
-#                     inotifywait). Exits 0 without waiting under a `claude -p`
-#                     parent: the harness only backgrounds asyncRewake for
-#                     interactive/streaming sessions, so there the hook would
-#                     run synchronously and block the print run.
+#   session --rewake-waiter  asyncRewake hook plumbing (the StopFailure entry): the
+#                     harness backgrounds it and treats exit 2 as "wake the model
+#                     with stderr as a system reminder" (task-notification channel
+#                     — wakes even an idle session; verified on 2.1.233 with a
+#                     UserPromptSubmit entry, and StopFailure rides the same
+#                     schema-generic asyncRewake field). Arms only when the turn
+#                     died on a usage cap (error ~ rate_limit) or an authentication
+#                     failure; every other event, UserPromptSubmit included, exits
+#                     0 at once. The waiter sleeps to the earliest window reset
+#                     and exits 2 = auto-resume — also on a mid-wait login switch,
+#                     detected within ~1s via an inotify watch on the config dir
+#                     (15s polling without inotifywait). Exits 0 without waiting
+#                     under a `claude -p` parent: the harness only backgrounds
+#                     asyncRewake for interactive/streaming sessions, so there the
+#                     hook would run synchronously and block the print run.
 #   session --turn-end  Stop-hook plumbing: appends the turn's END event to the
 #                     turn log; always exits 0 silently (a Stop hook's exit 2
 #                     would force the agent to keep going).
@@ -336,6 +330,19 @@ if [ "${1:-}" = --hook ]; then
     fi
   fi
   exit 0
+fi
+
+# `--rewake-waiter` arms on StopFailure alone. Spawned from UserPromptSubmit,
+# which installs made before that entry was retired still carry until they are
+# re-run, it has nothing to do, so it leaves before anything is resolved. Stdin
+# is read once, here, for the waiter below (stderr is already discarded: the
+# wake message owns that channel).
+if [ "$rewake_entry" = 1 ]; then
+  [ -t 0 ] && exit 0
+  IFS=$'\t' read -r hsid hev herr < <(jq -r \
+    '[(.session_id//""),(.hook_event_name//""),(.error_type//.error//"")]|@tsv' \
+    2>/dev/null || true)
+  [ -n "${hsid:-}" ] && [ "${hev:-}" = StopFailure ] || exit 0
 fi
 
 . "$SESSION_HOME/lib/account.sh" || { echo "session: cannot read $SESSION_HOME/lib/account.sh" >&2; exit 1; }
@@ -1927,8 +1934,11 @@ doctor_main() {
     fi
   fi
 
-  # 9. The auto-resume waiter. An entry without asyncRewake is worse than none:
-  #    the harness runs it synchronously, so a 700s hook blocks every prompt.
+  # 9. The auto-resume waiter, which is its StopFailure entry: a turn dying on a
+  #    cap or an authentication failure is the only thing that arms it. An entry
+  #    without asyncRewake is worse than none, because the harness runs it
+  #    synchronously and the wait holds the session. A UserPromptSubmit entry
+  #    left by an earlier install exits at once and is not counted.
   f="$SESSION_CFG/settings.json"
   if [ ! -e "$f" ]; then
     doc pending "auto-resume" "no $f yet"
@@ -1937,14 +1947,14 @@ doctor_main() {
   elif [ "$cfg_bad" = 1 ]; then
     doc FAIL "auto-resume" "cannot be read — $f does not parse"
   else
-    tot=$(jq '[.hooks[]?[]?.hooks[]? | select(.command? // "" | test("rewake-waiter"))] | length' "$f" 2>/dev/null || echo 0)
-    armed=$(jq '[.hooks[]?[]?.hooks[]? | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)] | length' "$f" 2>/dev/null || echo 0)
+    tot=$(jq '[.hooks.StopFailure[]?.hooks[]? | select(.command? // "" | test("rewake-waiter"))] | length' "$f" 2>/dev/null || echo 0)
+    armed=$(jq '[.hooks.StopFailure[]?.hooks[]? | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)] | length' "$f" 2>/dev/null || echo 0)
     if [ "${tot:-0}" = 0 ]; then
-      doc pending "auto-resume" "off — no --rewake-waiter entry (install.sh --no-rewake leaves it that way)"
+      doc pending "auto-resume" "off — no --rewake-waiter entry on StopFailure (install.sh --no-rewake leaves it that way)"
     elif [ "${armed:-0}" = "${tot:-0}" ]; then
-      doc ok "auto-resume" "$armed entr(y/ies), asyncRewake armed"
+      doc ok "auto-resume" "$armed StopFailure entr(y/ies), asyncRewake armed"
     else
-      doc FAIL "auto-resume" "$tot rewake entr(y/ies), only $armed with asyncRewake — the rest run synchronously and block the prompt"
+      doc FAIL "auto-resume" "$tot StopFailure rewake entr(y/ies), only $armed with asyncRewake — the rest run synchronously and hold the session"
     fi
   fi
 
@@ -2056,13 +2066,12 @@ doctor_main() {
     doc pending switcher "no $SESSION_CFG/.credentials.json — nothing has logged in here yet, or this Claude Code keeps credentials in the macOS Keychain, which this build cannot swap"
   elif [ "$vaultn" -lt 2 ]; then
     doc pending switcher "$vaultn vaulted login(s) in $acctdir — a switch needs somewhere to go; \`session account save\` captures each one after its \`/login\`"
-  # StopFailure and not merely "armed somewhere": that hook is the one a turn
-  # dying on a cap reaches, so an entry armed only on UserPromptSubmit leaves
-  # the switcher no way to meet a cap or authentication death (only the status
-  # line's 98% trigger remains) while check 9 above reads ok. Structural, like
-  # the advisory's own probe — `rewake-waiter` appears in a settings.json that
-  # arms nothing (a commented-out entry, an entry on another event, or this one
-  # with asyncRewake false, which the harness then runs synchronously).
+  # StopFailure is the hook a turn dying on a cap or an authentication failure
+  # reaches; without an armed entry there the switcher has no way to meet such
+  # a death (only the status line's 98% trigger remains). The probe is
+  # structural, because `rewake-waiter` appears in a settings.json that arms
+  # nothing (a commented-out entry, an entry on another event, or this one with
+  # asyncRewake false, which the harness then runs synchronously).
   elif ! jq -e '[.hooks.StopFailure[]?.hooks[]?
                  | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)]
                 | length > 0' "$SESSION_CFG/settings.json" >/dev/null 2>&1; then
@@ -2495,10 +2504,10 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
                                    compaction hold and an authentication waiter;
                                    promote the auto-title to the peer name once
                                    (TITLE_SCAN_BYTES caps the transcript read)
-  session --rewake-waiter          UserPromptSubmit + StopFailure (asyncRewake
-                                   entries): arms the auto-resume waiter once a
-                                   window warns (or the turn died on a cap); its
-                                   exit 2 wakes the session at the reset/switch
+  session --rewake-waiter          StopFailure (asyncRewake entry): when the turn
+                                   died on a usage cap or an authentication
+                                   failure, arms the auto-resume waiter; its exit
+                                   2 wakes the session at the reset/switch
   session --turn-end|--turn-fail|--session-end|--subagent-start|--subagent-end|
           --compact-mark|--perm-mark   append one lifecycle event row; always exit 0
   session --compact-gate           PreCompact: hold an automatic compaction while the
@@ -3463,26 +3472,19 @@ if [ "$mode" = wait ] || [ "$mode" = rewake ]; then
 fi
 
 if [ "$mode" = rewake ]; then
-  # asyncRewake plumbing: run as the second hook entry (asyncRewake:true) on
-  # BOTH UserPromptSubmit and StopFailure, so the harness backgrounds it and —
-  # when it exits 2 — wakes the model with stderr as a system reminder,
-  # delivered through the same task-notification channel as a finished
-  # background Bash task (verified empirically on 2.1.233 for UserPromptSubmit:
-  # an idle session gets a fresh turn; asyncRewake is schema-generic across
-  # events). That makes the auto-resume waiter deterministic instead of an
-  # instruction the ⚠ advisory hopes the model follows: below the warn
-  # threshold every UserPromptSubmit spawn exits 0 in ~no time; once a window
-  # crosses it — or a turn dies on a usage cap (the StopFailure path) — the
-  # first spawn becomes the waiter, sleeps to the earliest warned reset
-  # (login-switch aware), and exits 2 = wake. A turn that dies on an
-  # authentication failure has no reset: its waiter waits on the credential
-  # instead (below). Exit 0 on every quiet path — an asyncRewake hook only wakes
-  # on exit 2.
-  [ -t 0 ] && exit 0                       # plumbing: needs the hook's stdin JSON
-  IFS=$'\t' read -r hsid hev herr < <(jq -r \
-    '[(.session_id//""),(.hook_event_name//""),(.error_type//.error//"")]|@tsv' \
-    2>/dev/null || true)
-  [ -n "${hsid:-}" ] || exit 0
+  # asyncRewake plumbing: run as the StopFailure hook entry (asyncRewake:true),
+  # so the harness backgrounds it and — when it exits 2 — wakes the model with
+  # stderr as a system reminder, delivered through the same task-notification
+  # channel as a finished background Bash task (an idle session gets a fresh
+  # turn; verified empirically on 2.1.233 with a UserPromptSubmit entry, and
+  # StopFailure rides the same schema-generic asyncRewake field). That makes
+  # the auto-resume waiter deterministic instead of an instruction a model hopes
+  # to follow. A turn that dies on a usage cap becomes the waiter, which sleeps
+  # to the earliest reset (login-switch aware) and exits 2 = wake. A turn that
+  # dies on an authentication failure has no reset: its waiter waits on the
+  # credential instead (below). Exit 0 on every quiet path — an asyncRewake hook
+  # only wakes on exit 2. The payload was read, and its event checked, at the
+  # top of the file.
   # Never become a long waiter under a non-interactive parent: the harness
   # only backgrounds asyncRewake when isInteractive()||hasStreamingInput()
   # (read out of the 2.1.233 bundle), so under `claude -p` this hook runs
@@ -3620,72 +3622,63 @@ if [ "$mode" = rewake ]; then
   live_token() { jq -r '.claudeAiOauth.accessToken // ""' "$cfg/.credentials.json" 2>/dev/null; }
   authtail="This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the failure, continue that work."
   pidf="$snapdir/$hsid.rewaiter"
-  if [ "$hev" = StopFailure ]; then
-    # a turn that died on a usage cap is capped whatever the (possibly lagging)
-    # cache says — this is the only arming path for a cap that arrives mid-turn
-    # with no prompt ever submitted in the warned band. Failures that are neither
-    # a cap nor an authentication death (API errors etc.) are not a reason to
-    # wait for anything, and not a reason to move either: exit.
-    case "$herr" in
-      *rate_limit*|*usage_limit*) htrig=cap ;;
-      # The authentication family. These decide on the ORDINARY cooldown rather
-      # than the probation bypass: the outage that produces them has no recent
-      # switch to be in probation from, and the cooldown is what bounds an
-      # authentication storm to about one decision a quarter hour. No reset lifts
-      # them; another login does, and for a rejected credential a new token for
-      # the same login does too (authrenew), which the waiter below watches for
-      # when the decision moves nothing. A billing problem, an account on hold or
-      # an organisation that refuses the login is mended elsewhere and changes
-      # nothing here, so only a switch wakes those. The token is read before the
-      # decision, so a renewal that lands while it runs still counts as one.
-      *authentication_failed*)
-        htrig=auth; authrenew=1; authtok=$(live_token) ;;
-      *oauth_org_not_allowed*|*account_on_hold*|*billing_error*|*cloud_credential_error*)
-        htrig=auth ;;
-      *) exit 0 ;;
-    esac
-    # Ahead of the arming below, which exits outright when the cache names no
-    # future reset — exactly the stale-or-missing-cache case, where leaving the
-    # decision behind it would silently disable the feature. Ahead of the pidfile
-    # dedup too, so EVERY spawn reaches a decision rather than only the one that
-    # becomes the waiter: a session whose waiter already sleeps must still be
-    # able to rescue the box, and the lock plus the cooldown reduce the fan-in to
-    # one real decision.
-    rewake_decide "$htrig"
-    # A live-clean hold means the decision has just probed the live login and it
-    # answers: the rejection was momentary (Claude Code blanks the token for an
-    # instant while it renews it), or the login was mended before this hook read
-    # it, which would leave the waiter below nothing that will ever change. Once
-    # per session per cooldown: in the probation after a switch every death
-    # decides again, so a login whose usage endpoint answers while its requests
-    # keep failing would otherwise wake the session into the same failure at
-    # every death.
-    if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ] \
-       && [ "$(awk -F'\t' -v s="sid=$hsid" -v t=$(( $(date +%s) - ACCT_COOLDOWN_S )) \
-              '$1 >= t && $2 == "hold" && $5 != "usage" && $6 == "live-clean" && index($8, s) { n++ } END { print n + 0 }' \
-              "$(acct_log_file)" 2>/dev/null)" -le 1 ]; then
-      REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
+  # a turn that died on a usage cap is capped whatever the (possibly lagging)
+  # cache says — this is the only arming path for a cap that arrives mid-turn
+  # with no prompt ever submitted in the warned band. Failures that are neither
+  # a cap nor an authentication death (API errors etc.) are not a reason to
+  # wait for anything, and not a reason to move either: exit.
+  case "$herr" in
+    *rate_limit*|*usage_limit*) htrig=cap ;;
+    # The authentication family. These decide on the ORDINARY cooldown rather
+    # than the probation bypass: the outage that produces them has no recent
+    # switch to be in probation from, and the cooldown is what bounds an
+    # authentication storm to about one decision a quarter hour. No reset lifts
+    # them; another login does, and for a rejected credential a new token for
+    # the same login does too (authrenew), which the waiter below watches for
+    # when the decision moves nothing. A billing problem, an account on hold or
+    # an organisation that refuses the login is mended elsewhere and changes
+    # nothing here, so only a switch wakes those. The token is read before the
+    # decision, so a renewal that lands while it runs still counts as one.
+    *authentication_failed*)
+      htrig=auth; authrenew=1; authtok=$(live_token) ;;
+    *oauth_org_not_allowed*|*account_on_hold*|*billing_error*|*cloud_credential_error*)
+      htrig=auth ;;
+    *) exit 0 ;;
+  esac
+  # Ahead of the arming below, which exits outright when the cache names no
+  # future reset — exactly the stale-or-missing-cache case, where leaving the
+  # decision behind it would silently disable the feature. Ahead of the pidfile
+  # dedup too, so EVERY spawn reaches a decision rather than only the one that
+  # becomes the waiter: a session whose waiter already sleeps must still be
+  # able to rescue the box, and the lock plus the cooldown reduce the fan-in to
+  # one real decision.
+  rewake_decide "$htrig"
+  # A live-clean hold means the decision has just probed the live login and it
+  # answers: the rejection was momentary (Claude Code blanks the token for an
+  # instant while it renews it), or the login was mended before this hook read
+  # it, which would leave the waiter below nothing that will ever change. Once
+  # per session per cooldown: in the probation after a switch every death
+  # decides again, so a login whose usage endpoint answers while its requests
+  # keep failing would otherwise wake the session into the same failure at
+  # every death.
+  if [ -z "$REWSWITCH" ] && [ "$authrenew" = 1 ] && [ "$REWREASON" = live-clean ] \
+     && [ "$(awk -F'\t' -v s="sid=$hsid" -v t=$(( $(date +%s) - ACCT_COOLDOWN_S )) \
+            '$1 >= t && $2 == "hold" && $5 != "usage" && $6 == "live-clean" && index($8, s) { n++ } END { print n + 0 }' \
+            "$(acct_log_file)" 2>/dev/null)" -le 1 ]; then
+    REWSWITCH="The Claude login $acct answers again — the authentication failure that stopped the session looks momentary. $authtail"
+  fi
+  if [ -z "$REWSWITCH" ] && [ "$htrig" = cap ]; then
+    # When neither window shows warned, the Fable window decides if it is
+    # spent, and otherwise whichever generic reset is still ahead (5h first —
+    # it is the cap the harness itself attributes these deaths to); no future
+    # reset at all means the cache can't say when to wake, so don't arm.
+    if ! (( f_warn || w_warn )); then
+      now=$(date +%s)
+      if fable_capped "$now"; then fb_warn=1
+      elif (( fivereset > now )); then f_warn=1
+      elif (( weekreset > now )); then w_warn=1
+      else exit 0; fi
     fi
-    if [ -z "$REWSWITCH" ] && [ "$htrig" = cap ]; then
-      # When neither window shows warned, the Fable window decides if it is
-      # spent, and otherwise whichever generic reset is still ahead (5h first —
-      # it is the cap the harness itself attributes these deaths to); no future
-      # reset at all means the cache can't say when to wake, so don't arm.
-      if ! (( f_warn || w_warn )); then
-        now=$(date +%s)
-        if fable_capped "$now"; then fb_warn=1
-        elif (( fivereset > now )); then f_warn=1
-        elif (( weekreset > now )); then w_warn=1
-        else exit 0; fi
-      fi
-    fi
-  else
-    # A prompt means the session is running again, so an authentication waiter
-    # has nothing left to wait for: removing its pidfile makes it leave.
-    if [ -s "$pidf" ] && read -r opid okind < "$pidf" && [ "${okind:-}" = auth ]; then
-      rm -f "$pidf"
-    fi
-    (( f_warn || w_warn )) || exit 0
   fi
   # One waiter per session, recorded as `PID KIND` in the pidfile: KIND reset
   # sleeps to a window's reset, KIND auth waits on the credential. A spawn that

@@ -2094,7 +2094,10 @@ if ! have jq; then
     skip "case 17: rewake waiter" "no jq"
 else
     W17=$(world); mklogin "$W17" me@example.com
-    REW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
+    # The waiter arms on a StopFailure alone; the same command spawned from a
+    # prompt (REWUPS) is what installs made before that entry was retired still run.
+    REW=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
+    REWUPS=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
 
     # The waiter fails closed when it cannot find a claude ancestor, so a test
     # that expects it to ARM has to supply one. Running the CLI under a parent
@@ -2120,17 +2123,33 @@ ASCEOF
     NOWI=$(date +%s)
 
     mkcache "$W17" me@example.com 10 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
-    out=$(printf '%s' "$REW" | claude_sess "$W17" -- --rewake-waiter 2>&1); rc=$?
-    report 0 "$rc" "case 17: below the threshold the waiter exits 0 at once"
+    out=$(printf '%s' "$REWUPS" | claude_sess "$W17" -- --rewake-waiter 2>&1); rc=$?
+    report "0 []" "$rc [$out]" "case 17: spawned from a prompt the waiter exits 0 at once, silently"
     report absent "$([ -e "$W17/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
         "case 17: ... and arms nothing"
 
-    # Warned, with a reset a couple of seconds out: the waiter arms, sleeps to
-    # it and exits 2 — the exit code that IS the wake-up.
+    # Even with a window at 95% and a reset a few seconds out, which is what
+    # used to arm it from a prompt. A pidfile it finds is not its to touch: the
+    # prompt's own hook ends an authentication waiter.
+    NOWI=$(date +%s)
+    mkcache "$W17" me@example.com 95 95 $(( NOWI + 6 )) $(( NOWI + 8 ))
+    printf '4242 auth\n' > "$W17/data/sessions/$UUID.rewaiter"
+    out=$(printf '%s' "$REWUPS" | claude_sess "$W17" -- --rewake-waiter 2>&1); rc=$?
+    report "0 []" "$rc [$out]" "case 17: ... whatever the windows show"
+    report "4242 auth" "$(cat "$W17/data/sessions/$UUID.rewaiter")" "case 17: ... leaving an existing pidfile exactly as it was"
+    rm -f "$W17/data/sessions/$UUID.rewaiter"
+    for noevent in '{"session_id":"x"}' '{"session_id":"x","hook_event_name":"Stop"}' '' 'not json'; do
+        out=$(printf '%s' "$noevent" | claude_sess "$W17" -- --rewake-waiter 2>&1); rc=$?
+        report "0 []" "$rc [$out]" "case 17: no StopFailure in the payload ('$noevent') arms nothing"
+    done
+
+    # A cap death with the windows warned and a reset a couple of seconds out:
+    # the waiter arms, sleeps to it and exits 2 — the exit code that IS the
+    # wake-up.
     NOWI=$(date +%s)
     mkcache "$W17" me@example.com 95 10 $(( NOWI + 6 )) $(( NOWI + 8 ))
     err=$( (printf '%s' "$REW" | claude_sess "$W17" -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
-    report 2 "$rc" "case 17: a warned window arms the waiter, which exits 2 at the reset"
+    report 2 "$rc" "case 17: a cap death arms the waiter, which exits 2 at the reset"
     report yes "$(printf '%s' "$err" | grep -q 'reset to 0%' && echo yes || echo no)" \
         "case 17: ... with the wake-up text on stderr"
     report absent "$([ -e "$W17/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
@@ -2156,7 +2175,7 @@ ASCEOF
     kill "$OWNER" 2>/dev/null; wait "$OWNER" 2>/dev/null
     rm -f "$W17/data/sessions/$UUID.rewaiter"
 
-    # StopFailure only arms on a usage cap.
+    # A StopFailure arms only on a usage cap or an authentication failure.
     NOWI=$(date +%s)
     mkcache "$W17" me@example.com 10 10 $(( NOWI + 3600 )) $(( NOWI + 36000 ))
     out=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"api_error"}' "$UUID" \
@@ -2169,7 +2188,7 @@ ASCEOF
     mkcache "$W17" me@example.com 10 10 $(( NOWI + 6 )) $(( NOWI + 8 ))
     err=$( (printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID" \
           | claude_sess "$W17" -- --rewake-waiter >/dev/null) 2>&1 ); rc=$?
-    report 2 "$rc" "case 17: StopFailure on a usage cap arms even below the warn threshold"
+    report 2 "$rc" "case 17: StopFailure on a usage cap arms whatever the cached windows show"
 
     # The same shape with a Fable figure whose own window has already turned
     # over: it is not a reason to wait for anything, so the 5h reset a couple of
@@ -2367,8 +2386,8 @@ else
         $(( NOWI - 300 )) "$UUID" $(( NOWI - 240 )) "$UUID" > "$W19/data/turn-log.tsv"
     jq -n --arg sl "bash $SDIR/statusline.sh" --arg rw "bash $SDIR/session --rewake-waiter" \
        '{statusLine: {type:"command", command:$sl, refreshInterval:10},
-         hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw,
-                                              asyncRewake:true, timeout:700000}]}]}}' \
+         hooks: {StopFailure: [{hooks: [{type:"command", command:$rw,
+                                         asyncRewake:true, timeout:700000}]}]}}' \
        > "$W19/cfg/settings.json"
 
     out=$(doctor19 "$W19" "$CW"); rc=$?
@@ -2435,11 +2454,21 @@ else
     # ── a rewake entry without asyncRewake runs synchronously and blocks ─────
     W19e=$(world); mklogin "$W19e" me@example.com; chmod 700 "$W19e/data"
     jq -n --arg rw "bash $SDIR/session --rewake-waiter" \
-       '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, timeout:700000}]}]}}' \
+       '{hooks: {StopFailure: [{hooks: [{type:"command", command:$rw, timeout:700000}]}]}}' \
        > "$W19e/cfg/settings.json"
     out=$(doctor19 "$W19e" "$CW"); rc=$?
     report 1 "$rc" "case 19 [malformed rewake]: exits 1"
     report FAIL "$(dstate "$out" auto-resume)" "case 19 [malformed rewake]: an entry without asyncRewake is a failure, not an absence"
+
+    # The retired prompt-side entry of an earlier install arms nothing and exits
+    # at once, so it is neither counted as the waiter nor a failure on its own.
+    W19g=$(world); mklogin "$W19g" me@example.com; chmod 700 "$W19g/data"
+    jq -n --arg rw "bash $SDIR/session --rewake-waiter" \
+       '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, timeout:700000}]}]}}' \
+       > "$W19g/cfg/settings.json"
+    out=$(doctor19 "$W19g" "$CW"); rc=$?
+    report 0 "$rc" "case 19 [prompt entry only]: exits 0"
+    report pending "$(dstate "$out" auto-resume)" "case 19 [prompt entry only]: auto-resume is off, whatever that entry says"
 
     # ── a `time --json` that breaks the contract a task logger reads ─────────
     BAD19=$(mktemp -d "$TMP/bad19.XXXXXX"); mkdir -p "$BAD19/lib"
@@ -3315,7 +3344,7 @@ else
         "warn-thr: the default 90 is written exactly once, across every shipped script"
 
     WWT=$(world); mklogin "$WWT" me@example.com
-    WTREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
+    WTREW=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
 
     # The waiter fails closed without a claude ancestor, so reaching its use of
     # the threshold at all needs one. Same shape as case 17's, kept local so this
@@ -3352,12 +3381,6 @@ WTEOF
     # the same bug: the arithmetic itself fails, so the gate never fires.
     rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=90.5 -- --rewake-waiter >/dev/null 2>&1); echo $? )
     report 0 "$rc" "warn-thr: a decimal is refused too, and wakes nobody on the rewake path"
-
-    # Above 100 is not an error, and no consumer may break on it.
-    rc=$( (printf '%s' "$WTREW" | wt_rewake USAGE_WARN_PCT=150 -- --rewake-waiter >/dev/null 2>&1); echo $? )
-    report 0 "$rc" "warn-thr: a threshold above 100 leaves the waiter exiting 0"
-    report absent "$([ -e "$WWT/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
-        "warn-thr: ... arming nothing"
 fi
 
 echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"
@@ -5844,7 +5867,8 @@ AOWEOF
     report 'hold live-clean' "$(tail -1 "$WA30/data/switch-log.tsv" | cut -f2,6 | tr '\t' ' ')" \
         "arm: ... although its decision held live-clean too"
 
-    # A prompt means the session runs again: it ends an authentication waiter.
+    # A prompt means the session runs again: its hook ends an authentication
+    # waiter, at the waiter's next look.
     WA27=$(aworld); CA27=$(curlstub)
     alive "$WA27" a@example.com tok-a
     aent "$WA27" a@example.com tok-a; aent "$WA27" b@example.com tok-b
@@ -5853,13 +5877,12 @@ AOWEOF
     cat > "$AB/on-wait" <<AOWEOF
 #!/bin/sh
 rm -f "$AB/on-wait"
-printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID" \\
+printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" \\
 | env -i PATH="$AB:$CA27:$PATH" HOME="$FH" TZ=UTC CLAUDE_CONFIG_DIR="$WA27/cfg" \\
       SESSION_DATA_DIR="$WA27/data" SESSION_ACCOUNTS_DIR="$WA27/vault" SESSION_SWITCH_NOTIFY="" \\
       SESSION_NOW="" CLAUDE_CODE_SESSION_ID="$UUID" \\
-      bash -c 'exec -a claude bash "\$@"' _ "$TMP/arm-asclaude.sh" "$BIN" --rewake-waiter \\
-      >/dev/null 2>&1
-echo \$? > "$WA27/ups.rc"
+      bash "$BIN" --hook >/dev/null 2>&1
+echo \$? > "$WA27/hook.rc"
 AOWEOF
     chmod +x "$AB/on-wait"
     lock_run "$WA27/data/switch.lock" "$AREALSLEEP" 5 &
@@ -5868,7 +5891,7 @@ AOWEOF
     arun "$WA27" "$CA27" authentication_failed; rc=$?
     report 0 "$rc" "arm: a prompt ends an authentication waiter"
     report 1 "$(aticks)" "arm: ... at its next look"
-    report 0 "$(cat "$WA27/ups.rc" 2>/dev/null)" "arm: ... the prompt's own spawn arming nothing below the threshold"
+    report 0 "$(cat "$WA27/hook.rc" 2>/dev/null)" "arm: ... the prompt's hook that did it exiting 0"
     report absent "$([ -e "$WA27/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" \
         "arm: ... and no pidfile is left"
     wait "$ALK" 2>/dev/null; rm -f "$AB/on-wait"
@@ -6075,10 +6098,11 @@ else
         printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":9999999999000}}\n' \
             "$2" "$2" "$2" "${3:-tok-$2}" > "$1/vault/$2.json"
     }
-    dcarm() {  # WORLD both|prompt|unarmed|none — the rewake entries in settings.json
+    dcarm() {  # WORLD stop|pair|prompt|unarmed|none — the rewake entries in settings.json
         local rw="bash $SDIR/session --rewake-waiter"
         case "$2" in
-            both)    jq -n --arg rw "$rw" '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}],
+            stop)    jq -n --arg rw "$rw" '{hooks: {StopFailure: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}]}}' ;;
+            pair)    jq -n --arg rw "$rw" '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}],
                                                     StopFailure:      [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}]}}' ;;
             prompt)  jq -n --arg rw "$rw" '{hooks: {UserPromptSubmit: [{hooks: [{type:"command", command:$rw, asyncRewake:true, timeout:700000}]}]}}' ;;
             unarmed) jq -n --arg rw "$rw" '{hooks: {StopFailure:      [{hooks: [{type:"command", command:$rw, timeout:700000}]}]}}' ;;
@@ -6091,7 +6115,7 @@ else
         mklogin "$w" a@example.com
         printf '{"claudeAiOauth":{"accessToken":"live-a","expiresAt":9999999999000}}\n' > "$w/cfg/.credentials.json"
         dcvent "$w" a@example.com; dcvent "$w" b@example.com
-        dcarm "$w" both
+        dcarm "$w" stop
         mkcache "$w" a@example.com 10 10 $(( n + 600 )) $(( n + 6000 ))
         # 601 and 301 seconds: acct_age floors at the minute, so the rendered
         # "10m" and "5m" survive any delay under 59s between here and the run.
@@ -6142,8 +6166,14 @@ else
     out=$(ddoc "$WDC2"); rc=$?
     report 1 "$rc" "doctor: an armed waiter on UserPromptSubmit alone carries no cap death to a decision"
     report FAIL "$(dcstate "$out" switcher)" "doctor: ... so the switcher check fails"
-    report ok "$(dcstate "$out" auto-resume)" \
-        "doctor: ... while auto-resume, which counts every event, still reads ok — the two ask different questions"
+    report pending "$(dcstate "$out" auto-resume)" \
+        "doctor: ... and auto-resume reads off, since an entry on that event arms nothing"
+
+    WDC2b=$(dcworld); dcarm "$WDC2b" pair
+    out=$(ddoc "$WDC2b"); rc=$?
+    report 0 "$rc" "doctor: the pair an earlier install wrote is not a failure"
+    report ok "$(dcstate "$out" switcher)" "doctor: ... the StopFailure entry is what the switcher needs"
+    report yes "$(dcsays "$out" auto-resume '1 StopFailure entr')" "doctor: ... and the only entry auto-resume counts"
 
     WDC3=$(dcworld); dcarm "$WDC3" unarmed
     out=$(ddoc "$WDC3"); rc=$?
@@ -6383,7 +6413,7 @@ if ! have jq; then
     skip "wake-channel: the rewake stderr channel" "no jq"
 else
     WWC=$(world); mkdir -p "$WWC/vault"; mklogin "$WWC" me@example.com
-    WCREW=$(printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' "$UUID")
+    WCREW=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
     WCERR="$TMP/wake-channel.err"
 
     # The waiter fails closed without a claude ancestor, so reaching the channel

@@ -2,8 +2,8 @@
 # install.sh — wire this clone into a Claude Code configuration.
 #
 # What it writes into $CLAUDE_CONFIG_DIR/settings.json, all as absolute paths
-# into this clone: the ten lifecycle hook entries, the two auto-resume (rewake)
-# entries and the statusLine. Beside that it creates the usage data root, links
+# into this clone: the ten lifecycle hook entries, the auto-resume (rewake)
+# entry and the statusLine. Beside that it creates the usage data root, links
 # the CLI onto PATH, and writes session.conf — written before the settings
 # merge, so no producer this run wires can ever resolve the default data root on
 # a machine whose data lives elsewhere.
@@ -26,12 +26,11 @@ set -uo pipefail
 env_data_dir="${SESSION_DATA_DIR:-}"
 
 # The build the asyncRewake wake behaviour was verified against. `timeout` is
-# not enforced on an async entry at all, so the pair's value is inert there
+# not enforced on an async entry at all, so the entry's value is inert there
 # and anything that can block is bounded inside the script instead. The
 # version matters for the other reason: below it an async hook is not
-# backgrounded, so the waiter would run synchronously on every over-threshold
-# prompt and sleep there until its window reset. Refused rather than armed
-# blind.
+# backgrounded, so the waiter would run synchronously and hold the session
+# until its window reset. Refused rather than armed blind.
 REWAKE_MIN_VERSION=2.1.233
 # Undocumented-but-observed fields; re-verify after a Claude Code upgrade.
 REWAKE_MESSAGE="Claude usage limits (auto-resume waiter):"
@@ -45,7 +44,7 @@ usage: install.sh [options]
   --name NAME          the name to link it as (default: session)
   --force-link         take that name over even when something else holds it
   --dry-run            change nothing at all; print the settings.json diff
-  --no-rewake          do not arm the auto-resume waiter entries
+  --no-rewake          do not arm the auto-resume waiter entry
   --data-dir DIR       usage data root (default: <config dir>/session-usage)
   --main-guard PATH    a script `session resume` runs before it opens windows
   --attend-grace SECS  silence still counted as one working stretch, in seconds
@@ -403,7 +402,7 @@ else
         rewake=true
     else
         keep_armed=1
-        refuse "Claude Code ${cv:-(no version)} is older than $REWAKE_MIN_VERSION, where an asyncRewake hook is not backgrounded: the waiter would run synchronously and block every over-threshold prompt until its window reset; entries already armed are left as they are" \
+        refuse "Claude Code ${cv:-(no version)} is older than $REWAKE_MIN_VERSION, where an asyncRewake hook is not backgrounded: the waiter would run synchronously and hold the session until its window reset; entries already armed are left as they are" \
                "upgrade Claude Code and re-run, or re-run with --no-rewake"
     fi
 fi
@@ -419,8 +418,9 @@ if [ "$settings_ok" = 1 ]; then
         def life($e; $m; $mode):
             {event:$e, matcher:$m,
              entry:{type:"command", command:"bash \($s) \($mode) || true", timeout:2}};
-        # No `|| true` on the pair: exit 2 IS the wake signal, and swallowing it
-        # turns the waiter into a no-op that still sleeps out its whole wait.
+        # No `|| true` on the rewake entry: exit 2 IS the wake signal, and
+        # swallowing it turns the waiter into a no-op that still sleeps out its
+        # whole wait.
         # The timeout below is inert on an async entry — the harness does not
         # enforce it there — and is kept only as a defence should that change.
         # It is also a unit slip: timeout is in seconds, as the 2 on the
@@ -441,7 +441,7 @@ if [ "$settings_ok" = 1 ]; then
           life("PreCompact"; null; "--compact-gate"),
           life("PostToolBatch"; null; "--post-tool-batch"),
           life("Notification"; "permission_prompt"; "--perm-mark") ]
-        + (if $armed then [wake("UserPromptSubmit"), wake("StopFailure")] else [] end)')
+        + (if $armed then [wake("StopFailure")] else [] end)')
 
     # The path out of a command of the shape this installer writes:
     # `bash <path> --<mode>[ || true]`, or a host's older `<path> --<mode>`.
@@ -462,14 +462,18 @@ if [ "$settings_ok" = 1 ]; then
     # script is gone — a clone that was moved or deleted leaves hooks that fail
     # on every turn. Another clone's live entries and every foreign entry stay.
     drop_body=""
+    retire_body=""
     while IFS= read -r c; do
         [ -n "$c" ] || continue
         p=$(_entry_path "$c") || continue
         if [ "$p" = "$CLI" ]; then
             # Matched on the path rather than on a regex over the command, so a
             # re-run stays idempotent from a clone directory of any name.
+            # The waiter entry kept armed is the StopFailure one; the same
+            # command on UserPromptSubmit arms nothing any more and is retired
+            # whether or not the version gate could be checked (below).
             if [ "$keep_armed" = 1 ]; then
-                case "$c" in *" --rewake-waiter") continue ;; esac
+                case "$c" in *" --rewake-waiter") retire_body="$retire_body$c$NL"; continue ;; esac
             fi
             drop_body="$drop_body$c$NL"
             continue
@@ -486,6 +490,7 @@ if [ "$settings_ok" = 1 ]; then
 $(printf '%s' "$cur_json" | jq -r '[.hooks[]?[]?.hooks[]? | .command // empty] | .[]')
 DROPEOF
     drop=$(printf '%s' "$drop_body" | jq -R -s 'split("\n") | map(select(length > 0))')
+    retire=$(printf '%s' "$retire_body" | jq -R -s 'split("\n") | map(select(length > 0))')
 
     # The statusLine: ours, foreign, or ours-but-pointing-at-a-deleted-clone.
     # A non-object .statusLine is foreign — jq errors on indexing it, and an
@@ -523,14 +528,19 @@ DROPEOF
         fi
     fi
 
-    merged=$(jq --argjson spec "$spec" --argjson drop "$drop" --argjson setline "$set_statusline" \
-                --arg slcmd "bash $LINE" '
+    merged=$(jq --argjson spec "$spec" --argjson drop "$drop" --argjson retire "$retire" \
+                --argjson setline "$set_statusline" --arg slcmd "bash $LINE" '
         # Only groups that already carry a hooks array are touched: giving a
         # foreign group an empty one would edit a group we have no business in.
         .hooks = ((.hooks // {}) | with_entries(
             .value |= map(if (.hooks | type) == "array"
                           then .hooks |= map(select(. as $e | ($drop | index($e.command // "")) | not))
                           else . end)))
+        | (if (.hooks.UserPromptSubmit | type) == "array"
+           then .hooks.UserPromptSubmit |= map(if (.hooks | type) == "array"
+                then .hooks |= map(select(. as $e | ($retire | index($e.command // "")) | not))
+                else . end)
+           else . end)
         | reduce $spec[] as $s (.;
             .hooks[$s.event] = (
                 (.hooks[$s.event] // []) as $g
@@ -552,11 +562,11 @@ DROPEOF
                 "$ndrop" "$([ "$ndrop" = 1 ] && echo y || echo ies)"
             printf '%s' "$drop_body" | sed 's/^/          /'
         fi
-        armed_note="auto-resume: armed on UserPromptSubmit and StopFailure — remove it with uninstall.sh, or re-run with --no-rewake"
+        armed_note="auto-resume: armed on StopFailure — remove it with uninstall.sh, or re-run with --no-rewake"
         if [ "$dry_run" = 1 ]; then
             plan "settings.json: the merge would change $settings:"
             diff <(printf '%s' "$cur_json" | jq -S .) <(printf '%s\n' "$merged" | jq -S .)
-            [ "$rewake" = true ] && plan "auto-resume: would arm the waiter on UserPromptSubmit and StopFailure"
+            [ "$rewake" = true ] && plan "auto-resume: would arm the waiter on StopFailure"
         elif [ "$(printf '%s' "$cur_json" | jq -S .)" = "$(printf '%s\n' "$merged" | jq -S .)" ]; then
             skipstep "settings.json: already carries exactly this — nothing written"
             [ "$rewake" = true ] && ok "$armed_note"

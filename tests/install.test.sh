@@ -150,23 +150,23 @@ report "null" \
     "$(jq -r '.hooks.UserPromptSubmit[] | select(any(.hooks[]; .command|test("--hook"))) | .matcher // "null"' "$S26")" \
     "case 26: the lifecycle groups on other events carry no matcher"
 
-report 2 "$(jq "$REWAKE | length" "$S26")" "case 26: two rewake entries"
-report 2 "$(jq "$REWAKE | map(select(.asyncRewake == true)) | length" "$S26")" \
-    "case 26: both rewake entries are asyncRewake"
-report 2 "$(jq "$REWAKE | map(select(.timeout == 700000)) | length" "$S26")" \
-    "case 26: both rewake entries have timeout 700000"
+report 1 "$(jq "$REWAKE | length" "$S26")" "case 26: one rewake entry"
+report 1 "$(jq "$REWAKE | map(select(.asyncRewake == true)) | length" "$S26")" \
+    "case 26: the rewake entry is asyncRewake"
+report 1 "$(jq "$REWAKE | map(select(.timeout == 700000)) | length" "$S26")" \
+    "case 26: the rewake entry has timeout 700000"
 report 0 "$(jq "$REWAKE | map(select(.command|test(\"\\\\|\\\\| true\"))) | length" "$S26")" \
-    "case 26: NEITHER rewake entry carries || true (exit 2 is the wake signal)"
-report 2 "$(jq --arg c "bash $SESSION_BIN --rewake-waiter" "$REWAKE | map(select(.command == \$c)) | length" "$S26")" \
-    "case 26: both rewake commands are exactly \`bash $SESSION_BIN --rewake-waiter\`"
+    "case 26: the rewake entry carries no || true (exit 2 is the wake signal)"
+report 1 "$(jq --arg c "bash $SESSION_BIN --rewake-waiter" "$REWAKE | map(select(.command == \$c)) | length" "$S26")" \
+    "case 26: the rewake command is exactly \`bash $SESSION_BIN --rewake-waiter\`"
 # Presence, not wording: these two are display strings (their exact text lives
 # in a code comment at install.sh's constants). A wake with no message is the
 # behavioural failure; a better phrasing is not.
-report 2 "$(jq "$REWAKE | map(select(.rewakeMessage != null and .rewakeSummary != null)) | length" "$S26")" \
-    "case 26: both rewake entries carry a wake message and a summary"
-report "StopFailure UserPromptSubmit" \
+report 1 "$(jq "$REWAKE | map(select(.rewakeMessage != null and .rewakeSummary != null)) | length" "$S26")" \
+    "case 26: the rewake entry carries a wake message and a summary"
+report "StopFailure" \
     "$(jq -r '[.hooks|to_entries[]|select(any(.value[].hooks[]?; .command|test("rewake-waiter")))|.key]|sort|join(" ")' "$S26")" \
-    "case 26: the rewake pair sits on UserPromptSubmit and StopFailure"
+    "case 26: the rewake entry sits on StopFailure alone"
 
 report "bash $STATUSLINE" "$(jq -r '.statusLine.command' "$S26")" "case 26: statusLine command"
 report "command" "$(jq -r '.statusLine.type' "$S26")" "case 26: statusLine type"
@@ -232,7 +232,7 @@ report absent "$([ -e "$C26e/session.conf" ] && echo present || echo absent)" "c
 report absent "$([ -e "$D26e" ] && echo present || echo absent)" "case 26 [--dry-run]: no data root"
 report absent "$([ -e "$B26e/session" ] && echo present || echo absent)" "case 26 [--dry-run]: no symlink"
 report yes "$(yesno grep -q 'statusLine' <<<"$out")" "case 26 [--dry-run]: the diff shows the statusLine it would add"
-report yes "$(yesno grep -q -- '--rewake-waiter' <<<"$out")" "case 26 [--dry-run]: ... and the rewake entries"
+report yes "$(yesno grep -q -- '--rewake-waiter' <<<"$out")" "case 26 [--dry-run]: ... and the rewake entry"
 # `<`/`>` is GNU diff's default, `+`/`-` is busybox's unified default: assert a
 # changed line carrying our content, not one implementation's marker.
 report yes "$(yesno grep -qE '^[<>+].*(--hook|statusLine)' <<<"$out")" "case 26 [--dry-run]: the output is a diff"
@@ -247,6 +247,55 @@ report yes "$(yesno grep -q 'skip' <<<"$out")" "case 27: the settings step repor
 report "{}" "$(jq -c . "$C26/settings.json.session-bak")" \
     "case 27: the backup still holds the pre-install {} — a no-op writes no new backup"
 report yes "$(yesno test -L "$B26/session")" "case 27: the symlink is still ours"
+
+echo "--- retired: the UserPromptSubmit waiter entry goes on a re-run, and uninstall takes both ---"
+
+# What an install made before the entry was retired left behind: the waiter
+# command on UserPromptSubmit as well as on StopFailure.
+oldpair() {  # SETTINGS — add the retired entry to an installed settings.json
+    jq --arg c "bash $SESSION_BIN --rewake-waiter" \
+       '.hooks.UserPromptSubmit[0].hooks += [{"type":"command","command":$c,"timeout":700000,"asyncRewake":true}]' \
+       "$1" > "$TMP/t.old" && mv "$TMP/t.old" "$1"
+}
+rewake_events() {  # SETTINGS — the events carrying the waiter command
+    jq -r '[.hooks|to_entries[]|select(any(.value[].hooks[]?; .command|test("rewake-waiter")))|.key]|sort|join(" ")' "$1"
+}
+
+CRT=$(mkcfg); BRT="$TMP/binrt"
+out=$(inst "$CRT" --bindir "$BRT")
+oldpair "$CRT/settings.json"
+report "StopFailure UserPromptSubmit" "$(rewake_events "$CRT/settings.json")" "retired: the fixture carries the old pair"
+out=$(inst "$CRT" --bindir "$BRT"); rc=$?
+report 0 "$rc" "retired: a re-run over the old pair exits 0"
+report "StopFailure" "$(rewake_events "$CRT/settings.json")" "retired: ... and leaves the waiter on StopFailure alone"
+report 1 "$(jq "$REWAKE | length" "$CRT/settings.json")" "retired: ... as one entry, still asyncRewake"
+report 1 "$(jq "$REWAKE | map(select(.asyncRewake == true)) | length" "$CRT/settings.json")" "retired: ... armed"
+report 1 "$(jq '[.hooks.UserPromptSubmit[]?.hooks[]? | select(.command | test("--hook"))] | length' "$CRT/settings.json")" \
+    "retired: ... beside the UserPromptSubmit --hook entry"
+cp "$CRT/settings.json" "$TMP/before.rt"
+out=$(inst "$CRT" --bindir "$BRT")
+report yes "$(yesno cmp -s "$TMP/before.rt" "$CRT/settings.json")" "retired: the next run is a no-op"
+
+# A gate that cannot be checked leaves the armed entry as it is, and the
+# retired one goes anyway: it arms nothing, so no check stands behind it.
+CRT2=$(mkcfg); BRT2="$TMP/binrt2"
+out=$(inst "$CRT2" --bindir "$BRT2")
+oldpair "$CRT2/settings.json"
+FAKE_CLAUDE_VERSION=2.1.99
+out=$(inst "$CRT2" --bindir "$BRT2"); rc=$?
+FAKE_CLAUDE_VERSION=2.1.251
+report 1 "$rc" "retired [old claude]: the re-run refuses the gate"
+report "StopFailure" "$(rewake_events "$CRT2/settings.json")" "retired [old claude]: ... keeps the StopFailure entry and drops the other"
+report 1 "$(jq '[.hooks.UserPromptSubmit[]?.hooks[]? | select(.command | test("--hook"))] | length' "$CRT2/settings.json")" \
+    "retired [old claude]: ... and the --hook entry is intact"
+
+# --no-rewake takes both, and uninstall takes whatever either wrote.
+CRT3=$(mkcfg); BRT3="$TMP/binrt3"
+out=$(inst "$CRT3" --bindir "$BRT3"); oldpair "$CRT3/settings.json"
+out=$(uninst "$CRT3" --bindir "$BRT3"); rc=$?
+report 0 "$rc" "retired: uninstall over the old pair exits 0"
+report 0 "$(jq "$REWAKE | length" "$CRT3/settings.json")" "retired: ... and removes the waiter from both events"
+report 0 "$(jq "$LIFECYCLE | length" "$CRT3/settings.json")" "retired: ... with the lifecycle entries"
 
 echo "--- case 28: refusals ---"
 
@@ -374,13 +423,13 @@ for v in 2.1.233 2.1.251 2.2.0 3.0.0 10.0.0; do
     C=$(mkcfg); B="$TMP/bin28v$v"
     FAKE_CLAUDE_VERSION="$v"
     out=$(inst "$C" --bindir "$B")
-    report 2 "$(jq "$REWAKE | length" "$C/settings.json")" "case 28 [version $v]: the rewake pair is armed"
+    report 1 "$(jq "$REWAKE | length" "$C/settings.json")" "case 28 [version $v]: the rewake entry is armed"
 done
 for v in 2.1.232 2.0.999 1.9.9; do
     C=$(mkcfg); B="$TMP/bin28w$v"
     FAKE_CLAUDE_VERSION="$v"
     out=$(inst "$C" --bindir "$B")
-    report 0 "$(jq "$REWAKE | length" "$C/settings.json")" "case 28 [version $v]: the rewake pair is refused"
+    report 0 "$(jq "$REWAKE | length" "$C/settings.json")" "case 28 [version $v]: the rewake entry is refused"
 done
 FAKE_CLAUDE_VERSION=2.1.251
 
@@ -733,13 +782,13 @@ echo "--- case M2: a refused rewake gate leaves working entries armed ---"
 
 CM2=$(mkcfg); BM2="$TMP/binm2"
 out=$(inst "$CM2" --bindir "$BM2")
-report 2 "$(jq "$REWAKE | length" "$CM2/settings.json")" "case M2: armed by the first run"
+report 1 "$(jq "$REWAKE | length" "$CM2/settings.json")" "case M2: armed by the first run"
 FAKE_CLAUDE_VERSION=2.1.99
 out=$(inst "$CM2" --bindir "$BM2"); rc=$?
 FAKE_CLAUDE_VERSION=2.1.251
 report 1 "$rc" "case M2: the re-run refuses the gate"
-report 2 "$(jq "$REWAKE | length" "$CM2/settings.json")" \
-    "case M2: ... and the two working entries are still armed"
+report 1 "$(jq "$REWAKE | length" "$CM2/settings.json")" \
+    "case M2: ... and the working entry is still armed"
 report 10 "$(jq "$LIFECYCLE | length" "$CM2/settings.json")" "case M2: ... beside the ten lifecycle entries"
 out=$(inst "$CM2" --bindir "$BM2" --no-rewake); rc=$?
 report 0 "$rc" "case M2: an explicit --no-rewake exits 0"
