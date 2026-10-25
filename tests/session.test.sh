@@ -3461,6 +3461,19 @@ GSEOF
 
     # The control: well-formed specs run.
     report 0 "$( (sess "$WGS" FIVE_GUARD=pow:0.5 WEEK_GUARD=off -- --json >/dev/null) 2>&1; echo $? )" "guard-scope: well-formed specs are accepted"
+
+    # With no cache at all a malformed spec is still refused with the documented
+    # 2, ahead of the "no cache" exit 1 that a good spec gets.
+    WGN=$(world); mklogin "$WGN" me@example.com
+    for args in "--guard" "--json" "" "--wait guard"; do
+        err=$( (sess "$WGN" FIVE_GUARD=lienar -- $args >/dev/null) 2>&1 ); rc=$?
+        report "2 yes" "$rc $(printf '%s' "$err" | grep -q "invalid FIVE_GUARD=" && echo yes || echo no)" \
+            "guard-scope: with no cache a malformed spec refuses ${args:-the overview} with 2"
+        (sess "$WGN" -- $args >/dev/null 2>&1); rc=$?
+        report 1 "$rc" "guard-scope: ... where a good one gets the no-cache exit 1"
+    done
+    out=$( (sess "$WGN" FIVE_GUARD=lienar -- --compact) 2>&1 ); rc=$?
+    report "0 no" "$rc $(printf '%s' "$out" | grep -q 'invalid' && echo yes || echo no)" "guard-scope: ... and --compact, which reads no spec, still answers"
 fi
 
 echo "--- case 14 [swap]: the credential swap is confirmed against the file it wrote ---"

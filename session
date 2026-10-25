@@ -2552,9 +2552,11 @@ valid_spec() {
     *)     printf '%s' "$s" | grep -qE '^[0-9]+$' ;;                    # flat int
   esac
 }
-# Called by the paths that read the specs (--guard, --wait guard, and the
-# overview and --json, which print the caps), and by no other: a typo here must
-# not stop the waiter from arming or a prompt from being logged.
+# Called once, ahead of the no-cache exit below, by the paths that read the
+# specs (--guard, --wait guard, and the overview and --json, which print the
+# caps), and by no other: a typo here must not stop the waiter from arming or a
+# prompt from being logged, and must be refused with 2 whether or not a cache
+# exists yet.
 check_guard_specs() {
   local pair
   for pair in "FIVE_GUARD=$FIVE_GUARD" "WEEK_GUARD=$WEEK_GUARD"; do
@@ -3070,6 +3072,13 @@ if [ "${submode:-}" = time ]; then
       printf '    %s  %s\n' "$(fmt_epoch "$t" '%H:%M')" "$(fmt_d "$d")"
     done
   exit 0
+fi
+
+if [ -z "$submode" ]; then
+  case "$mode" in
+    guard|json|text) check_guard_specs ;;
+    wait) [ "$waitwin" != guard ] || check_guard_specs ;;
+  esac
 fi
 
 if [ ! -s "$cache" ]; then
@@ -3764,7 +3773,6 @@ if [ "$mode" = wait ]; then
   # cap never moves, so its only pass time is the window reset; a window that
   # goes stale mid-wait counts as unknown and stops gating, mirroring --guard.
   if [ "$waitwin" = guard ]; then
-    check_guard_specs
     pass_time() {  # $1=spec $2=window $3=resets_at $4=used% -> earliest epoch the cap reaches used%
       awk -v spec="$(printf '%s' "$1" | tr 'A-Z' 'a-z')" -v win="$2" -v r="$3" -v p="$4" -v now="$now" 'BEGIN{
         if (spec=="off" || spec=="none" || spec=="disabled" || spec=="no") { print now; exit }
@@ -3837,7 +3845,6 @@ if [ "$mode" = wait ]; then
   exit 0
 fi
 
-check_guard_specs
 resolve "$FIVE_GUARD" "$FIVE_WINDOW" "$left5"; F_DIS=$GDIS; F_CAP=$GCAP; F_LBL=$GLABEL
 resolve "$WEEK_GUARD" "$WEEK_WINDOW" "$leftw"; W_DIS=$GDIS; W_CAP=$GCAP; W_LBL=$GLABEL
 # A stale snapshot's % belongs to the window that already closed, so pacing on it
