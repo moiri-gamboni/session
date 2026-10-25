@@ -3744,7 +3744,7 @@ if [ "$mode" = rewake ]; then
     eff=$target
   done
   [ "$htrig" = auth ] && { rewake_release; exit 0; }
-  rewake_done "The Claude $wlabel rate-limit window has reset to 0% — a fresh window is available. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work. The earlier ⚠ warning no longer applies."
+  rewake_done "The Claude $wlabel rate-limit window has reset to 0% — a fresh window is available. This is an automated wake-up from the usage hook's background waiter, not user input. Work can continue normally, fan-out included; if a turn was interrupted by the cap, continue that work."
 fi
 
 if [ "$mode" = wait ]; then
