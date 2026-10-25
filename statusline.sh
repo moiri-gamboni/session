@@ -510,8 +510,10 @@ _run_label() {
       case "$_arg" in -*) _arg="" ;; esac
       _lab="review${_arg:+ $_arg}" ;;
     *)
+      # The interpreter is `python3` on Linux and `Python` from a macOS
+      # framework build.
       case "${_s[0]##*/}" in
-        python*) [ "${_s[1]##*/}" = tasks ] && _lab=tasksync ;;
+        [Pp]ython*) [ "${_s[1]##*/}" = tasks ] && _lab=tasksync ;;
       esac ;;
   esac
   [ -z "$_lab" ] || _add_label

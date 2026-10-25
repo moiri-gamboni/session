@@ -784,6 +784,9 @@ report no "$(yesno has "$runs_line" '⟳')" "runs: nor a prompt that is no slash
 runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/tasks|push|t1")
 report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" \
     "runs: a run the tasksync CLI (tasks) started reads tasksync"
+runs_line=$(render_session "$SL_RUNS" "$PR" "!Python|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" \
+    "runs: ... and so does one under a capitalised interpreter name (macOS framework Python)"
 runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/outbox|--for|the team")
 report no "$(yesno has "$runs_line" '⟳')" "runs: ... and one another program started is not shown"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "!python3|$TMP/opt/tasks|push|t1")
@@ -918,6 +921,8 @@ runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|op
 report yes "$(yesno endswith "$runs_line" '  ⟳ review')" "runs: ... reads the prompt past a path the same way"
 runs_line=$(render_session "$SL_RUNS" "$PR" "!python3|$TMP/opt/tasks|push|t1")
 report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" "runs: ... and names a tasksync run the same way"
+runs_line=$(render_session "$SL_RUNS" "$PR" "!Python|$TMP/opt/tasks|push|t1")
+report yes "$(yesno endswith "$runs_line" '  ⟳ tasksync')" "runs: ... under a capitalised interpreter name too"
 runs_line=$(render_session "$SL_RUNS" "$PR" "claude|daemon|run|--origin|transient>$(run_argv '/code-review medium 9')")
 report no "$(yesno has "$runs_line" '⟳')" "runs: ... and leaves a hosted session's runs to it"
 
