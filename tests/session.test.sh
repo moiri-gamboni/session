@@ -2330,6 +2330,21 @@ else
     report yes "$(printf '%s' "$t" | grep -q '^Badtitlehere ' && echo yes || echo no)" \
         "case 18: ... and the readable text kept"
 
+    # The bound is 80 characters, not bytes: a multibyte title is cut between
+    # characters, so no character is split into U+FFFD.
+    for ch in 漢 é; do
+        jq -cn --arg t "$(awk -v c="$ch" 'BEGIN{ for (i=0;i<100;i++) printf "%s", c }')" \
+            '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
+        out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+        t=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.sessionTitle // ""')
+        report 80 "$(printf '%s' "$t" | jq -Rrs 'length')" "case 18: a 100-character '$ch' title is cut to 80 characters"
+        report 0 "$(printf '%s' "$t" | LC_ALL=C grep -c "$(printf '\357\277\275')" || true)" \
+            "case 18: ... without a split character in it"
+    done
+    jq -cn --arg t "$(printf '\001\002\177')" '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
+    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    report "" "$out" "case 18: a title that is nothing but control characters promotes nothing"
+
     # A session whose name the user already set is never overwritten.
     printf '{"pid":%d,"sessionId":"%s","name":"chosen","kind":"interactive","updatedAt":1}\n' \
         "$$" "$UUID" > "$W18/cfg/sessions/$$.json"

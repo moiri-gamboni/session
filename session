@@ -321,10 +321,15 @@ if [ "${1:-}" = --hook ]; then
       "${hregs[@]}" 2>/dev/null || true)
     if [ "$hnsrc" = derived ]; then
       # Bounded before it goes anywhere: this becomes the peer name every other
-      # session addresses, and the value is whatever the titler wrote.
-      htitle=$(first_title "$hsid" | tr -d '\000-\037\177' | cut -c1-80)
+      # session addresses, and the value is whatever the titler wrote. Control
+      # characters go and the rest is cut at 80 characters by code point in jq,
+      # because cut(1) counts bytes under GNU and would split a multibyte
+      # character at the cut.
+      htitle=$(first_title "$hsid")
       [ -z "$htitle" ] || jq -cn --arg t "$htitle" \
-        '{suppressOutput: true, hookSpecificOutput: {hookEventName: "UserPromptSubmit", sessionTitle: $t}}'
+        '($t | explode | map(select(. > 31 and . != 127)) | implode | .[0:80]) as $t
+         | if $t == "" then empty
+           else {suppressOutput: true, hookSpecificOutput: {hookEventName: "UserPromptSubmit", sessionTitle: $t}} end'
     fi
   fi
   exit 0
