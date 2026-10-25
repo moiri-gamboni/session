@@ -43,7 +43,7 @@ Run `session --guard` before each wave and inside each agent: exit 0 is go, exit
 
 **A cap is never a reason to stop, wind down or hold back parallel work.** The install arms a background waiter (the `session --rewake-waiter` hook entry on `StopFailure`) that starts when a turn dies on a cap; it wakes the session, even an idle one, when the window resets or the login switches. The worst case is a pause that ends by itself. Nothing warns a session before a cap bites, so a usage figure near the cap is no cue to change course.
 
-A reset time quoted in a usage-limit error, this session's or a subagent's, belongs to the current login: a login switch lifts the cap at once, so the time is never a deadline or a planning constraint.
+A reset time quoted in a usage-limit error, this session's or a subagent's, belongs to the login that failed: while another saved login has room (`session account` lists each one's usage) it is no deadline, and when none has room it is when work can resume.
 
 **The login may also switch by itself** (`session account auto`) when a saved login serves more than the live one: on a cap or authentication death, run by the same hook, or before any cap, when the status line sees the live login reach 98% of a window. A switch announced with no cap behind it is that. A wake-up saying the login switched may be that automatic decision, not a person: treat it as the cap lifted and carry on. If it says the new login serves every model except Fable, work that died on a Fable cap must continue on another model; a resumed subagent keeps the model it died on and would hit the same cap again.
 
