@@ -2975,6 +2975,11 @@ else
       slog_row $(( NOWI - 200 )) "$UUID2" 4.0 20 7 "$FR" "$WR" 1500 me@example.com
       slog_row $(( NOWI - 150 )) "$UUID2" 5.0 25 8 "$FR" "$WR" 1800 me@example.com
       slog_row $(( NOWI - 120 )) "$UUID2" 9.0 26 8 "$FR" "$WR" 1900 other@example.com
+      # A login whose name contains the invoking one: a different account, so
+      # neither its spend nor its higher %s (which would raise the baseline)
+      # may count, which a substring match on column 21 would let through.
+      slog_row $(( NOWI - 250 )) 44444444-4444-4444-4444-444444444444 100.0 45 15 "$FR" "$WR" 1000 me@example.com+team
+      slog_row $(( NOWI - 50 ))  44444444-4444-4444-4444-444444444444 150.0 46 16 "$FR" "$WR" 2000 me@example.com+team
     } > "$WCU/data/session-log.tsv"
 
     j=$(sess "$WCU" -- usage --json); rc=$?
@@ -2984,9 +2989,11 @@ else
     report true "$(printf '%s' "$j" | jq -r '.five_hour.tracked_usd == 2')" \
         "cov: ... counting this session's in-window cost deltas"
     report true "$(printf '%s' "$j" | jq -r '.five_hour.tracked_total_usd == 3')" \
-        "cov: ... against the tracked total, which excludes the other login's rows"
-    report number "$(printf '%s' "$j" | jq -r '.five_hour.est_pct_of_limit|type')" \
-        "cov: ... with an estimated share as a number"
+        "cov: ... against the tracked total, which excludes the other logins' rows"
+    # 50% live less the 30% baseline (the max over the first 5 minutes of
+    # coverage), times this session's 2 of the 3 tracked dollars.
+    report 13.3 "$(printf '%s' "$j" | jq -r '.five_hour.est_pct_of_limit')" \
+        "cov: ... with an estimated share from this login's baseline alone"
 
     a=$(sess "$WCU" -- usage --all --json); rc=$?
     report 0 "$rc" "cov: usage --all --json exits 0"
@@ -3002,6 +3009,13 @@ else
     out=$(sess "$WCU" -- usage --all); rc=$?
     report 0 "$rc" "cov: usage --all exits 0"
     report yes "$(printf '%s' "$out" | grep -q 'tracked' && echo yes || echo no)" "cov: ... with the tracked totals row"
+
+    # A log with rows, none of them this login's: nothing tracked, which is
+    # not the same as no log at all.
+    slog_row $(( NOWI - 120 )) "$UUID2" 9.0 26 8 "$FR" "$WR" 1900 other@example.com > "$WCU/data/session-log.tsv"
+    j=$(sess "$WCU" -- usage --json); rc=$?
+    report "0 true" "$rc $(printf '%s' "$j" | jq -r '.five_hour.tracked_total_usd == 0')" \
+        "cov: a log holding only other logins' rows tracks nothing for this one, and says so with exit 0"
 fi
 
 echo "--- cov: usage attribution with two processes on one session id ---"
