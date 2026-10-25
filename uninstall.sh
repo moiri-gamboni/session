@@ -3,12 +3,13 @@
 #
 # Removes from $CLAUDE_CONFIG_DIR/settings.json this clone's hook entries (the
 # ten lifecycle ones and the auto-resume one, with the UserPromptSubmit copy an
-# older install also wired) and the statusLine when it is ours; unlinks the CLI when the name points at this clone. An entry
-# belonging to ANOTHER clone of this CLI goes too, but only when its command has
-# the exact shape install.sh writes — a foreign command that merely mentions the
-# same words is not ours to delete. A foreign statusLine, a symlink pointing
-# elsewhere, a hook group we did not empty and every other setting are left
-# exactly as they are, and a second run changes nothing.
+# older install also wired) and the statusLine when it is ours; unlinks the CLI
+# when the name points at this clone. An entry belonging to ANOTHER clone of
+# this CLI goes too, but only when its command has the exact shape install.sh
+# writes — a foreign command that merely mentions the same words is not ours to
+# delete. A foreign statusLine, a symlink pointing elsewhere, a hook group we
+# did not empty and every other setting are left exactly as they are, and a
+# second run changes nothing.
 #
 # What it deliberately does NOT remove: the usage data root (your recorded
 # history — the command to delete it is printed) and session.conf (it describes
