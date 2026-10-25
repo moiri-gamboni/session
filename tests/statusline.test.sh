@@ -684,6 +684,167 @@ rm -f "$DH/sessions/$SID.hold"
 report no "$(yesno has "$(render "$PH" SESSION_DATA_DIR="$DH")" 'compaction held')" \
     "hold: another session's marker says nothing about this one"
 
+echo "--- headless runs the session started ---"
+
+# A headless run (`claude -p`) the session started, such as a review its Bash
+# tool runs in the background, ends the line while it runs. The fixture stands
+# in for a session with the process shapes seen on a live one: the session is a
+# process whose argv[0] is `claude`, a run sits under a shell of its own with
+# the argv `claude -p --safe-mode --model opus <prompt>` (plus the `-c` script
+# that keeps the stand-in alive), and the status line runs through
+# `/bin/sh -c`, with COLUMNS set where a case gives COLS (Claude Code always
+# sets it). Each SPEC given starts one process under a
+# shell below the session, kept alive until the render has returned: its argv,
+# words joined by `|`, then optionally `>` and the SPEC of a process held below
+# it behind another shell. With `-` for the status line the session renders
+# nothing: it holds its processes until $HOLD goes, as another session would,
+# and says it is up by writing $HOLD.up. With RENDER_AS set, the session acts
+# as Claude Code's background-session daemon: the line is rendered by a session
+# it hosts, a child whose argv[0] is RENDER_AS, beside the processes it holds.
+cat > "$TMP/fake-session.sh" <<'EOF'
+start() {  # SPEC -> a process with SPEC's argv, in the background
+  local own="${1%%>*}" child="" w
+  case "$1" in *'>'*) child="${1#*>}" ;; esac
+  IFS='|' read -r -a w <<< "$own"
+  ( export CHILD="$child"; exec -a "${w[0]}" bash -c "$HELD" "${w[@]:1}" ) &
+}
+if [ "$1" = --start ]; then start "$2"; wait; exit; fi
+sl=$1; pf=$2; shift 2
+export FAKE="$0" RUNNING="$TMP_RUNS/running.$$"
+export HELD='if [ -n "$CHILD" ]; then bash "$FAKE" --start "$CHILD" & fi; : > "$RUNNING.up.$$"; while [ -e "$RUNNING" ]; do sleep 0.05; done'
+: > "$RUNNING"
+want=0
+for s in "$@"; do
+  bash "$0" --start "$s" &
+  r=${s//[!>]/}; want=$((want + 1 + ${#r}))
+done
+i=0
+while [ "$i" -lt 500 ]; do
+  n=0; for f in "$RUNNING".up.*; do [ -e "$f" ] && n=$((n + 1)); done
+  [ "$n" -ge "$want" ] && break
+  sleep 0.02; i=$((i + 1))
+done
+if [ "$sl" = - ]; then
+  : > "$HOLD.up"
+  while [ -e "$HOLD" ]; do sleep 0.05; done
+elif [ -n "${RENDER_AS:-}" ]; then
+  RENDER_AS= bash -c 'exec -a "$1" bash "$0" "$2" "$3"' "$0" "$RENDER_AS" "$sl" "$pf"
+else
+  /bin/sh -c 'bash "$1" < "$2"' sh "$sl" "$pf"
+fi
+rm -f "$RUNNING" "$RUNNING".up.*
+wait
+EOF
+DR="$TMP/dataruns"; mkdir -p "$DR"
+HOLD="$TMP/hold-runs"
+render_session() {  # STATUSLINE PAYLOAD [SPEC ...] -> the line of a session running these
+    local sl="$1" pf="$2"; shift 2
+    env -i PATH="$PATH" HOME="$FH" TZ=UTC \
+        CLAUDE_CONFIG_DIR="$CFG" SESSION_ACCOUNTS_DIR="$VAULT" SESSION_DATA_DIR="$DR" \
+        TMP_RUNS="$TMP" HOLD="$HOLD" RENDER_AS="${RENDER_AS:-}" ${COLS:+COLUMNS="$COLS"} \
+        bash -c 'exec -a claude bash "$@"' _ "$TMP/fake-session.sh" "$sl" "$pf" ${1+"$@"}
+}
+run_argv() { printf 'claude|-p|--safe-mode|--model|opus|%s' "$1"; }  # PROMPT -> a run's SPEC
+startswith() { case "$1" in "$2"*) return 0 ;; *) return 1 ;; esac; }
+PR="$TMP/pruns.json"; mkpayload "$SID" 0.1 41 62 "$FR" "$WR" "runs" > "$PR"
+SL_RUNS="$SHOME/statusline.sh"
+
+runs_line=$(render_session "$SL_RUNS" "$PR")
+report no "$(yesno has "$runs_line" '⟳')" "runs: a session that started none shows no marker"
+report yes "$(yesno has "$runs_line" "$MARK")" "runs: (fixture) the stand-in session renders a status line"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
+    "runs: a run of /code-review ends the line with the command and its first argument"
+report yes "$(yesno startswith "$runs_line" "$MARK")" "runs: ... and the line still starts where it did"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "$(run_argv '/plan-day prepare')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high +1')" \
+    "runs: a second run is counted after the first one's label"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv 'summarise this file')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ claude -p')" \
+    "runs: a run whose prompt is no slash command reads claude -p"
+runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/plan-day|--add-dir|/tmp')
+report yes "$(yesno endswith "$runs_line" '  ⟳ plan-day')" \
+    "runs: a root-level path before the prompt is no command, and an option after it no argument"
+runs_lab='review https://example.com/org/repository/pull/12345'
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/$runs_lab")")
+report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:31}…")" \
+    "runs: a long label is cut to 32 characters"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv $'/code-review \033]8;;x\ahigh')")
+report no "$(yesno has "$runs_line" $'\033')" "runs: a control character in the prompt never reaches the terminal"
+runs_line=$(render_session "$SL_RUNS" "$PR" 'claude-monitor|-p|8080')
+report no "$(yesno has "$runs_line" '⟳')" "runs: only claude itself counts, not another tool named after it"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')>$(run_argv '/plan-day prepare')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
+    "runs: a run started by a run is that run's, not counted here"
+
+# With COLUMNS known the marker is padded to the right edge of the COLUMNS - 4
+# cells Claude Code draws, a wide character counting two cells and a link
+# escape none, and the rest is cut where it leaves no room. With COLUMNS unset
+# the marker follows the rest after two spaces.
+width_of() { printf '%s' "$1" | jq -Rrs 'gsub("\u001b\\][^\u0007]*\u0007"; "") | length'; }
+runs_line=$(COLS=100 render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
+report 96 "$(width_of "$runs_line")" "runs: with COLUMNS=100 the line fills the 96 cells Claude Code draws"
+report yes "$(yesno endswith "$runs_line" ' ⟳ code-review high')" "runs: ... the marker last, at the right edge"
+report yes "$(yesno startswith "$runs_line" "$MARK")" "runs: ... and the line starts where it does without one"
+PW="$TMP/pruns-wide.json"; jq '.model.display_name = "Fable 5 🚧漢字⚠️🈁"' "$PR" > "$PW"
+runs_line=$(COLS=100 render_session "$SL_RUNS" "$PW" "$(run_argv '/code-review high 7')")
+report 92 "$(width_of "$runs_line")" \
+    "runs: emoji, CJK and a symbol shown as emoji count two cells each (92 code points in 96 cells)"
+runs_line=$(COLS=40 render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
+report 36 "$(width_of "$runs_line")" "runs: with no room left the rest is cut to fit the marker"
+report yes "$(yesno endswith "$runs_line" '…  ⟳ code-review high')" \
+    "runs: ... marked cut, two spaces before the marker"
+report yes "$(yesno startswith "$runs_line" 'Fable 5 high│57…')" "runs: ... from its end"
+WSR="$TMP/wsruns"; mkdir -p "$WSR/tasks/.sync" "$WSR/tasks/t1"
+jq -n '{url: "https://example.com/t1", title: "A long task title that runs well past the edge of a narrow line"}' \
+    > "$WSR/tasks/t1/identity.json"
+PT="$TMP/pruns-task.json"; jq --arg d "$WSR/tasks/t1" '.cwd = $d' "$PR" > "$PT"
+runs_line=$(COLS=70 render_session "$SL_RUNS" "$PT" "$(run_argv '/code-review high 7')")
+report 66 "$(width_of "$runs_line")" "runs: a cut inside the task link still fits the line"
+report yes "$(yesno has "$runs_line" $'\033]8;;\a')" "runs: ... and the link is still closed"
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" "runs: ... before the marker"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high')" \
+    "runs: with COLUMNS unset the marker follows the rest after two spaces"
+report no "$(yesno has "$runs_line" '…')" "runs: ... and nothing is cut"
+runs_line=$(COLS=100 render_session "$SL_RUNS" "$PR")
+report no "$(yesno has "$runs_line" '⟳')" "runs: ... and with no run there is nothing to pad"
+report no "$(yesno endswith "$runs_line" ' ')" "runs: ... not even trailing spaces"
+
+# Another session's run is not this one's: one elsewhere on the machine, and
+# one of a session below this one, as Claude Code's background-session daemon
+# hosts `/fork` and `claude --bg` sessions under the session that started it.
+runs_line=$(render_session "$SL_RUNS" "$PR" "claude|daemon|run|--origin|transient>$(run_argv '/code-review medium 9')")
+report no "$(yesno has "$runs_line" '⟳')" "runs: a session hosted below this one keeps its runs"
+runs_line=$(RENDER_AS='claude bg-spare' render_session "$SL_RUNS" "$PR" "claude bg-spare>$(run_argv '/code-review medium 9')")
+report yes "$(yesno has "$runs_line" "$MARK")" "runs: (fixture) a hosted session renders its line"
+report no "$(yesno has "$runs_line" '⟳')" "runs: ... and the daemon's other sessions keep theirs"
+: > "$HOLD"
+render_session - - "$(run_argv '/code-review medium 9')" &
+other=$!
+i=0; while [ ! -e "$HOLD.up" ] && [ "$i" -lt 500 ]; do sleep 0.02; i=$((i + 1)); done
+report present "$(exists "$HOLD.up")" "runs: (fixture) the other session is up"
+runs_line=$(render_session "$SL_RUNS" "$PR")
+report no "$(yesno has "$runs_line" '⟳')" "runs: another session's run says nothing about this one"
+rm -f "$HOLD" "$HOLD.up"
+wait "$other"
+
+# Without /proc the same tree comes from one `ps` (macOS). session_have_proc is
+# the single platform decision point, so the branch is taken by overriding it in
+# a copy of the lib, as the session suite does.
+SHOME_PS="$TMP/shome-ps"; cp -R "$SHOME" "$SHOME_PS"
+printf '\nsession_have_proc() { return 1; }\n' >> "$SHOME_PS/lib/common.sh"
+SL_RUNS="$SHOME_PS/statusline.sh"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')" "$(run_argv '/plan-day prepare')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ code-review high +1')" \
+    "runs: without /proc, ps finds the same runs"
+runs_line=$(render_session "$SL_RUNS" "$PR")
+report no "$(yesno has "$runs_line" '⟳')" "runs: ... and none where there are none"
+runs_line=$(render_session "$SL_RUNS" "$PR" 'claude|-p|--add-dir|/tmp|--model|opus|/plan-day|--add-dir|/tmp')
+report yes "$(yesno endswith "$runs_line" '  ⟳ plan-day')" "runs: ... reads the prompt past a path the same way"
+runs_line=$(render_session "$SL_RUNS" "$PR" "claude|daemon|run|--origin|transient>$(run_argv '/code-review medium 9')")
+report no "$(yesno has "$runs_line" '⟳')" "runs: ... and leaves a hosted session's runs to it"
+
 echo "--- the compaction facts: tokens, window and the ceiling where Claude Code compacts ---"
 
 # sessions/<sid>.ctx is one line, `TOKENS WINDOW CEILING`, rewritten on every

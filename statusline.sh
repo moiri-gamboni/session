@@ -440,8 +440,112 @@ fi
 _hold_seg=""
 [ -e "$_snapdir/$_sid.hold" ] && _hold_seg="⏸ compaction held│"
 
+# Headless runs (`claude -p`) this session started, such as a review its Bash
+# tool runs in the background. Claude Code shows a background shell only as a
+# count in its footer, so the line ends, at its right edge, with the first
+# run's slash command and that command's first argument (`⟳ code-review high`),
+# `+N` for the others, and `claude -p` for a prompt that is no slash command.
+# Placed at the right edge, it shifts nothing else when it comes and goes.
+#   The tree is walked from this session's own process, the status line's
+# nearest ancestor whose argv[0] is Claude Code's: `claude` (`claude.exe` from
+# the npm package), or `claude <role>` for the processes it starts itself (read
+# from the 2.1.310 binary: `claude bg-spare` is a session the
+# background-session daemon hosts, and the daemon runs under whichever session
+# started it). Below it, such a process is a run when -p or --print is one of
+# its argv words, and either way the walk stops there: a run's own runs are its
+# business, and any other is another session. The process decides rather than
+# the session id, which a /clear changes under a run that is still going.
+#   Linux walks /proc without forking, in tens of milliseconds for a session
+# running several MCP servers, where a `ps` of the whole machine costs about 50
+# ms of CPU on every render; argv past argv[0] is read for Claude Code
+# processes alone. A child is listed under the thread that started it, so every
+# thread's children file is read: Claude Code starts its children from its main
+# thread today, but a release that did not, or a script below the session that
+# starts runs from worker threads, would otherwise hide them. A kernel built
+# without those files, like a system without /proc, gets the tree from one
+# `ps`, which joins argv into one line it cannot split back exactly.
+_runs=()
+# ARGV WORDS -> _pr: the prompt, from the first word whose first token is
+# `/name` to the end of the argv, or empty. A word naming an existing path is an
+# option's value (`--add-dir /tmp`), not a command.
+_run_prompt() {
+  _pr=""
+  while [ $# -gt 0 ]; do
+    case "${1%% *}" in
+      /|/*/*) ;;
+      /*) [ -e "${1%% *}" ] || { _pr=$*; return 0; } ;;
+    esac
+    shift
+  done
+}
+if session_have_proc && [ -r "/proc/$$/task/$$/children" ]; then
+  _root=""; _p=$$
+  while [ "${_p:-0}" -gt 1 ]; do
+    _st=""; read -r _st < "/proc/$_p/stat" || break
+    _st=${_st##*) }; _st=${_st#* }; _p=${_st%% *}   # the comm may hold spaces and parens
+    _x=""; { IFS= read -r -d '' _x; } < "/proc/$_p/cmdline"
+    case "${_x##*/}" in claude|claude.exe|"claude "*) _root=$_p; break ;; esac
+  done
+  _q=$_root
+  while [ -n "$_q" ]; do
+    _p=${_q%% *}; _q=${_q#"$_p"}; _q=${_q# }
+    for _f in /proc/"$_p"/task/*/children; do
+      _k=""; read -r _k < "$_f"
+      for _c in $_k; do
+        _isclaude=0; _w=(); _x=""
+        {
+          IFS= read -r -d '' _x
+          case "${_x##*/}" in
+            claude|claude.exe|"claude "*)
+              _isclaude=1
+              while IFS= read -r -d '' _x; do _w[${#_w[@]}]=$_x; done ;;
+          esac
+        } < "/proc/$_c/cmdline"
+        if [ "$_isclaude" = 0 ]; then _q="${_q:+$_q }$_c"; continue; fi
+        for _x in "${_w[@]}"; do
+          case "$_x" in -p|--print) _run_prompt "${_w[@]}"; _runs[${#_runs[@]}]=$_pr; break ;; esac
+        done
+      done
+    done
+  done
+else
+  while IFS= read -r _x; do
+    read -r -a _w <<< "$_x"; _run_prompt "${_w[@]}"; _runs[${#_runs[@]}]=$_pr
+  done < <(
+    ps -A -ww -o pid= -o ppid= -o command= | awk -v self=$$ '
+      function claude(c,  w, b, n) {
+        split(c, w, " "); n = split(w[1], b, "/"); return b[n] == "claude" || b[n] == "claude.exe"
+      }
+      { pid = $1; ppid = $2; $1 = ""; $2 = ""; sub(/^ +/, "")
+        par[pid] = ppid; cmd[pid] = $0; kids[ppid] = kids[ppid] " " pid }
+      END {
+        p = self; root = ""
+        while (p + 0 > 1 && (p in par)) { p = par[p]; if (claude(cmd[p])) { root = p; break } }
+        if (root == "") exit
+        n = split(kids[root], q, " "); h = 1
+        while (h <= n) {
+          c = q[h++]
+          if (claude(cmd[c])) { if ((" " cmd[c] " ") ~ / (-p|--print) /) print cmd[c]; continue }
+          m = split(kids[c], k, " "); for (i = 1; i <= m; i++) q[++n] = k[i]
+        }
+      }')
+fi
+# The first run's label; an argument after the command that starts with `-` is
+# an option, not shown. jq cleans, cuts and places it below.
+_runs_lab=""; _runs_more=""
+if [ "${#_runs[@]}" -gt 0 ]; then
+  _runs_lab="claude -p"
+  if [ -n "${_runs[0]}" ]; then
+    read -r _cmd _arg _ <<< "${_runs[0]#/}"
+    case "$_arg" in -*) _arg="" ;; esac
+    _runs_lab="$_cmd${_arg:+ $_arg}"
+  fi
+  [ "${#_runs[@]}" -gt 1 ] && _runs_more=" +$(( ${#_runs[@]} - 1 ))"
+fi
+
 jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag" \
-      --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" '
+      --arg task_seg "$_task_seg" --arg hold_seg "$_hold_seg" \
+      --arg runs_lab "$_runs_lab" --arg runs_more "$_runs_more" --arg cols "${COLUMNS:-}" '
   # model + effort come fresh in every render payload, so this tracks
   # mid-session switches (Fable safeguard fallback to Opus, /model, /effort)
   # without any caching
@@ -461,5 +565,58 @@ jq -r --arg five_seg "$_five_seg" --arg week_seg "$_week_seg" --arg atag "$_atag
     elif . >= 1000 then
       "\(. / 1000 | floor)k"
     else "\(.)" end;
-  "\($hold_seg)\($model)\($used | fmt)\($five_seg)\($week_seg)\($task_seg)\($atag)"
+  "\($hold_seg)\($model)\($used | fmt)\($five_seg)\($week_seg)\($task_seg)\($atag)" as $rest |
+  # Display cells, the way a terminal draws them: none for a control, a
+  # combining mark, a zero-width or a link escape (OSC 8); two for East Asian
+  # wide and fullwidth characters and for emoji drawn as emoji by default; one
+  # for the rest, the emoji selector U+FE0F included, which makes the symbol
+  # before it an emoji two cells wide. An estimate on the short side lets Claude Code cut the marker
+  # short; one on the long side leaves the marker short of the edge.
+  def cells:
+    gsub("\u001b\\][^\u0007]*\u0007"; "")
+    | [explode[] | . as $c
+       | if $c < 32 or ($c >= 127 and $c < 160) or ($c >= 768 and $c <= 879)
+            or ($c >= 8203 and $c <= 8207) or ($c >= 8400 and $c <= 8447)
+            or ($c >= 65024 and $c <= 65038) then 0
+         elif ($c >= 4352 and $c <= 4447) or ($c >= 11904 and $c <= 42191)
+            or ($c >= 44032 and $c <= 55203) or ($c >= 63744 and $c <= 64255)
+            or ($c >= 65040 and $c <= 65049) or ($c >= 65072 and $c <= 65135)
+            or ($c >= 65280 and $c <= 65376) or ($c >= 65504 and $c <= 65510)
+            or ($c >= 127488 and $c <= 129791) or ($c >= 131072 and $c <= 262141)
+            or $c == 126980 or $c == 127183 or $c == 127374 or ($c >= 127377 and $c <= 127386)
+            or ($c >= 9800 and $c <= 9811)
+            or ([8986, 8987, 9193, 9194, 9195, 9196, 9200, 9203, 9725, 9726, 9748, 9749,
+                 9855, 9875, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9940, 9962,
+                 9970, 9971, 9973, 9978, 9981, 9989, 9994, 9995, 10024, 10060, 10062,
+                 10067, 10068, 10069, 10071, 10133, 10134, 10135, 10160, 10175, 11035,
+                 11036, 11088, 11093] | any(. == $c)) then 2
+         else 1 end]
+    | add // 0;
+  # The line cut to at most $n cells, plus a one-cell ellipsis where anything
+  # was cut; its escapes are kept whole and in place, so a link cut short still
+  # closes.
+  def clip($n):
+    reduce (match("\u001b\\][^\u0007]*\u0007|."; "g").string) as $x ({s: "", w: 0, cut: false};
+      if ($x | startswith("\u001b")) then .s += $x
+      elif .cut or .w + ($x | cells) > $n then .cut = true
+      else .s += $x | .w += ($x | cells) end)
+    | .s + (if .cut then "…" else "" end);
+  # The runs marker, right-aligned: Claude Code draws the line in COLUMNS - 4
+  # cells (an inset of two each side, seen on 2.1.310; a statusLine `padding`
+  # narrows it further) and cuts what is longer with an ellipsis, so a rest
+  # that leaves the marker no room is cut first, from the end Claude Code would
+  # have cut. With COLUMNS unset the marker follows the rest after two spaces.
+  # Its label comes out of a process argv: no control or format character in it
+  # reaches the terminal, and it is cut by code point, as bash in a C locale
+  # cannot.
+  if $runs_lab == "" then $rest else
+    ($runs_lab | gsub("[\\p{Cc}\\p{Cf}]"; "") | if length > 32 then .[:31] + "…" else . end) as $l
+    | "⟳ \($l)\($runs_more)" as $m
+    | ($cols | tonumber? // 0) as $c
+    | if $c <= 0 then $rest + "  " + $m
+      else (($c - 4) - ($m | cells) - 2) as $room
+        | ($rest | if cells <= $room then . else clip($room - 1) end) as $r
+        | $r + " " * ($room - ($r | cells) + 2) + $m
+      end
+  end
 ' <<< "$input"
