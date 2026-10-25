@@ -555,11 +555,11 @@ if session_have_proc && [ -r "/proc/$$/task/$$/children" ]; then
   # must still be `tasks`. Read under /proc alone.
   if [ -n "$_sid" ] && [ "$_sid" != - ]; then
     _seen="|"; _ifs=$IFS; IFS=:
-    for _w in "$_wsabove" $SESSION_TASK_WORKSPACES; do
+    for _ws in "$_wsabove" $SESSION_TASK_WORKSPACES; do
       IFS=$_ifs
-      case "$_seen" in *"|$_w|"*) continue ;; esac
-      _seen="$_seen$_w|"
-      for _f in "$_w"/tasks/.sync/gate/*.running "$_w"/tasks/.sync/gate/*.pushing; do
+      case "$_seen" in *"|$_ws|"*) continue ;; esac
+      _seen="$_seen$_ws|"
+      for _f in "$_ws"/tasks/.sync/gate/*.running "$_ws"/tasks/.sync/gate/*.pushing; do
         _x=""; read -r _x < "$_f"
         _c=${_x#*\"pid\": }; _c=${_c%%[!0-9]*}
         if [ -z "$_c" ] || [ ! -r "/proc/$_c/environ" ]; then continue; fi
