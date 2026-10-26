@@ -40,10 +40,11 @@ _u="$SESSION_DATA"
 # has to set the root's posture: 700 comes from the lib's umask, and the
 # .gitignore keeps a store that lands inside a tracked config dir out of a
 # commit. The second guard is on the FILE, not the directory — the rewake
-# waiter and the resume queue both create the root without writing one,
-# and a directory-keyed guard would then never fire again. `-s` rather than the
-# installer's content comparison because this runs every ten seconds and a `cat`
-# per render buys nothing: a populated .gitignore someone put there is theirs.
+# waiter, the compaction hold and the resume queue create the root without
+# writing one, and a directory-keyed guard would then never fire again. `-s`
+# rather than the installer's content comparison because this runs every ten
+# seconds and a `cat` per render buys nothing: a populated .gitignore someone
+# put there is theirs.
 [ -d "$_u" ] || mkdir -p "$_u"
 [ -s "$_u/.gitignore" ] || printf '*\n' > "$_u/.gitignore"
 _cfg="$SESSION_CFG"
@@ -167,8 +168,9 @@ if [ "$_fresh" = 1 ] && { [ "$_new_fr" -gt "$_now" ] || [ "$_new_wr" -gt "$_now"
 elif [ "$_owner" = "$_acct" ] && [ -s "$_cache" ] \
      && [ "$_f5" = "$_old_f5" ] && [ "$_w7" = "$_old_w7" ] \
      && [ "$_new_fr" = "$_old_fr" ] && [ "$_new_wr" = "$_old_wr" ]; then
-  # same data, same owner: refresh the cache's age (mtime feeds the "Xm old"
-  # column and the hook's staleness note) without rewriting content
+  # same data, same owner: refresh the cache's age (mtime feeds the account
+  # list's AGE column and `session --compact`'s staleness note) without
+  # rewriting content
   touch "$_cache"
 fi
 

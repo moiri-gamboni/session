@@ -582,11 +582,11 @@ chmod 644 "$UNREAD/lib/common.sh"
 
 echo "--- the data root's .gitignore ---"
 
-# The guard has to be keyed on the FILE, not the directory. Three other paths
-# create the data root without writing one — `session --hook` and the rewake
-# waiter both mkdir the snapshot dir, and the resume queue mkdirs its parent —
-# and a directory-keyed guard then never fires again, so a root that first came
-# into existence through a hook stays unignored for good.
+# The guard has to be keyed on the FILE, not the directory. Other paths create
+# the data root without writing one — the rewake waiter and the compaction hold
+# both mkdir the snapshot dir, and the resume queue mkdirs its parent — and a
+# directory-keyed guard then never fires again, so a root that first came into
+# existence through a hook stays unignored for good.
 DG="$TMP/datagi"
 mkdir -p "$DG/sessions"                       # a root as another producer leaves it
 report absent "$(exists "$DG/.gitignore")" "gitignore: the fixture starts without one (control)"
