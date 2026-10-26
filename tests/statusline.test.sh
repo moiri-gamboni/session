@@ -803,8 +803,17 @@ report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:47}…")" \
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/code-${runs_lab}")" "!python3|$TMP/opt/tasks|push|t1")
 report yes "$(yesno endswith "$runs_line" "  ⟳ ${runs_lab:0:47}… · tasksync")" \
     "runs: each label is cut to 48 on its own, so a long first one leaves the next on the marker"
+# Built by count rather than by substring: bash's ${v:0:n} counts bytes in the
+# C locale the status line runs under, the very mistake this pins.
+runs_kanji=""; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do runs_kanji="${runs_kanji}漢"; done
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv "/code-review ${runs_kanji}${runs_kanji}")")
+report yes "$(yesno endswith "$runs_line" "  ⟳ review ${runs_kanji}…")" \
+    "runs: a multibyte label is cut at 48 characters, never inside one"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv $'/code-review \033]8;;x\ahigh')")
 report no "$(yesno has "$runs_line" $'\033')" "runs: a control character in the prompt never reaches the terminal"
+runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv $'/code-review hi\xe2\x80\x8bgh\xe2\x80\xae')")
+report yes "$(yesno endswith "$runs_line" '  ⟳ review high')" \
+    "runs: ... nor a zero-width or bidirectional format character"
 runs_line=$(render_session "$SL_RUNS" "$PR" 'claude-monitor|-p|8080')
 report no "$(yesno has "$runs_line" '⟳')" "runs: only claude itself counts, not another tool named after it"
 runs_line=$(render_session "$SL_RUNS" "$PR" "$(run_argv '/code-review high 7')>$(run_argv '/code-review medium 8')")
