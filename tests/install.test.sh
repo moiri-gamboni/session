@@ -303,7 +303,16 @@ report "StopFailure" "$(rewake_events "$CRT2/settings.json")" "retired [old clau
 report 1 "$(jq '[.hooks.UserPromptSubmit[]?.hooks[]? | select(.command | test("--hook"))] | length' "$CRT2/settings.json")" \
     "retired [old claude]: ... and the --hook entry is intact"
 
-# --no-rewake takes both, and uninstall takes whatever either wrote.
+# --no-rewake takes both entries, and the note about the first claims nothing
+# about the second.
+CRT5=$(mkcfg); BRT5="$TMP/binrt5"
+out=$(inst "$CRT5" --bindir "$BRT5"); oldpair "$CRT5/settings.json"
+out=$(inst "$CRT5" --bindir "$BRT5" --no-rewake); rc=$?
+report "0 0" "$rc $(jq "$REWAKE | length" "$CRT5/settings.json")" "retired [--no-rewake]: both waiter entries are gone"
+report "1 0" "$(grep -c 'removed the UserPromptSubmit --rewake-waiter entry' <<<"$out") $(grep 'removed the UserPromptSubmit --rewake-waiter entry' <<<"$out" | grep -c StopFailure)" \
+    "retired [--no-rewake]: ... the note says so without naming a StopFailure entry that is gone too"
+
+# uninstall takes whatever either wrote.
 CRT3=$(mkcfg); BRT3="$TMP/binrt3"
 out=$(inst "$CRT3" --bindir "$BRT3"); oldpair "$CRT3/settings.json"
 out=$(uninst "$CRT3" --bindir "$BRT3"); rc=$?

@@ -569,7 +569,7 @@ DROPEOF
             [ .hooks.UserPromptSubmit[]?.hooks[]? | (.command // "") as $c
               | select(($c | endswith(" --rewake-waiter")) and ((($drop + $retire) | index($c)) != null)) ]
             | length')
-        ups_note="the UserPromptSubmit --rewake-waiter entry (the waiter arms on StopFailure alone)"
+        ups_note="the UserPromptSubmit --rewake-waiter entry (it arms nothing)"
         if [ "$dry_run" = 1 ]; then
             plan "settings.json: the merge would change $settings:"
             diff <(printf '%s' "$cur_json" | jq -S .) <(printf '%s\n' "$merged" | jq -S .)
