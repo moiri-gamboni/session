@@ -271,12 +271,10 @@ first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
 # empty. The write is silent because it runs on every prompt and nothing reads
 # its error: a redirect that fails reports when it is set up, so the group
 # carries the 2>/dev/null, and `session doctor` names a missing root.
-# Recognised anywhere in the arguments, as --rewake-waiter is: the entry is
-# `bash <clone>/session --hook`, but an option ahead of it must not turn the
-# prompt into an unknown-argument refusal.
-hook_entry=0
-case " $* " in *' --hook '*) hook_entry=1 ;; esac
-if [ "$hook_entry" = 1 ]; then
+# Only as the first argument, which is how the entry is written: anywhere else
+# the word may be another command's operand (`session id --hook`). The parser
+# below hands over to this block when it meets --hook as an option.
+if [ "${1:-}" = --hook ]; then
   [ -t 0 ] && exit 0
   IFS=$'\t' read -r hsid hpid < <(jq -r '[(.session_id//"-"),(.prompt_id//"-")]|@tsv' 2>/dev/null || true)
   case "${hsid:--}" in -) exit 0 ;; esac
@@ -2349,6 +2347,11 @@ mode=text; waitwin=five; submode=""; target_sid=""; all=0; yday=0; datearg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --compact|--oneline) mode=compact ;;
+    # After another option (`--file x --hook`): start over as the hook, which
+    # reads the prompt payload from the stdin nothing here has touched. Not once
+    # a subcommand is named, where it is no option of the command's.
+    --hook)  [ -n "$submode" ] && conf_refuse "unknown arg '$1'"
+             exec bash "$SESSION_HOME/session" --hook ;;
     --json)  mode=json ;;
     --guard) mode=guard ;;
     --wait)  mode='wait'

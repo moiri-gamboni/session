@@ -1850,6 +1850,18 @@ else
     report "0 [] 1" "$rc [$out] $(grep -c "	s	p1	" "$W5/data/turn-log.tsv")" \
         "case 5: --hook after another option still logs the turn, exits 0 and says nothing"
 
+    # An operand of another command is never the hook entry, and no row is
+    # logged for it.
+    : > "$W5/data/turn-log.tsv"
+    for sub in id name; do
+        out=$(sess "$W5" -- "$sub" --hook </dev/null 2>&1); rc=$?
+        report "1 session $sub: no session matching '--hook'" "$rc $out" \
+            "case 5: session $sub --hook is a query like any other"
+    done
+    out=$(printf '%s' "$HOOKIN" | sess "$W5" -- time --hook 2>&1); rc=$?
+    report "2 yes 0" "$rc $(printf '%s' "$out" | grep -q "unknown arg '--hook'" && echo yes || echo no) $(grep -c . "$W5/data/turn-log.tsv")" \
+        "case 5: ... and session time --hook is refused, logging nothing"
+
     # A payload without a prompt id still logs the start.
     : > "$W5/data/turn-log.tsv"
     printf '{"session_id":"%s"}' "$UUID" | sess "$W5" -- --hook >/dev/null 2>&1
