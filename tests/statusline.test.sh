@@ -864,6 +864,20 @@ if [ -d /proc/self ]; then
         "runs: a detached tasksync run whose marker names a process with this session's id is shown"
     runs_line=$(render_session "$SL_RUNS" "$PR")
     report no "$(yesno has "$runs_line" '⟳')" "runs: ... only from a workspace the status line reads"
+    # With no workspace above the working directory there is nothing to scan:
+    # an empty entry would glob tasks/.sync/gate/ at the filesystem root. The
+    # script discards its stderr, so the scan is watched in a shell trace sent
+    # to a descriptor of its own, over one render of the payload; the trace of
+    # a glob loop has a line per word it walks.
+    scan_globs() {  # [VAR=VAL ...] -> how many marker globs one render walked
+        local xt="$TMP/scan.trace"
+        env -i PATH="$PATH" HOME="$FH" TZ=UTC CLAUDE_CONFIG_DIR="$CFG" SESSION_ACCOUNTS_DIR="$VAULT" \
+            SESSION_DATA_DIR="$DR" "$@" BASH_XTRACEFD=7 bash -x "$SL_RUNS" < "$PR" 7> "$xt" > /dev/null
+        grep -c 'for _f in .*tasks/.sync/gate/' "$xt" || true
+    }
+    report 0 "$(scan_globs)" "runs: ... and outside any workspace no marker is looked for, at the filesystem root or anywhere"
+    report yes "$([ "$(scan_globs SESSION_TASK_WORKSPACES="$WSR")" -gt 0 ] && echo yes || echo no)" \
+        "runs: ... while a listed workspace is scanned (the control)"
     PT2="$TMP/pruns-task-other.json"; jq '.session_id = "22222222-2222-2222-2222-222222222222"' "$PT" > "$PT2"
     runs_line=$(render_session "$SL_RUNS" "$PT2")
     report no "$(yesno has "$runs_line" '⟳')" "runs: ... and not on a session with another id"

@@ -557,6 +557,9 @@ if session_have_proc && [ -r "/proc/$$/task/$$/children" ]; then
     _seen="|"; _ifs=$IFS; IFS=:
     for _ws in "$_wsabove" $SESSION_TASK_WORKSPACES; do
       IFS=$_ifs
+      # No workspace above the working directory leaves the first entry empty,
+      # and an empty one would glob tasks/.sync/gate/ at the filesystem root.
+      [ -n "$_ws" ] || continue
       case "$_seen" in *"|$_ws|"*) continue ;; esac
       _seen="$_seen$_ws|"
       for _f in "$_ws"/tasks/.sync/gate/*.running "$_ws"/tasks/.sync/gate/*.pushing; do
