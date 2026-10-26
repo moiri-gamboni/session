@@ -2060,8 +2060,6 @@ doctor_main() {
                  | select((.command? // "" | test("rewake-waiter")) and .asyncRewake == true)]
                 | length > 0' "$SESSION_CFG/settings.json" >/dev/null 2>&1; then
     doc FAIL switcher "no armed --rewake-waiter entry on StopFailure in $SESSION_CFG/settings.json — that hook is what a cap death reaches, so nothing can carry one to a decision (install.sh arms it; --no-rewake leaves it off)"
-  elif [ ! -s "$cache_f" ]; then
-    doc pending switcher "no $cache_f — the rewake path exits without one, before it reaches a decision; interact once"
   elif ! command -v curl >/dev/null 2>&1; then
     doc pending switcher "no curl on PATH — a decision still runs, on the frozen figures in the per-login caches rather than on what the endpoint says now"
   else
@@ -3086,10 +3084,8 @@ if [ -z "$submode" ]; then
   esac
 fi
 
-if [ ! -s "$cache" ]; then
-  # The rewake entry never prints (its stderr is the wake message); compact
-  # stays display-only: date/time, never an error.
-  [ "$mode" = rewake ] && exit 0
+if [ ! -s "$cache" ] && [ "$mode" != rewake ]; then
+  # compact stays display-only: date/time, never an error.
   if [ "$mode" = compact ]; then
     printf '%s\n' "Claude usage limits · $(date '+%Y-%m-%d %H:%M %Z') · n/a (no statusline render yet)"
     exit 0
@@ -3104,14 +3100,23 @@ now=$(date +%s)
 mtime=$(mtime_of "$cache" || echo "$now")
 age=$(( now - mtime ))
 
-IFS=$'\t' read -r five fivereset week weekreset ctx model < <(
-  jq -r '[ (.rate_limits.five_hour.used_percentage // -1),
-           (.rate_limits.five_hour.resets_at // 0),
-           (.rate_limits.seven_day.used_percentage // -1),
-           (.rate_limits.seven_day.resets_at // 0),
-           (.context_window.used_percentage // -1),
-           (.model.display_name // .model.id // "?") ] | @tsv' "$cache"
-)
+if [ -s "$cache" ]; then
+  IFS=$'\t' read -r five fivereset week weekreset ctx model < <(
+    jq -r '[ (.rate_limits.five_hour.used_percentage // -1),
+             (.rate_limits.five_hour.resets_at // 0),
+             (.rate_limits.seven_day.used_percentage // -1),
+             (.rate_limits.seven_day.resets_at // 0),
+             (.context_window.used_percentage // -1),
+             (.model.display_name // .model.id // "?") ] | @tsv' "$cache"
+  )
+else
+  # Only the rewake entry gets here without a cache: a login the box was moved
+  # to and that has never been live here has none, and the status line writes
+  # none for a login whose requests fail, so its every turn dies. Its decision
+  # and its authentication waiter need no figure; the windows are unknown, and
+  # a cap death then has no reset to sleep to.
+  five=-1; fivereset=0; week=-1; weekreset=0; ctx=-1; model="?"
+fi
 
 num() { local v=${1%.*}; { [ -z "$v" ] || [ "$v" = "-1" ]; } && { echo 0; return; }; echo "$v"; }
 bar() { local p; p=$(num "$1"); local f=$(( p/10 )); (( f<0 )) && f=0; (( f>10 )) && f=10

@@ -5670,20 +5670,6 @@ AASEOF
             "arm: ... on the trigger the authentication family asks under"
     done
 
-    # ── the ceiling above all of it, kept deliberately ───────────────────────
-    # The waiter reads its windows out of the statusline cache for the live
-    # login, and leaves at once when there is none. The decision sits BELOW that
-    # exit: it needs no cache, but hoisting it would mean hoisting the stdin read
-    # and the parent walk with it, and the only window it leaves open is the
-    # render or two after a switch, which `session doctor` reports as pending.
-    WA14=$(aworld); CA14=$(curlstub)
-    alive "$WA14" a@example.com tok-a
-    aent "$WA14" a@example.com tok-a; aent "$WA14" b@example.com tok-b
-    abody "$CA14" tok-a 100 10 10; abody "$CA14" tok-b 10 10 10
-    arun "$WA14" "$CA14" rate_limit; rc=$?
-    report 0 "$rc" "arm: a cap death on a login whose statusline has never rendered reaches no decision"
-    report 0 "$(arows "$WA14")" "arm: ... and writes no row, which is what doctor reports as pending"
-
     # ── a failure that is neither a cap nor an authentication death ───────────
     WA6=$(aworld); CA6=$(curlstub)
     alive "$WA6" a@example.com tok-a
@@ -5991,6 +5977,43 @@ AOWEOF
     report yes "$(asaid 'login switched')" "arm: ... where the waiter used to exit without arming anything"
     report tok-b "$(atok "$WA5")" "arm: ... and the box moves"
 
+    # ── no usage cache at all ─────────────────────────────────────────────────
+    # A login the box was switched to and that has never been live here has no
+    # cache, and the status line writes none for a login whose requests fail, so
+    # every turn on it dies. The decision needs no cache; the windows are simply
+    # unknown, which leaves a cap death with nothing to sleep to.
+    WNC1=$(aworld); CNC1=$(curlstub)
+    alive "$WNC1" a@example.com tok-a
+    aent "$WNC1" a@example.com tok-a; aent "$WNC1" b@example.com tok-b
+    adead "$CNC1" tok-a; abody "$CNC1" tok-b 10 10 10
+    arun "$WNC1" "$CNC1" authentication_failed; rc=$?
+    report 2 "$rc" "arm: an authentication death with no cache reaches the decision, whose switch is the wake-up"
+    report "1 tok-b" "$(aswitches "$WNC1") $(atok "$WNC1")" "arm: ... on exactly one switch, onto the candidate"
+
+    WNC2=$(aworld); CNC2=$(curlstub)
+    alive "$WNC2" a@example.com tok-a
+    aent "$WNC2" a@example.com tok-a; aent "$WNC2" b@example.com tok-b
+    adead "$CNC2" tok-a; adead "$CNC2" tok-b
+    arun "$WNC2" "$CNC2" authentication_failed; rc=$?
+    report "0 hold 216" "$rc $(awk -F'\t' 'NR==1{print $2}' "$WNC2/data/switch-log.tsv") $(aticks)" \
+        "arm: ... and with nowhere to move it decides, then waits a day on the credential like any authentication death"
+
+    WNC3=$(aworld); CNC3=$(curlstub)
+    alive "$WNC3" a@example.com tok-a
+    aent "$WNC3" a@example.com tok-a; aent "$WNC3" b@example.com tok-b
+    abody "$CNC3" tok-a 100 10 10; abody "$CNC3" tok-b 10 10 10
+    arun "$WNC3" "$CNC3" rate_limit; rc=$?
+    report "2 1" "$rc $(aswitches "$WNC3")" "arm: a cap death with no cache reaches the decision too, and a switch wakes the session"
+
+    WNC4=$(aworld); CNC4=$(curlstub)
+    alive "$WNC4" a@example.com tok-a
+    aent "$WNC4" a@example.com tok-a; aent "$WNC4" b@example.com tok-b
+    abody "$CNC4" tok-a 100 10 10; abody "$CNC4" tok-b 100 10 10
+    arun "$WNC4" "$CNC4" rate_limit; rc=$?
+    report "0 hold 0" "$rc $(awk -F'\t' 'NR==1{print $2}' "$WNC4/data/switch-log.tsv") $(aticks)" \
+        "arm: ... and with no switch and no reset to sleep to it decides, then arms nothing"
+    report absent "$([ -e "$WNC4/data/sessions/$UUID.rewaiter" ] && echo present || echo absent)" "arm: ... leaving no waiter behind"
+
     # ── a switch onto a Fable-spent login says what it bought ────────────────
     WA10=$(aworld); CA10=$(curlstub)
     alive "$WA10" a@example.com tok-a
@@ -6280,9 +6303,9 @@ else
 
     WDC6=$(dcworld); rm -f "$WDC6/data/last-status.a@example.com.json"
     out=$(ddoc "$WDC6"); rc=$?
-    report 0 "$rc" "doctor: a live login with no statusline cache is pending"
-    report pending "$(dcstate "$out" switcher)" \
-        "doctor: ... because the rewake path exits without one, before it reaches a decision"
+    report 0 "$rc" "doctor: a live login with no statusline cache is not a failure"
+    report ok "$(dcstate "$out" switcher)" \
+        "doctor: ... and reads ok, because a decision needs no cache"
 
     WDC7=$(dcworld)
     out=$(ddoc "$WDC7" PATH="$(minipath curl):$DCB"); rc=$?
