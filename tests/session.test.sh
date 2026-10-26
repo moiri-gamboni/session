@@ -2359,6 +2359,12 @@ else
         report 0 "$(printf '%s' "$t" | LC_ALL=C grep -c "$(printf '\357\277\275')" || true)" \
             "case 18: ... without a split character in it"
     done
+    # Format and C1 control characters change how a name reads without showing
+    # in it: a right-to-left override, a zero-width space, a bidi isolate, NEL.
+    jq -cn '{type:"ai-title", aiTitle:"Safe\u202etitle\u200b \u2066here\u2069\u0085!"}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
+    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    report "Safetitle here!" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.sessionTitle // ""')" \
+        "case 18: format and C1 control characters are stripped from the promoted title"
     jq -cn --arg t "$(printf '\001\002\177')" '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
     out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
     report "" "$out" "case 18: a title that is nothing but control characters promotes nothing"
