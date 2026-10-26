@@ -3169,7 +3169,7 @@ leftw_p=$leftw
 (( w_stale )) && leftw_p=$(( weekreset + WEEK_WINDOW * ( (now - weekreset + WEEK_WINDOW - 1) / WEEK_WINDOW ) - now ))
 (( leftw_p<0 )) && leftw_p=0; (( leftw_p>WEEK_WINDOW )) && leftw_p=WEEK_WINDOW
 
-# Display helpers shared by the overview and the compact/hook line. A stale
+# Display helpers shared by the overview and the --compact line. A stale
 # reading shows "~0%" — the window it belonged to closed at the boundary, where
 # usage drops to 0, so the projected floor beats the dead value (~ because usage
 # since the reset is invisible until the next response) — and a countdown phrase
