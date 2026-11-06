@@ -232,7 +232,7 @@ if [ "${1:-}" = --post-tool-batch ]; then
   exit 0
 fi
 
-transcript_of() {  # $1=sid -> its transcript path (empty if none readable)
+transcript_of() {  # $1=sid -> its transcript path (empty if none readable); walks the whole store, so never from --hook
   local jsonl
   [ -d "$SESSION_CFG/projects" ] || return 0
   jsonl=$(find "$SESSION_CFG/projects" -name "$1.jsonl" -print -quit)
@@ -246,24 +246,23 @@ transcript_of() {  # $1=sid -> its transcript path (empty if none readable)
 # never get a title at all, where an unbounded scan would re-read a transcript
 # that can reach tens of MB on every single prompt.
 TITLE_SCAN_BYTES=${TITLE_SCAN_BYTES:-2000000}
-first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
-  local jsonl line
-  jsonl=$(transcript_of "$1")
-  [ -n "$jsonl" ] || return 0
+first_title() {  # $1=transcript path -> its first ai-title (empty if none in the prefix)
+  local line
+  [ -r "$1" ] || return 0
   # grep reads a process substitution rather than a pipe: `head | grep -m1`
   # SIGPIPEs head on a match, and under pipefail that turns a HIT into a
   # non-zero pipeline that reads as "no title".
-  line=$(grep -m1 '"type":"ai-title"' < <(head -c "$TITLE_SCAN_BYTES" "$jsonl")) || return 0
+  line=$(grep -m1 '"type":"ai-title"' < <(head -c "$TITLE_SCAN_BYTES" "$1")) || return 0
   printf '%s' "$line" | jq -r '.aiTitle // empty'
 }
 
 # UserPromptSubmit ("--hook"). It runs before every prompt of every session on
 # the box inside the entry's 2 s timeout, so it does only what something reads,
 # and it sits ahead of the account library like the batch stop above. It reads
-# no usage cache, login, session log or settings.json and validates no
-# configuration, because each of those can cost more than the timeout on a
-# loaded box (two scans of the session log took 2.5 of 3.4 s at load 30 on 8
-# cores). Always exits 0, and prints only when it promotes a title.
+# no usage cache, login, session log or settings.json, never walks the transcript
+# store, and validates no configuration, because each of those can cost more than
+# the timeout on a loaded box (two scans of the session log took 2.5 of 3.4 s at
+# load 30 on 8 cores). Always exits 0, and prints only when it promotes a title.
 #
 # Stdin is read exactly once, and the turn START row is written before anything
 # that can fail: `session time` pairs it with the Stop hook's end row (they
@@ -276,7 +275,7 @@ first_title() {  # $1=sid -> its first ai-title (empty if none in the prefix)
 # below hands over to this block when it meets --hook as an option.
 if [ "${1:-}" = --hook ]; then
   [ -t 0 ] && exit 0
-  IFS=$'\t' read -r hsid hpid < <(jq -r '[(.session_id//"-"),(.prompt_id//"-")]|@tsv' 2>/dev/null || true)
+  IFS=$'\t' read -r hsid hpid htp < <(jq -r '[(.session_id//"-"),(.prompt_id//"-"),(.transcript_path//"")]|@tsv' 2>/dev/null || true)
   case "${hsid:--}" in -) exit 0 ;; esac
   { printf '%s\t%s\ts\t%s\t-\t-\n' "$(date +%s)" "$hsid" "${hpid:--}" >> "$SESSION_TLOG"; } 2>/dev/null
   # A compaction hold stands only while requests keep asking for it; the next
@@ -306,6 +305,13 @@ if [ "${1:-}" = --hook ]; then
   # overwritten — rename is how you change it afterwards. Cost once promoted is
   # the one jq below (~11ms); the transcript read happens only in the turn or
   # two before a title exists.
+  #
+  # The transcript is the one the payload names, never transcript_of's search:
+  # that find over the store took 1.0-3.8 s at load 50 (78k files, 8 cores), the
+  # entry's timeout discards a title found too late, and the next prompt walks
+  # again, so a session could stay unpromoted for good. A payload that names no
+  # readable transcript promotes nothing on that prompt; the name stays derived,
+  # so a later prompt whose payload names one still promotes it.
   hregs=("$SESSION_CFG"/sessions/*.json)
   if [ -e "${hregs[0]}" ]; then
     # stderr is dropped because the app rewrites these records in place and a
@@ -329,7 +335,7 @@ if [ "${1:-}" = --hook ]; then
       # go, and the rest is cut at 80 characters by code point in jq, because
       # cut(1) counts bytes under GNU and would split a multibyte character at
       # the cut.
-      htitle=$(first_title "$hsid")
+      htitle=$(first_title "${htp:-}")
       [ -z "$htitle" ] || jq -cn --arg t "$htitle" \
         '($t | gsub("[\\p{Cc}\\p{Cf}]"; "") | .[0:80]) as $t
          | if $t == "" then empty

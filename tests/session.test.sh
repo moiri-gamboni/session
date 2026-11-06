@@ -1809,7 +1809,8 @@ if ! have jq; then
     skip "case 5: hook" "no jq"
 else
     W5=$(world); mklogin "$W5" me@example.com
-    HOOKIN=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
+    HOOKIN5=$(printf '{"session_id":"%s","prompt_id":"p1","transcript_path":"%s"}' "$UUID" "$W5/cfg/projects/-w-x/$UUID.jsonl")
+    HOOKIN=$HOOKIN5
     H5ERR="$TMP/h5.err"
     hook5() {  # [VAR=VAL ...] — the prompt payload on stdin, stderr kept separate
         printf '%s' "$HOOKIN" | sess "$W5" "$@" -- --hook 2>"$H5ERR"
@@ -1922,6 +1923,22 @@ else
     rm -f "$W5/cfg/projects/-w-x/$UUID.jsonl"
     report "" "$(hook5)" "case 5: a derived name with no title in a transcript yet prints nothing"
     printf '{"type":"ai-title","aiTitle":"Later title"}\n' > "$W5/cfg/projects/-w-x/$UUID.jsonl"
+
+    # The transcript is the one the payload names. The hook never looks for it in
+    # the transcript store: that walk alone can outlast the entry's timeout.
+    mkdir -p "$W5/elsewhere"
+    printf '{"type":"ai-title","aiTitle":"Named by the payload"}\n' > "$W5/elsewhere/t.jsonl"
+    HOOKIN=$(printf '{"session_id":"%s","prompt_id":"p1","transcript_path":"%s"}' "$UUID" "$W5/elsewhere/t.jsonl")
+    report "Named by the payload" "$(hook5 | jq -r '.hookSpecificOutput.sessionTitle // ""')" \
+        "case 5: the title comes from the transcript the payload names, not the store's copy"
+    HOOKIN=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID")
+    report "0 []" "$(out=$(hook5); printf '%s [%s]' "$?" "$out")" \
+        "case 5: a payload naming no transcript promotes nothing, with a titled one in the store"
+    HOOKIN=$(printf '{"session_id":"%s","prompt_id":"p1","transcript_path":"%s"}' "$UUID" "$W5/elsewhere/absent.jsonl")
+    report "0 []" "$(out=$(hook5); printf '%s [%s]' "$?" "$out")" \
+        "case 5: ... and so does one naming a transcript that is not there"
+    HOOKIN=$HOOKIN5
+
     rm -f "$W5/cfg/sessions/$$.json"
     report "" "$(hook5)" "case 5: no presence record prints nothing"
 
@@ -2335,12 +2352,13 @@ else
     NOWI=$(date +%s)
     mkcache "$W18" me@example.com 10 10 $(( NOWI + 600 )) $(( NOWI + 6000 ))
     mkdir -p "$W18/cfg/projects/-w-x"
+    HOOKIN18=$(printf '{"session_id":"%s","prompt_id":"p1","transcript_path":"%s"}' "$UUID" "$W18/cfg/projects/-w-x/$UUID.jsonl")
     LONG=$(awk 'BEGIN{ s=""; for (i=0;i<300;i++) s = s "x"; print s }')
     jq -cn --arg t "$(printf 'Bad\001title\002here %s' "$LONG")" \
         '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
     printf '{"pid":%d,"sessionId":"%s","name":"w-x","nameSource":"derived","kind":"interactive","updatedAt":1}\n' \
         "$$" "$UUID" > "$W18/cfg/sessions/$$.json"
-    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    out=$(printf '%s' "$HOOKIN18" | sess "$W18" -- --hook 2>/dev/null)
     t=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.sessionTitle // ""')
     report 80 "$(printf '%s' "$t" | wc -c | tr -d ' ')" "case 18: a 300-character title is promoted at 80 characters"
     report no "$(printf '%s' "$t" | grep -q '[[:cntrl:]]' && echo yes || echo no)" \
@@ -2353,7 +2371,7 @@ else
     for ch in 漢 é; do
         jq -cn --arg t "$(awk -v c="$ch" 'BEGIN{ for (i=0;i<100;i++) printf "%s", c }')" \
             '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
-        out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+        out=$(printf '%s' "$HOOKIN18" | sess "$W18" -- --hook 2>/dev/null)
         t=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.sessionTitle // ""')
         report 80 "$(printf '%s' "$t" | jq -Rrs 'length')" "case 18: a 100-character '$ch' title is cut to 80 characters"
         report 0 "$(printf '%s' "$t" | LC_ALL=C grep -c "$(printf '\357\277\275')" || true)" \
@@ -2362,17 +2380,17 @@ else
     # Format and C1 control characters change how a name reads without showing
     # in it: a right-to-left override, a zero-width space, a bidi isolate, NEL.
     jq -cn '{type:"ai-title", aiTitle:"Safe\u202etitle\u200b \u2066here\u2069\u0085!"}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
-    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    out=$(printf '%s' "$HOOKIN18" | sess "$W18" -- --hook 2>/dev/null)
     report "Safetitle here!" "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.sessionTitle // ""')" \
         "case 18: format and C1 control characters are stripped from the promoted title"
     jq -cn --arg t "$(printf '\001\002\177')" '{type:"ai-title", aiTitle:$t}' > "$W18/cfg/projects/-w-x/$UUID.jsonl"
-    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    out=$(printf '%s' "$HOOKIN18" | sess "$W18" -- --hook 2>/dev/null)
     report "" "$out" "case 18: a title that is nothing but control characters promotes nothing"
 
     # A session whose name the user already set is never overwritten.
     printf '{"pid":%d,"sessionId":"%s","name":"chosen","kind":"interactive","updatedAt":1}\n' \
         "$$" "$UUID" > "$W18/cfg/sessions/$$.json"
-    out=$(printf '{"session_id":"%s","prompt_id":"p1"}' "$UUID" | sess "$W18" -- --hook 2>/dev/null)
+    out=$(printf '%s' "$HOOKIN18" | sess "$W18" -- --hook 2>/dev/null)
     report "" "$out" "case 18: a session with a named source is left alone (no envelope at all)"
 fi
 
