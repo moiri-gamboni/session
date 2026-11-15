@@ -5118,7 +5118,7 @@ else
         "decide: ... with no star on any figure, because nothing was verified"
     report nocurl "$(ddet http "$DLOG9")" "decide: ... and the row says why"
 
-    # ── a lapsed candidate whose cache carries no 5h window at all ────────────
+    # ── a lapsed candidate whose statusline cache carries no 5h window ────────
     # The statusline skips the 5h segment when the payload has none, so a login
     # last rendered with no open 5-hour window caches only its weekly. Once
     # that cache is older than the window itself, no 5-hour window from then
@@ -5144,6 +5144,69 @@ else
                 "decide: ... but an hour ago that window may still be open, so it fails closed"
         fi
     done
+
+    # ── a candidate on a plan with no 5-hour limit ────────────────────────────
+    # The usage endpoint answers such a login with `five_hour` null and no
+    # `session` row in limits[] beside its weekly rows (captured 2026-11-15),
+    # where a login that has the limit keeps its `session` row with no window
+    # open. So that answer says there is nothing to spend.
+    dbody_no5() {  # STUB TOKEN WEEK FABLE — the usage body of a login with no 5-hour limit
+        printf '{"five_hour":null,"limits":[{"kind":"weekly_all","percent":%s,"resets_at":"%s"},{"kind":"weekly_scoped","percent":%s,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+            "$3" "$DI1" "$4" "$DI1" > "$1/body.$2"
+    }
+    WN1=$(dworld); CN1=$(curlstub); DLOGN1="$WN1/data/switch-log.tsv"
+    dlive "$WN1" a@example.com tok-a
+    dvent "$WN1" a@example.com tok-a; dvent "$WN1" b@example.com tok-b
+    dbody "$CN1" tok-a 100 10 10; dbody_no5 "$CN1" tok-b 5 5
+    DCLOCK=$DNOW; DNOTIFY=""
+    out=$(dauto "$WN1" "$CN1" --trigger cap)
+    report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide: a candidate the endpoint answers with a weekly window and no 5-hour one has no 5-hour limit to be blocked on"
+    report yes "$(awk -F'\t' 'NR==1{print $7}' "$DLOGN1" | grep -q 'b@example.com=-/5/5\*' && echo yes || echo no)" \
+        "decide: ... and the row still records that window as absent, not as a figure nobody read"
+
+    # The same login once its token has lapsed: nothing is asked, but the last
+    # answer the endpoint gave is on disk and the plan has not changed since.
+    WN2=$(dworld); CN2=$(curlstub)
+    dlive "$WN2" a@example.com tok-a
+    dvent "$WN2" a@example.com tok-a
+    dvent "$WN2" b@example.com tok-b "$(( DNOW - 3600 ))000"      # lapsed: never probed
+    dbody "$CN2" tok-a 100 10 10
+    printf '{"rate_limits":{"five_hour":null,"seven_day":{"used_percentage":5,"resets_at":%s}}}\n' "$DFUT" \
+        > "$WN2/data/usage.b@example.com.json"
+    printf '{"fable":{"used_percentage":5,"resets_at":%s}}\n' "$DFUT" > "$WN2/data/fable.b@example.com.json"
+    touch -d "@$(( DREAL - 3600 ))" "$WN2/data/usage.b@example.com.json" "$WN2/data/fable.b@example.com.json"
+    out=$(dauto "$WN2" "$CN2" --trigger cap)
+    report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide: ... and a lapsed candidate whose last endpoint answer, an hour old, carried no 5-hour window is not blocked on it either"
+    report 0 "$(dasked "$CN2" tok-b)" "decide: ... its lapsed token never sent"
+
+    # Only the endpoint saying so counts. A 5-hour row whose figure cannot be
+    # read, or a body that names no 5-hour window under any key this reads, is
+    # a window nothing is known about, as it is for a shape that has moved.
+    for b5 in '{"kind":"session","percent":"100","resets_at":"%s"},' '{"kind":"five_hour","percent":100,"resets_at":"%s"},'; do
+        WN4=$(dworld); CN4=$(curlstub)
+        dlive "$WN4" a@example.com tok-a
+        dvent "$WN4" a@example.com tok-a; dvent "$WN4" b@example.com tok-b
+        dbody "$CN4" tok-a 100 10 10
+        # shellcheck disable=SC2059  # the row is the format: its one %s is the reset
+        printf '{"limits":['"$b5"'{"kind":"weekly_all","percent":5,"resets_at":"%s"},{"kind":"weekly_scoped","percent":5,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+            "$DI1" "$DI1" "$DI1" > "$CN4/body.tok-b"
+        out=$(dauto "$WN4" "$CN4" --trigger cap)
+        report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+            "decide: ... while a 5-hour window the answer does not say is absent stays unknown (${b5%%,*})"
+    done
+
+    # A body with no weekly window either is a body nothing could be read from.
+    WN3=$(dworld); CN3=$(curlstub)
+    dlive "$WN3" a@example.com tok-a
+    dvent "$WN3" a@example.com tok-a; dvent "$WN3" b@example.com tok-b
+    dbody "$CN3" tok-a 100 10 10
+    printf '{"limits":[{"kind":"weekly_scoped","percent":5,"resets_at":"%s","scope":{"model":{"display_name":"Fable"}}}]}\n' \
+        "$DI1" > "$CN3/body.tok-b"
+    out=$(dauto "$WN3" "$CN3" --trigger cap)
+    report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: ... while a candidate whose answer carries no weekly window either still fails closed"
 
     WD10=$(dworld); CD10=$(curlstub); DLOG10="$WD10/data/switch-log.tsv"
     dlive "$WD10" a@example.com tok-a

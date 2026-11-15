@@ -49,6 +49,11 @@
 # as blocked — that is exactly when the box most needs to move. `acct_rank`
 # ranks candidates only, so it passes 1 itself.
 #
+# One figure is settled before the first rule sees it: a candidate the usage
+# endpoint answered with no 5-hour window at all is on a plan with no 5-hour
+# limit, so `_acct_decide` passes its 5-hour figure as 0 (acct_no_five_hour,
+# section 4).
+#
 # ── the threshold is an argument ────────────────────────────────────────────
 # "Spent" means at or above a percentage the caller supplies, so the policy is
 # testable at any threshold; the decision in section 6 passes ACCT_SPENT_PCT.
@@ -265,7 +270,7 @@ _acct_probe_blank() {  # STATE [SCOPED_ROWS] -> a row whose every figure is unkn
 # nothing is known — `dead` would claim the endpoint rejected a token that was
 # never sent.
 acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5reset TAB wreset TAB freset TAB scoped
-  local login="$1" vf="$2" tok c u body code row five week fable r5 rw rf scoped
+  local login="$1" vf="$2" tok c u body code row five week fable r5 rw rf scoped none5
   command -v curl >/dev/null 2>&1 || { _acct_probe_blank nocurl; return 0; }
   tok=$(jq -r --argjson now "$(now_epoch)" '
       select((.claudeAiOauth.expiresAt // 0) / 1000 > $now + 60)
@@ -313,12 +318,21 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
   # The general windows too, in the statusline cache's shape, for `session
   # account` to list when they are the newer reading (acct_row): a login that is
   # not live has a statusline cache frozen at the switch, and listed from it a
-  # capped login shows the headroom it had then. A window the body did not
-  # carry is left out, which lists as n/a.
+  # capped login shows the headroom it had then. A window with no readable
+  # figure is left out, which lists as n/a. The 5-hour window is written as
+  # null instead when the body says there is none: `five_hour` null and no
+  # `session` row, the answer of a plan with no 5-hour limit, which is what
+  # acct_no_five_hour reads. A row that is there with a figure this cannot
+  # read, or a body naming the window under no key this knows, is left out
+  # like any other unknown.
   if [ "$five" != -1 ] || [ "$week" != -1 ]; then
+    none5=false
+    [ "$five" = -1 ] && jq -e 'has("five_hour") and .five_hour == null
+        and ([.limits[]? | select(.kind == "session")] | length == 0)' "$body" >/dev/null && none5=true
     u=$(session_cache_path "$login" usage)
-    jq -nc --argjson f "$five" --argjson w "$week" --argjson r5 "$r5" --argjson rw "$rw" '
-        {rate_limits: ((if $f >= 0 then {five_hour: {used_percentage: $f, resets_at: $r5}} else {} end)
+    jq -nc --argjson f "$five" --argjson w "$week" --argjson r5 "$r5" --argjson rw "$rw" --argjson n5 "$none5" '
+        {rate_limits: ((if $f >= 0 then {five_hour: {used_percentage: $f, resets_at: $r5}}
+                        elif $n5 then {five_hour: null} else {} end)
                      + (if $w >= 0 then {seven_day: {used_percentage: $w, resets_at: $rw}} else {} end))}' \
         > "$u.tmp.$$" && mv -f "$u.tmp.$$" "$u" || rm -f "$u.tmp.$$"
   fi
@@ -327,6 +341,21 @@ acct_probe() {  # LOGIN VAULTFILE -> state TAB five TAB week TAB fable TAB 5rese
   # one — which is the only version of that statement worth acting on.
   rm -f "$body" "$(session_cache_path "$login" probe-body)"
   printf 'good\t%s\n' "$row"
+}
+
+# True when the usage endpoint's last readable answer for LOGIN said the plan
+# has no 5-hour window: usage.<login>.json, which only acct_probe writes,
+# holding a weekly window beside a null 5-hour one. The endpoint says so only
+# for a plan with no 5-hour limit (captured 2026-11-15); a login that has the
+# limit keeps its `session` row with no window open. The file outlives the
+# token it was fetched with and a plan does not change when a token lapses, so
+# the answer stands on the frozen path too, until the next probe rewrites it.
+# A statusline cache says nothing of the kind: its payload drops the window
+# for a login that has the limit as well (acct_row).
+acct_no_five_hour() {  # LOGIN
+  local u
+  u=$(session_cache_path "$1" usage)
+  [ -s "$u" ] && jq -e '.rate_limits | has("seven_day") and has("five_hour") and .five_hour == null' "$u" >/dev/null
 }
 
 # Which account an access token belongs to, from the endpoint Claude Code's own
@@ -835,6 +864,10 @@ _acct_decide() {  # TRIGGER SID DRY
       livetier=$(acct_tier "$liveblocks")
       table="live=$name/$livetier/$fresh/$fg$nl"
     else
+      # No 5-hour figure beside a known weekly one, on a plan the endpoint said
+      # has no 5-hour limit: nothing there to be blocked on. `fg` above keeps
+      # the dash, so the row records the window as absent.
+      if [ "$f5" = -1 ] && [ "$wk" != -1 ] && acct_no_five_hour "$name"; then f5=0; fi
       # UNKNOWN_BLOCKS=1: everything ranked here is a candidate, so an unknown
       # general window fails it closed and an unknown Fable caps it at tier 1.
       blocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 1)
