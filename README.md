@@ -428,6 +428,8 @@ The reason is `session account use` for a manual switch. For an automatic one it
 - The marker is three lines, `from=<old login>`, `to=<new login>` and `reason=<reason>`, renamed into place so a poll never reads half of it. A marker without them, or one the module cannot read, still reloads, with no note. A session started after the marker was written shows nothing for it.
 - It needs the plugin ([Install](#install), step 3). Without it, `/reload-plugins` typed in each session does the same. A session started before the plugin was installed or updated picks the module up at its next start or `/reload-plugins`.
 
+**Earlier thinking stays with the login that wrote it** on Claude Fable 5.2, Sonnet 5.5 and Haiku 5.5 ([preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)); a Team seat and a personal plan on the same email are two logins for this too. After a switch the API leaves those thinking blocks out of each request, unbilled, and Claude answers without that reasoning. Claude Code says so once in the conversation, as `Claude can't use thinking from another organization`, and says nothing in a subagent. The transcript keeps the blocks, and by that notice a session resumed under the login that wrote them uses them again. Switching back for them moves every session a second time and leaves out the thinking written since. Claude Opus 5.5's thinking is read under every login.
+
 ### Automatic switching
 
 ```

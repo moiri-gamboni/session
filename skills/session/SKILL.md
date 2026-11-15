@@ -49,7 +49,7 @@ A reset time quoted in a usage-limit error, this session's or a subagent's, belo
 
 ## Switching logins — `session account`
 
-When a cap is spent and another subscription is saved, `session account` lists every login with its 5-hour, weekly and Fable used % and resets, and `session account use <row number | name | unique substring>` switches. The switch is box-wide, since every `claude` here shares the config dir, and lands on each running session's next request: no restart, no re-authentication, transcripts and `--resume` unaffected. Displayed %s lag one turn behind it. To add a login, run `/login`; the login it replaces is already saved, so `use` brings it back.
+When a cap is spent and another subscription is saved, `session account` lists every login with its 5-hour, weekly and Fable used % and resets, and `session account use <row number | name | unique substring>` switches. The switch is box-wide, since every `claude` here shares the config dir, and lands on each running session's next request: no restart, no re-authentication, transcripts and `--resume` unaffected. Displayed %s lag one turn behind it. To add a login, run `/login`; the login it replaces is already saved, so `use` brings it back. Claude Code's `Claude can't use thinking from another organization` notice after a switch is expected (README, "Running sessions after a switch"): carry on, and never switch back to recover that thinking.
 
 `FABLE` is Fable's own weekly cap: a login can have weekly headroom and still be out of Fable, so pick one with Fable headroom when the work needs Fable. `session account -h` explains `~0%`, `?`, `AGE` and seat names (`<email>+<org>`).
 
