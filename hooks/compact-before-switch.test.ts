@@ -27,6 +27,7 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
     files,
     tokens: undefined as number | undefined,
     compaction: 'ok' as 'ok' | 'veto' | 'reject',
+    refuseSubmit: false,
     compacts: [] as string[],
     submits: [] as string[],
     logs: [] as string[],
@@ -53,7 +54,7 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
   })
   on('prompt.submit', ($, e) => {
     w.submits.push(e.text)
-    return { text: e.text, origin: e.origin }
+    return w.refuseSubmit ? { drop: 'refused' } : { text: e.text, origin: e.origin }
   })
   on('ui.log', ($, e) => {
     w.logs.push(e.text)
@@ -137,6 +138,30 @@ test('a session under the floor, or one that has not answered since a compaction
   write(w, 2000, soon(NOW / 1000 + 7200))
   await w.clock.advance(30_000)
   expect(w.compacts).toEqual([])
+})
+
+test('a session that grows past the floor after the marker landed is compacted then', async ($, on) => {
+  const w = world(on)
+  await ready($, w, 150_000)
+  write(w, 1000)
+  await w.clock.advance(30_000)
+  expect(w.compacts).toEqual([])
+  w.tokens = BIG
+  await w.clock.advance(10_000)
+  expect(w.compacts).toHaveLength(1)
+})
+
+test('a session whose cache was cold when the marker landed is compacted once it is warm again', { timeoutMs: 120_000 }, async ($, on) => {
+  const w = world(on)
+  await ready($, w)
+  await w.clock.advance(HOUR + 1000)
+  write(w, 1000, soon(NOW / 1000 + 7200))
+  await w.clock.advance(30_000)
+  expect(w.compacts).toEqual([])
+  await begin($)
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.compacts).toHaveLength(1)
 })
 
 test('a session at the floor exactly is compacted', async ($, on) => {
@@ -309,7 +334,7 @@ test('mid-turn, the next model request is not sent; the turn is compacted and co
   expect(w.submits).toHaveLength(1)
 })
 
-test('mid-turn, a request is stopped once per marker', async ($, on) => {
+test('a stopped request does not stop the one after it', async ($, on) => {
   const w = world(on)
   w.tokens = BIG
   await $.session.start(START)
@@ -384,6 +409,21 @@ test('a failed compaction after a stopped request still continues the turn', asy
   expect(w.compacts).toHaveLength(1)
   expect(w.submits).toHaveLength(1)
   expect(w.submits[0]).not.toContain('was compacted')
+})
+
+test('a continuation the engine refuses is logged', async ($, on) => {
+  const w = world(on)
+  w.refuseSubmit = true
+  w.tokens = BIG
+  await $.session.start(START)
+  await begin($)
+  write(w, 1000)
+  await w.clock.advance(5000)
+  await step($, 0)
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.submits).toHaveLength(1)
+  expect(w.logs.join('\n')).toContain('was not continued: refused')
 })
 
 test('SESSION_SWITCH_SOON_MARKER names the marker in place of the config directory\'s', async ($, on) => {

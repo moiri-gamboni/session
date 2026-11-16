@@ -36,7 +36,7 @@ else
     claude plugin validate "$SDIR" > "$TMP/validate" 2>&1; rc=$?
     report 0 "$rc" "case 30: claude plugin validate accepts the plugin"
     hooked=$(grep 'register.ts hooks: ' "$TMP/validate")
-    for h in turn.start turn.complete turn.step session.start 'command.run{command=rate-limit-options}'; do
+    for h in turn.start turn.complete turn.step session.start 'session.start{isInteractive=true}' 'command.run{command=rate-limit-options}'; do
         report yes "$(printf '%s' "$hooked" | grep -qF -- "$h" && echo yes || echo no)" \
             "case 30: ... and reads the hooks module as hooking $h"
     done

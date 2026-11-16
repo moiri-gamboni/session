@@ -18,10 +18,19 @@ import type { MainLoop } from './main-loop'
 //
 // Compacting needs a context worth it and a cache that is warm: FLOOR tokens or
 // more, and a main-loop turn running or one that ended less than WARM_MS ago.
-// A cache that has gone cold costs the same to rewrite however it is compacted,
-// and a session under the floor has little to save. Subagents and headless runs
-// are left alone: only interactive sessions start the poll, and a subagent's
-// requests are never stopped.
+// A cold cache gains nothing, since the compaction itself would read the whole
+// context uncached, as the session's next request would anyway, and a session
+// under the floor has little to save. A session that does not qualify when the
+// marker lands keeps it pending, so one that grows past the floor or warms up
+// before the box moves is compacted then. Subagents and headless runs are left
+// alone: only interactive sessions start the poll, and a subagent's requests
+// are never stopped.
+//
+// `context.tokens` of $.session.usage() is what the last request carried (input,
+// cache-written and cache-read, not output), not a running total, and is absent
+// until a response has come back after a compaction. Observed on Claude Code
+// 2.1.325 beside the status line's context figure, which adds the response's
+// output tokens.
 //
 // $.session.compact() runs between turns and rejects while one runs, so a
 // session that is idle, with the main loop settled for SETTLE_MS as the reload
@@ -34,7 +43,9 @@ import type { MainLoop } from './main-loop'
 // tool_use paired with its tool_result, and the model finishes the task from
 // the summary; stopped at its first request, the user's prompt survives the
 // compaction too. The turn's end fires the Stop hooks and the submitted prompt
-// the UserPromptSubmit hooks, as any turn boundary does.
+// the UserPromptSubmit hooks, as any turn boundary does. Such a compaction
+// reaches the classic PreCompact and PostCompact hooks as trigger `manual`, so
+// the session tool's compaction gate, which holds only `auto`, lets it through.
 //
 // A rejected or vetoed compaction is logged and not retried: the marker is
 // spent either way.
@@ -47,7 +58,7 @@ const FLOOR = 200_000
 
 const field = (text: string, key: string) => text.match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1]
 
-type Soon = { key: string; login: string; reset: number; writtenAt: number }
+type Soon = { login: string; reset: number; writtenAt: number }
 
 export const register = (on: On, loop: MainLoop) => {
   // Shared by the poll and the turn.step hook. `due`: a compaction is pending,
@@ -93,7 +104,7 @@ export const register = (on: On, loop: MainLoop) => {
           const key = `${login}|${reset}`
           if (login && reset > 0 && key !== lastKey) {
             lastKey = key
-            pending = { key, login, reset, writtenAt: written }
+            pending = { login, reset, writtenAt: written }
           }
         }
         if (pending === undefined && !resume) return
@@ -107,12 +118,14 @@ export const register = (on: On, loop: MainLoop) => {
         due = qualifies && loop.busy
         if (loop.busy || now - loop.endedAt < SETTLE_MS) return
 
-        const soon = pending
         const stopped = resume
-        pending = undefined
         resume = false
+        if (!qualifies && !stopped) return
         let compacted = false
-        if (qualifies && soon !== undefined) {
+        const soon = qualifies ? pending : undefined
+        if (soon !== undefined) {
+          // Cleared before the first await, so an overlapping poll finds nothing.
+          pending = undefined
           const resets = new Date(soon.reset * 1000).toISOString().slice(0, 16).replace('T', ' ')
           $.ui.log(`compacting ahead of a login switch off ${soon.login} (its window resets ${resets} UTC)`)
           try {
@@ -131,7 +144,7 @@ export const register = (on: On, loop: MainLoop) => {
           if (submitted.drop !== undefined) $.ui.log(`the turn paused ahead of a login switch was not continued: ${submitted.drop}`)
         }
       })().catch((err: unknown) => {
-        $.ui.log(`compaction ahead of a login switch failed: ${String(err)}`)
+        $.ui.log(`the check for a compaction ahead of a login switch failed: ${String(err)}`)
       })
     })
     return started
