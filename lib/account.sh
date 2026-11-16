@@ -76,7 +76,10 @@
 #
 # Neither is a knob. No caller wants a different value, and the "a switch is
 # expensive, so make the cooldown tunable" argument was measured and does not
-# hold: the median switch costs 1,457 cache-creation tokens.
+# hold: the median switch costs 1,457 cache-creation tokens. The costly ones are
+# the few made under several large sessions with warm caches, each of which
+# rewrites its whole context, and the compaction ahead of a switch (below) is
+# for those.
 ACCT_COOLDOWN_S=900
 ACCT_PROBATION_S=600
 
@@ -91,8 +94,9 @@ ACCT_SPENT_PCT=98
 
 # From this figure the status line tells the plugin a move is coming, so it can
 # compact its large sessions while the old login's cache is still warm (README,
-# Automatic switching). Three points under the cap is a few minutes of work at
-# the pace that fills a window, and the compaction itself takes seconds.
+# Compacting ahead of a switch). Three points under ACCT_SPENT_PCT is minutes of
+# work on a 5-hour window at the pace that fills it, hours on a weekly one, and
+# a compaction takes a minute or two.
 # shellcheck disable=SC2034  # read by statusline.sh
 ACCT_SOON_PCT=95
 # How often that ask may probe the logins, whatever it found. Its own number,
@@ -1049,12 +1053,16 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
 # The marker is <config dir>/.session-switch-soon, three lines: login= the live
 # login, to= the login a cap would move the box to, reset= the epoch second the
 # window that crossed resets. It is written only when a login stands higher, so
-# a box with nowhere to go leaves the plugin inert, and once per login and
-# window, so the sessions compact once. A session's figures change often, so the
-# ask is also held to one per ACCT_SOON_ASK_S whatever it found: the stamp is
-# taken before the probe, not after, because the probe is the expense. Several
-# sessions asking in the same instant may each pass the stamp; their markers are
-# identical, which the plugin reads as one.
+# a box with nowhere to go leaves the plugin inert, and not again while it
+# names this login and window, so the sessions compact once for it. The marker
+# names one window: with the weekly and the 5-hour figures both past
+# ACCT_SOON_PCT it follows whichever the status line last named, and each change
+# lets a session that has grown past the floor again compact again. A session's
+# figures change often, so the ask is also held to one per ACCT_SOON_ASK_S
+# whatever it found: the stamp is taken before the probe, not after, because
+# the probe is the expense. Several sessions asking in the same instant may each
+# pass the stamp; one takes the decision lock and the rest read busy and write
+# nothing.
 #
 # `--dry-run --assume-spent` on the cap trigger is the decision a cap death on
 # the live login would take, so the marker covers both moves the box can make:

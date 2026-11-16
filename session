@@ -1723,7 +1723,7 @@ doctor_main() {
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
         newest_s have_e plat miss age crdl \
-        swmode swnote swlast swcap swts swev vaultn probeable capd scoped lockf vlive
+        swmode swpre swnote swlast swcap swts swev vaultn probeable capd scoped lockf vlive
 
   echo "-- session doctor -------------------------------------------------"
   echo "  code     $SESSION_HOME"
