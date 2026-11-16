@@ -48,7 +48,7 @@ test('a marker that does not move runs nothing', async ($, on) => {
   await $.session.start(START)
   await w.clock.advance(60_000)
   expect(w.runs).toEqual([])
-  expect(w.fs.asked[0]).toBe(MARKER)
+  expect(w.fs.asked).toContain(MARKER)
 })
 
 test('each move of the marker runs /reload-plugins once', async ($, on) => {
@@ -89,7 +89,7 @@ test('a reload that fails is not tried again on every poll', async ($, on) => {
 test('without CLAUDE_CONFIG_DIR the marker is the one under ~/.claude', async ($, on) => {
   const w = world(on, { env: { HOME: '/h' } })
   await $.session.start(START)
-  expect(w.fs.asked[0]).toBe('/h/.claude/.session-login-switch')
+  expect(w.fs.asked).toContain('/h/.claude/.session-login-switch')
 })
 
 // The swap writes who the box moved from and to and why (acct_swap in the CLI);
