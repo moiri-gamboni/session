@@ -615,6 +615,21 @@ render "$P27b" SESSION_DATA_DIR="$D27o" >/dev/null    # now owned by this login
 render "$P27c" SESSION_DATA_DIR="$D27o" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" "case 27: with SESSION_PRE_SWITCH_COMPACT off, nothing is asked"
+# A marker written before it was turned off would still compact the sessions
+# holding it, so the first fresh figure after that takes it away.
+D27m="$TMP/data27m"
+render "$P27a" SESSION_DATA_DIR="$D27m" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27m" >/dev/null    # now owned by this login
+printf 'login=%s\nto=other@example.com\nreset=%s\n' "$ACCT" "$FR" > "$CFG/.session-switch-soon"
+render "$P27c" SESSION_DATA_DIR="$D27m" >/dev/null
+report present "$([ -e "$CFG/.session-switch-soon" ] && echo present || echo absent)" \
+    "case 27: a render with the compaction on leaves a marker where it is"
+D27n="$TMP/data27n"
+render "$P27a" SESSION_DATA_DIR="$D27n" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27n" >/dev/null    # now owned by this login
+render "$P27c" SESSION_DATA_DIR="$D27n" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
+report absent "$([ -e "$CFG/.session-switch-soon" ] && echo present || echo absent)" \
+    "case 27: ... and with it off, a marker left from before is removed"
 D27p="$TMP/data27p"
 render "$P27a" SESSION_DATA_DIR="$D27p" >/dev/null
 render "$P27b" SESSION_DATA_DIR="$D27p" >/dev/null    # now owned by this login
