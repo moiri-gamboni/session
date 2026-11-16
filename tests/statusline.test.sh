@@ -509,9 +509,9 @@ callwait() {  # -> the stub's record once it has a line, or after ~5 s
 }
 D26="$TMP/data26"
 touch "$VAULT/$ACCT.json"   # newer than the credentials: no autosave call in the record
-P26a="$TMP/p26a.json"; mkpayload "$SID" 0.1 96 50 "$FR" "$WR" "switch" > "$P26a"
-P26b="$TMP/p26b.json"; mkpayload "$SID" 0.2 97 50 "$FR" "$WR" "switch" > "$P26b"
-P26c="$TMP/p26c.json"; mkpayload "$SID" 0.3 97 98 "$FR" "$WR" "switch" > "$P26c"
+P26a="$TMP/p26a.json"; mkpayload "$SID" 0.1 90 50 "$FR" "$WR" "switch" > "$P26a"
+P26b="$TMP/p26b.json"; mkpayload "$SID" 0.2 91 50 "$FR" "$WR" "switch" > "$P26b"
+P26c="$TMP/p26c.json"; mkpayload "$SID" 0.3 91 98 "$FR" "$WR" "switch" > "$P26c"
 render "$P26a" SESSION_DATA_DIR="$D26" >/dev/null    # first sighting: unowned, never fresh
 : > "$CALLS"
 render "$P26b" SESSION_DATA_DIR="$D26" >/dev/null
@@ -547,6 +547,79 @@ render "$P26a" SESSION_DATA_DIR="$D26o" >/dev/null
 render "$P26c" SESSION_DATA_DIR="$D26o" SESSION_AUTO_SWITCH=off >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" "case 26: with the switcher off, nothing is asked"
+
+echo "--- case 27: a fresh figure at 95% asks for a compaction ahead of the switch ---"
+
+# Same shape as case 26: a first sighting is never fresh, and the ask runs
+# detached, so the stub's record is polled for.
+touch "$VAULT/$ACCT.json"
+p27() {  # COST FIVE WEEK -> a payload file
+    mkpayload "$SID" "$1" "$2" "$3" "$FR" "$WR" "soon" > "$TMP/p27.$1.json"
+    printf '%s\n' "$TMP/p27.$1.json"
+}
+P27a=$(p27 0.1 90 50); P27b=$(p27 0.2 94 50); P27c=$(p27 0.3 95 50)
+P27d=$(p27 0.4 50 95); P27e=$(p27 0.5 97 50); P27f=$(p27 0.6 99 50)
+
+D27="$TMP/data27"
+render "$P27a" SESSION_DATA_DIR="$D27" >/dev/null    # first sighting: unowned, never fresh
+: > "$CALLS"
+render "$P27b" SESSION_DATA_DIR="$D27" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: a fresh figure below 95% asks for nothing"
+render "$P27c" SESSION_DATA_DIR="$D27" >/dev/null
+report "--switch-soon $ACCT $FR" "$(callwait)" \
+    "case 27: a fresh five-hour figure at 95% asks, naming the login and the window's reset"
+: > "$CALLS"
+render "$P27c" SESSION_DATA_DIR="$D27" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: ... and the same figure rendered again asks nothing more"
+render "$P27d" SESSION_DATA_DIR="$D27" >/dev/null
+report "--switch-soon $ACCT $WR" "$(callwait)" \
+    "case 27: a fresh weekly figure at 95% asks too, with the weekly window's reset"
+: > "$CALLS"
+render "$P27e" SESSION_DATA_DIR="$D27" >/dev/null
+report "--switch-soon $ACCT $FR" "$(callwait)" \
+    "case 27: a figure between 95% and 98% still asks"
+
+# At 98% the decision itself is asked, and that is all: the ask for a compaction
+# would hold the decision lock the decision needs.
+: > "$CALLS"
+render "$P27f" SESSION_DATA_DIR="$D27" >/dev/null
+report "account auto --trigger usage --sid $SID" "$(callwait)" \
+    "case 27: a figure at 98% or more asks the decision and not the compaction"
+sleep 1
+report 1 "$(grep -c . "$CALLS")" "case 27: ... and nothing else"
+
+D27o="$TMP/data27o"
+render "$P27a" SESSION_DATA_DIR="$D27o" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27o" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27c" SESSION_DATA_DIR="$D27o" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: with SESSION_PRE_SWITCH_COMPACT off, nothing is asked"
+D27p="$TMP/data27p"
+render "$P27a" SESSION_DATA_DIR="$D27p" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27p" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27c" SESSION_DATA_DIR="$D27p" SESSION_AUTO_SWITCH=off >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: with the switcher off, nothing is asked"
+D27q="$TMP/data27q"
+render "$P27a" SESSION_DATA_DIR="$D27q" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27q" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27f" SESSION_DATA_DIR="$D27q" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
+report "account auto --trigger usage --sid $SID" "$(callwait)" \
+    "case 27: ... and turning the compaction off leaves the decision at 98% alone"
+
+D27s="$TMP/data27s"
+render "$P27a" SESSION_DATA_DIR="$D27s" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27s" >/dev/null    # owned by the first login
+: > "$CALLS"
+render "$P27c" SESSION_DATA_DIR="$D27s" CLAUDE_CONFIG_DIR="$CFG26" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" \
+    "case 27: the first fresh figure after a login switch asks nothing, as at 98%"
 
 echo "--- case 25: an unreadable lib is a refusal, not a wrong status line ---"
 

@@ -185,10 +185,26 @@ fi
 # what those asks cost. Detached, with every stream closed, because the decision
 # probes each login for up to 5 s and nothing here reads its outcome; its lock,
 # cooldown and audit row are its own.
+#
+# Short of that, from ACCT_SOON_PCT, the plugin is told a move is coming so it
+# can compact the large sessions first (`session --switch-soon`, lib/account.sh;
+# hooks/compact-before-switch.ts). This render only compares figures: whether a
+# login could take over, and the once-per-window bookkeeping, are the ask's own.
+# At ACCT_SPENT_PCT the decision is asked instead and this is not: the ask runs
+# the same probe under the decision's lock, and a decision that finds the lock
+# held reports busy and does not run.
 if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITCH" = on ]; then
   . "$SESSION_HOME/lib/account.sh"
-  if [ "$(_intonly "$_f5")" -ge "$ACCT_SPENT_PCT" ] || [ "$(_intonly "$_w7")" -ge "$ACCT_SPENT_PCT" ]; then
+  _f5i=$(_intonly "$_f5"); _w7i=$(_intonly "$_w7")
+  if [ "$_f5i" -ge "$ACCT_SPENT_PCT" ] || [ "$_w7i" -ge "$ACCT_SPENT_PCT" ]; then
     ( "$SESSION_HOME/session" account auto --trigger usage --sid "$_sid" </dev/null >/dev/null 2>&1 & )
+  elif [ "$SESSION_PRE_SWITCH_COMPACT" != off ]; then
+    # The reset of the window that crossed, so one marker covers one window.
+    _soon=0
+    if [ "$_f5i" -ge "$ACCT_SOON_PCT" ] && [ "$_new_fr" -gt "$_now" ]; then _soon=$_new_fr
+    elif [ "$_w7i" -ge "$ACCT_SOON_PCT" ] && [ "$_new_wr" -gt "$_now" ]; then _soon=$_new_wr
+    fi
+    [ "$_soon" -gt 0 ] && ( "$SESSION_HOME/session" --switch-soon "$_acct" "$_soon" </dev/null >/dev/null 2>&1 & )
   fi
 fi
 
