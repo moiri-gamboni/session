@@ -872,11 +872,10 @@ _acct_decide() {  # TRIGGER SID DRY ASSUME
         # network-down case, and must not read as blocked — that is exactly
         # when the box most needs another login.
         #
-        # Assuming it spent puts its two general windows at the threshold and
-        # keeps what it really has for Fable, so what is ranked is where the
-        # box would go if the cap came now.
+        # Assuming it spent puts it on tier 0, where a cap would leave it, so
+        # what is ranked is where the box would go if the cap came now.
         if [ "$assume" = 1 ]; then
-          liveblocks=$(acct_blocked "$thr" "$thr" "$thr" "$fb" 0)
+          liveblocks='5h,week'
         else
           liveblocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 0)
         fi

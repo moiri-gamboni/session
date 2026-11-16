@@ -590,6 +590,24 @@ report "account auto --trigger usage --sid $SID" "$(callwait)" \
 sleep 1
 report 1 "$(grep -c . "$CALLS")" "case 27: ... and nothing else"
 
+# Both windows over the line: the five-hour one's reset names the marker; and a
+# window whose reset has already passed names nothing to cover.
+D27b="$TMP/data27b"
+P27g=$(p27 0.7 96 96)
+render "$P27a" SESSION_DATA_DIR="$D27b" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27b" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27g" SESSION_DATA_DIR="$D27b" >/dev/null
+report "--switch-soon $ACCT $FR" "$(callwait)" "case 27: both windows at 95% name the five-hour window's reset"
+D27r="$TMP/data27r"
+P27h="$TMP/p27h.json"; mkpayload "$SID" 0.8 96 50 "$(( NOW - 60 ))" "$WR" "soon" > "$P27h"
+render "$P27a" SESSION_DATA_DIR="$D27r" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27r" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27h" SESSION_DATA_DIR="$D27r" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: a window whose reset has already passed asks nothing"
+
 D27o="$TMP/data27o"
 render "$P27a" SESSION_DATA_DIR="$D27o" >/dev/null
 render "$P27b" SESSION_DATA_DIR="$D27o" >/dev/null    # now owned by this login

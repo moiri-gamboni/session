@@ -5628,11 +5628,6 @@ DFAILEOF
     report '- no-candidate' "$(dkv to "$out") $(dkv reason "$out")" \
         "assume-spent: no login standing above the spent one is a hold with no target"
 
-    dbody "$CA" tok-a 10 10 100     # live: Fable spent too
-    dbody "$CA" tok-b 10 10 10
-    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger usage)
-    report 'b@example.com' "$(dkv to "$out")" \
-        "assume-spent: the live login's own Fable figure still counts, and does not hide a target"
 
     out=$(dauto "$WA" "$CA" --assume-spent --trigger usage); rc=$?
     report 5 "$rc" "assume-spent: without --dry-run it is an error, never a swap"
