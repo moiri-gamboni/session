@@ -5709,6 +5709,17 @@ DFAILEOF
     report "$(printf 'login=a@example.com\nto=b@example.com\nreset=4000000000')" "$(cat "$MN" 2>&1)" \
         "switch-soon: ... and writes the marker once a login stands higher"
 
+    # A login that serves everything but Fable is where a cap death would send
+    # the box, though the status line's 98% trigger would not: it gets a marker.
+    WSF=$(dworld); CSF=$(curlstub); MSF="$WSF/cfg/.session-switch-soon"
+    dlive "$WSF" a@example.com tok-a
+    dvent "$WSF" a@example.com tok-a; dvent "$WSF" b@example.com tok-b
+    dbody "$CSF" tok-a 96 10 10; dbody "$CSF" tok-b 10 10 100
+    DCLOCK=$DNOW
+    out=$(dsoon "$WSF" "$CSF" a@example.com 4000000000)
+    report 'to=b@example.com' "$(grep '^to=' "$MSF" 2>&1)" \
+        "switch-soon: a login lacking only Fable is one a cap death would move to, so it gets a marker"
+
     # The mode is the kill switch's to hold, and the switcher's.
     WK=$(dworld); CK=$(curlstub); MK="$WK/cfg/.session-switch-soon"
     dlive "$WK" a@example.com tok-a

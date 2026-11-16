@@ -1056,8 +1056,10 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
 # sessions asking in the same instant may each pass the stamp; their markers are
 # identical, which the plugin reads as one.
 #
-# `--dry-run --assume-spent` on the usage trigger is the decision the box would
-# take at ACCT_SPENT_PCT, so the target is the one the move would really make.
+# `--dry-run --assume-spent` on the cap trigger is the decision a cap death on
+# the live login would take, so the marker covers both moves the box can make:
+# the one at ACCT_SPENT_PCT, onto a login serving every model, and the one a
+# cap death makes onto a login that serves everything but Fable.
 # The login the status line saw must still be the live one: a marker naming a
 # login the box has left would be read as a switch coming off the new one.
 acct_switch_soon() {  # LOGIN RESET
@@ -1082,7 +1084,7 @@ acct_switch_soon() {  # LOGIN RESET
   [ -w "$SESSION_DATA" ] || return 0
   printf '%s\n' "$now" > "$stamp"
 
-  out=$(acct_auto --dry-run --assume-spent --trigger usage)
+  out=$(acct_auto --dry-run --assume-spent --trigger cap)
   [ "$(_acct_out_val from "$out")" = "$login" ] || return 0
   to=$(_acct_out_val to "$out")
   [ -n "$to" ] && [ "$to" != - ] || return 0
