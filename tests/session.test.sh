@@ -5582,6 +5582,158 @@ DFAILEOF
     report bad-option "$(dkv reason "$out")" "decide: ... named as one"
     report absent "$([ -e "$WD25/data/switch-log.tsv" ] && echo present || echo absent)" \
         "decide: ... and nothing is decided on it"
+
+    # ── --assume-spent: where a cap on the live login would send the box ──────
+    # The ask behind the status line's 95% trigger. The live login is ranked as
+    # if its five-hour and weekly windows were spent, on the figures it really
+    # has for Fable, and everything else is a dry run.
+    DNOTE_AS="$TMP/decide-notified-as"
+    DNOTIFY_AS="$TMP/decide-notify-as.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' "$DNOTE_AS" > "$DNOTIFY_AS"; chmod 755 "$DNOTIFY_AS"
+    WA=$(dworld); CA=$(curlstub); DLOGA="$WA/data/switch-log.tsv"
+    dlive "$WA" a@example.com tok-a
+    dvent "$WA" a@example.com tok-a; dvent "$WA" b@example.com tok-b; dvent "$WA" c@example.com tok-c
+    dbody "$CA" tok-a 96 10 10      # live: still serving everything
+    dbody "$CA" tok-b 10 10 10      # clear on every window
+    dbody "$CA" tok-c 10 10 100     # serves everything but Fable
+    DCLOCK=$DNOW; DNOTIFY=$DNOTIFY_AS
+    cp "$WA/cfg/.credentials.json" "$TMP/decide-creds-assume"
+    out=$(dauto "$WA" "$CA" --dry-run --trigger usage); rc=$?
+    report 'dry-run - live-clean' "$(dkv ev "$out") $(dkv to "$out") $(dkv reason "$out")" \
+        "assume-spent: without it, a live login still serving every model holds, so the control moves nowhere"
+    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger usage); rc=$?
+    report 3 "$rc" "assume-spent: a dry run that finds a login exits 3, like any dry run"
+    report 'dry-run b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "assume-spent: ... names the login a cap would move the box to, on the tier it would land on"
+    report yes "$(printf '%s\n' "$out" | grep -q '^live=a@example.com/0/probe/96/10/10$' && echo yes || echo no)" \
+        "assume-spent: ... ranking the live login as on tier 0, with its real figures still shown"
+    report absent "$([ -e "$DLOGA" ] && echo present || echo absent)" "assume-spent: ... writing no audit row"
+    report yes "$(cmp -s "$TMP/decide-creds-assume" "$WA/cfg/.credentials.json" && echo yes || echo no)" \
+        "assume-spent: ... swapping nothing"
+    report no "$([ -e "$WA/cfg/.session-login-switch" ] && echo yes || echo no)" "assume-spent: ... and leaving no switch marker"
+    report absent "$([ -e "$DNOTE_AS" ] && echo present || echo absent)" "assume-spent: ... and notifying no one"
+
+    # The login the box would land on is the one the usage trigger would pick:
+    # that trigger moves only onto a login serving every model.
+    dbody "$CA" tok-b 10 10 100     # now b serves everything but Fable too
+    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger usage)
+    report '- no-candidate' "$(dkv to "$out") $(dkv reason "$out")" \
+        "assume-spent: a login lacking only Fable is no target on the usage trigger"
+    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger cap)
+    report 'b@example.com 1' "$(dkv to "$out") $(dkv tier "$out")" \
+        "assume-spent: ... while the cap trigger would take it"
+    dbody "$CA" tok-b 100 10 10     # b is spent on its five-hour window
+    dbody "$CA" tok-c 10 100 10     # c on its weekly
+    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger usage)
+    report '- no-candidate' "$(dkv to "$out") $(dkv reason "$out")" \
+        "assume-spent: no login standing above the spent one is a hold with no target"
+
+    dbody "$CA" tok-a 10 10 100     # live: Fable spent too
+    dbody "$CA" tok-b 10 10 10
+    out=$(dauto "$WA" "$CA" --dry-run --assume-spent --trigger usage)
+    report 'b@example.com' "$(dkv to "$out")" \
+        "assume-spent: the live login's own Fable figure still counts, and does not hide a target"
+
+    out=$(dauto "$WA" "$CA" --assume-spent --trigger usage); rc=$?
+    report 5 "$rc" "assume-spent: without --dry-run it is an error, never a swap"
+    report 'fail bad-option' "$(dkv ev "$out") $(dkv reason "$out")" "assume-spent: ... named as a bad option"
+    report yes "$(cmp -s "$TMP/decide-creds-assume" "$WA/cfg/.credentials.json" && echo yes || echo no)" \
+        "assume-spent: ... with the live credentials untouched"
+    report absent "$([ -e "$DLOGA" ] && echo present || echo absent)" "assume-spent: ... and no audit row"
+
+    # A decision taken a few minutes ago holds every plain dry run on the
+    # cooldown; the ask is about where a cap would send the box, so it is
+    # neither held by that nor the start of one.
+    WC=$(dworld); CC=$(curlstub); DLOGC="$WC/data/switch-log.tsv"
+    dlive "$WC" a@example.com tok-a
+    dvent "$WC" a@example.com tok-a; dvent "$WC" b@example.com tok-b; dvent "$WC" c@example.com tok-c
+    dbody "$CC" tok-a 100 10 10; dbody "$CC" tok-b 10 10 10; dbody "$CC" tok-c 10 10 10
+    DCLOCK=$DNOW; DNOTIFY=""
+    out=$(dauto "$WC" "$CC" --trigger cap); rc=$?
+    report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" "assume-spent: (fixture) a decision moved the box to b"
+    DCLOCK=$(( DNOW + ACCT_PROBATION_S + 1 ))
+    out=$(dauto "$WC" "$CC" --dry-run --trigger usage)
+    report 'dry-run cooldown' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "assume-spent: (control) a plain dry run inside the cooldown is held by it"
+    out=$(dauto "$WC" "$CC" --dry-run --assume-spent --trigger usage)
+    report 'dry-run c@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
+        "assume-spent: ... the ask is not, and names where a cap would send the box now"
+    report 1 "$(grep -c . "$DLOGC")" "assume-spent: ... and starts no cooldown of its own: the log still holds the one decision"
+
+    # ── session --switch-soon: the marker the plugin compacts on ──────────────
+    # One ask per quarter hour, one marker per login and window, and a marker
+    # only when a login could take over.
+    dsoon() {  # WORLD STUB LOGIN RESET [VAR=VAL ...] — one ask, as the status line makes it
+        local w="$1" c="$2" l="$3" r="$4"; shift 4
+        sess "$w" PATH="$c:$PATH" SESSION_ACCOUNTS_DIR="$w/vault" SESSION_NOW="$DCLOCK" \
+            SESSION_SWITCH_NOTIFY="" ${1+"$@"} -- --switch-soon "$l" "$r" 2>&1
+    }
+    WS=$(dworld); CS=$(curlstub); MS="$WS/cfg/.session-switch-soon"
+    dlive "$WS" a@example.com tok-a
+    dvent "$WS" a@example.com tok-a; dvent "$WS" b@example.com tok-b
+    dbody "$CS" tok-a 96 10 10; dbody "$CS" tok-b 10 10 10
+    cp "$WS/cfg/.credentials.json" "$TMP/decide-creds-soon"
+    DCLOCK=$DNOW
+    out=$(dsoon "$WS" "$CS" a@example.com 4000000000); rc=$?
+    report 0 "$rc" "switch-soon: an ask exits 0"
+    report "$(printf 'login=a@example.com\nto=b@example.com\nreset=4000000000')" "$(cat "$MS" 2>&1)" \
+        "switch-soon: ... leaving a marker naming the live login, where the box would go and the window's reset"
+    report "" "$(ls -a "$WS/cfg" | grep '^\.session-switch-soon\.' || true)" \
+        "switch-soon: ... written whole, with no temp file left beside it"
+    report yes "$(cmp -s "$TMP/decide-creds-soon" "$WS/cfg/.credentials.json" && echo yes || echo no)" \
+        "switch-soon: ... swapping nothing"
+    report no "$([ -e "$WS/cfg/.session-login-switch" ] && echo yes || echo no)" "switch-soon: ... and writing no switch marker"
+    report absent "$([ -e "$WS/data/switch-log.tsv" ] && echo present || echo absent)" "switch-soon: ... or audit row"
+
+    rm -f "$CS/asked.tok-b" "$CS/asked.tok-a"
+    DCLOCK=$(( DNOW + ACCT_SOON_ASK_S + 1 ))
+    out=$(dsoon "$WS" "$CS" a@example.com 4000000000)
+    report 0 "$(dasked "$CS" tok-a tok-b)" \
+        "switch-soon: a marker that already names the login and the window is not asked for again, however long after"
+    out=$(dsoon "$WS" "$CS" a@example.com 4000003600)
+    report 'reset=4000003600' "$(grep '^reset=' "$MS")" "switch-soon: ... but another window's reset is a new marker"
+
+    # No login to move to: no marker, and the next ask waits out the quarter hour.
+    WN=$(dworld); CN=$(curlstub); MN="$WN/cfg/.session-switch-soon"
+    dlive "$WN" a@example.com tok-a
+    dvent "$WN" a@example.com tok-a; dvent "$WN" b@example.com tok-b
+    dbody "$CN" tok-a 96 10 10; dbody "$CN" tok-b 100 10 10
+    DCLOCK=$DNOW
+    out=$(dsoon "$WN" "$CN" a@example.com 4000000000); rc=$?
+    report absent "$([ -e "$MN" ] && echo present || echo absent)" "switch-soon: with no login standing higher there is no marker"
+    report 1 "$(dasked "$CN" tok-a)" "switch-soon: ... the ask having looked"
+    rm -f "$CN/asked.tok-a"
+    dbody "$CN" tok-b 10 10 10
+    DCLOCK=$(( DNOW + ACCT_SOON_ASK_S - 1 ))
+    out=$(dsoon "$WN" "$CN" a@example.com 4000000000)
+    report 0 "$(dasked "$CN" tok-a)" "switch-soon: ... and asks nothing for 15 minutes"
+    report absent "$([ -e "$MN" ] && echo present || echo absent)" "switch-soon: ... so a login that has since become available waits too"
+    DCLOCK=$(( DNOW + ACCT_SOON_ASK_S ))
+    out=$(dsoon "$WN" "$CN" a@example.com 4000000000)
+    report 1 "$(dasked "$CN" tok-a)" "switch-soon: ... then asks again"
+    report "$(printf 'login=a@example.com\nto=b@example.com\nreset=4000000000')" "$(cat "$MN" 2>&1)" \
+        "switch-soon: ... and writes the marker once a login stands higher"
+
+    # The mode is the kill switch's to hold, and the switcher's.
+    WK=$(dworld); CK=$(curlstub); MK="$WK/cfg/.session-switch-soon"
+    dlive "$WK" a@example.com tok-a
+    dvent "$WK" a@example.com tok-a; dvent "$WK" b@example.com tok-b
+    dbody "$CK" tok-a 96 10 10; dbody "$CK" tok-b 10 10 10
+    DCLOCK=$DNOW
+    out=$(dsoon "$WK" "$CK" a@example.com 4000000000 SESSION_PRE_SWITCH_COMPACT=off); rc=$?
+    report "0 absent 0" "$rc $([ -e "$MK" ] && echo present || echo absent) $(dasked "$CK" tok-a tok-b)" \
+        "switch-soon: SESSION_PRE_SWITCH_COMPACT=off asks nothing and writes no marker"
+    out=$(dsoon "$WK" "$CK" a@example.com 4000000000 SESSION_PRE_SWITCH_COMPACT=maybe); rc=$?
+    report "4 absent 0" "$rc $([ -e "$MK" ] && echo present || echo absent) $(dasked "$CK" tok-a tok-b)" \
+        "switch-soon: a value that is neither on nor off is refused rather than guessed at"
+    report yes "$(printf '%s\n' "$out" | grep -q 'SESSION_PRE_SWITCH_COMPACT' && echo yes || echo no)" \
+        "switch-soon: ... saying which variable"
+    out=$(dsoon "$WK" "$CK" a@example.com 4000000000 SESSION_AUTO_SWITCH=off)
+    report absent "$([ -e "$MK" ] && echo present || echo absent)" "switch-soon: with the switcher off there is no marker"
+    DCLOCK=$(( DNOW + ACCT_SOON_ASK_S ))
+    out=$(dsoon "$WK" "$CK" other@example.com 4000000000)
+    report absent "$([ -e "$MK" ] && echo present || echo absent)" \
+        "switch-soon: an ask for a login that is no longer live writes no marker"
 fi
 
 echo "--- arm: a cap death decides before the waiter sleeps ---"
@@ -6366,6 +6518,15 @@ else
     out=$(ddoc "$WDC" SESSION_AUTO_SWITCH=yes); rc=$?
     report 1 "$rc" "doctor: a mode the verb cannot read is a failure, not an absence"
     report FAIL "$(dcstate "$out" switcher)" "doctor: ... every decision would refuse on it"
+
+    out=$(ddoc "$WDC" SESSION_PRE_SWITCH_COMPACT=off); rc=$?
+    report 0 "$rc" "doctor: the compaction ahead of a switch turned off is not a failure"
+    report yes "$(dcsays "$out" switcher 'compaction ahead of a switch off')" "doctor: ... and the switcher line says so"
+    out=$(ddoc "$WDC")
+    report yes "$(dcsays "$out" switcher 'compaction ahead of a switch on')" "doctor: ... where it is on, the line says that"
+    out=$(ddoc "$WDC" SESSION_PRE_SWITCH_COMPACT=sometimes); rc=$?
+    report 1 "$rc" "doctor: a value for it that is neither on nor off is a failure"
+    report yes "$(dcsays "$out" switcher SESSION_PRE_SWITCH_COMPACT)" "doctor: ... naming the knob"
 
     # ── the trigger's wiring, probed structurally rather than by grep ────────
     WDC2=$(dcworld); dcarm "$WDC2" prompt

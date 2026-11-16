@@ -56,8 +56,8 @@ usage: install.sh [options]
 The last five are recorded in <config dir>/session.conf, because hooks, cron and
 tmux inherit no shell environment and an export in a shell profile reaches none
 of them. A re-run keeps the recorded values it does not itself carry, the lines
-no flag writes included (SESSION_AUTO_SWITCH, SESSION_SWITCH_NOTIFY
-and SESSION_TASK_WORKSPACES are set by hand). Paths are made
+no flag writes included (SESSION_AUTO_SWITCH, SESSION_PRE_SWITCH_COMPACT,
+SESSION_SWITCH_NOTIFY and SESSION_TASK_WORKSPACES are set by hand). Paths are made
 absolute: those same callers run from a directory you do not choose.
 USAGEEOF
 }
@@ -306,11 +306,12 @@ _conf_for SESSION_TMUX_MAIN_GUARD "$main_guard"
 _conf_for SESSION_ATTEND_GRACE    "$attend_grace"
 _conf_for SESSION_ATTEND_TAIL     "$attend_tail"
 _conf_for SESSION_PRIMARY_CFG     "$primary_cfg"
-# No flag writes these three — they are set by hand, and the conf is the only
+# No flag writes these four — they are set by hand, and the conf is the only
 # channel that reaches a hook. Kept so that a run carrying some other flag
 # rewrites the file without silently restoring a default: for the switcher's
 # mode, that would re-arm a box its owner had turned off.
 _conf_for SESSION_AUTO_SWITCH     ""
+_conf_for SESSION_PRE_SWITCH_COMPACT ""
 _conf_for SESSION_SWITCH_NOTIFY   ""
 _conf_for SESSION_TASK_WORKSPACES ""
 

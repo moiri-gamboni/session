@@ -89,6 +89,17 @@ ACCT_PROBATION_S=600
 # waiter uses to guess which window a dead turn hit.
 ACCT_SPENT_PCT=98
 
+# From this figure the status line tells the plugin a move is coming, so it can
+# compact its large sessions while the old login's cache is still warm (README,
+# Automatic switching). Three points under the cap is a few minutes of work at
+# the pace that fills a window, and the compaction itself takes seconds.
+# shellcheck disable=SC2034  # read by statusline.sh
+ACCT_SOON_PCT=95
+# How often that ask may probe the logins, whatever it found. Its own number,
+# not the decision cooldown's: it limits what an ask costs, where the cooldown
+# limits how often the box may move.
+ACCT_SOON_ASK_S=900
+
 # ── 3. pure selector ──────────────────────
 
 # One cell of the account table, or one figure from the usage endpoint, as an
@@ -755,8 +766,8 @@ _acct_next_eligible() {  # LIVETIER  (candidate rows on stdin) -> an epoch, or -
 }
 
 # The decision itself, already under the lock.
-_acct_decide() {  # TRIGGER SID DRY
-  local trigger="$1" sid="$2" dry="$3"
+_acct_decide() {  # TRIGGER SID DRY ASSUME
+  local trigger="$1" sid="$2" dry="$3" assume="$4"
   local thr cfg live now probeout n=0 vf name fresh star fg
   local state f5 wk fb r5 rw rf sc blocks ctier
   local livestate='-' livetier=2 liveblocks='-' scoped='-'
@@ -787,8 +798,9 @@ _acct_decide() {  # TRIGGER SID DRY
   [ -w "$SESSION_DATA" ] || { _acct_say hold "$live" - not-writable - -; return 3; }
 
   # ── the cooldown, box-wide ──
+  # An assume-spent ask is no decision: it is held by none and starts none.
   now=$(now_epoch)
-  if ! _acct_past_cooldown "$now" "$live" "$trigger"; then
+  if [ "$assume" != 1 ] && ! _acct_past_cooldown "$now" "$live" "$trigger"; then
     ev=hold
     # A usage trigger held here leaves no row: nothing died, and the status
     # line asks again on the next fresh figure, so a row per ask would only
@@ -859,7 +871,15 @@ _acct_decide() {  # TRIGGER SID DRY
         # UNKNOWN_BLOCKS=0: a live login that is merely unreadable is the
         # network-down case, and must not read as blocked — that is exactly
         # when the box most needs another login.
-        liveblocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 0)
+        #
+        # Assuming it spent puts its two general windows at the threshold and
+        # keeps what it really has for Fable, so what is ranked is where the
+        # box would go if the cap came now.
+        if [ "$assume" = 1 ]; then
+          liveblocks=$(acct_blocked "$thr" "$thr" "$thr" "$fb" 0)
+        else
+          liveblocks=$(acct_blocked "$thr" "$f5" "$wk" "$fb" 0)
+        fi
       fi
       livetier=$(acct_tier "$liveblocks")
       table="live=$name/$livetier/$fresh/$fg$nl"
@@ -950,13 +970,14 @@ _acct_decide() {  # TRIGGER SID DRY
   esac
 }
 
-acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run]
-  local trigger=manual sid=- dry=0 locked=0 dryflag="" out rc notify msg
+acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--assume-spent]]
+  local trigger=manual sid=- dry=0 assume=0 locked=0 dryflag="" out rc notify msg
   while [ $# -gt 0 ]; do
     case "$1" in
       --trigger) shift; trigger="${1:-}" ;;
       --sid)     shift; sid="${1:-}" ;;
       --dry-run) dry=1 ;;
+      --assume-spent) assume=1 ;;
       # How the locked child is entered, and deliberately not in the help: a
       # decision taken outside the lock is what the lock exists to prevent.
       --locked)  locked=1 ;;
@@ -971,8 +992,13 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run]
        _acct_say fail - - bad-trigger - -; return 5 ;;
   esac
   [ -n "$sid" ] || sid=-
+  # What a swap would do is not a question to ask of a login that is not spent.
+  if [ "$assume" = 1 ] && [ "$dry" != 1 ]; then
+    echo "session account auto: --assume-spent needs --dry-run" >&2
+    _acct_say fail - - bad-option - -; return 5
+  fi
 
-  [ "$locked" = 1 ] && { _acct_decide "$trigger" "$sid" "$dry"; return $?; }
+  [ "$locked" = 1 ] && { _acct_decide "$trigger" "$sid" "$dry" "$assume"; return $?; }
 
   # The lock file lives under the data root, and lock_run opening it is the
   # first thing here that touches the filesystem — so a root that cannot hold it
@@ -986,7 +1012,8 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run]
     _acct_say hold "$(acct_live_login)" - not-writable - -; return 3; }
 
   [ "$dry" = 1 ] && dryflag=--dry-run
-  # shellcheck disable=SC2086  # dryflag is one word or none, never a path
+  [ "$assume" = 1 ] && dryflag="$dryflag --assume-spent"
+  # shellcheck disable=SC2086  # dryflag is up to two words, never a path
   out=$(lock_run "$(acct_lock_file)" bash "$SESSION_HOME/session" account auto \
           --locked --trigger "$trigger" --sid "$sid" $dryflag)
   rc=$?
@@ -1013,6 +1040,56 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run]
                          "$(_acct_out_val tier "$out")")
   ( "$notify" "$msg" >/dev/null 2>&1 & )
   return $rc
+}
+
+# The ask behind the status line's ACCT_SOON_PCT trigger: tell the plugin the
+# box is about to move, so it compacts its large sessions while the old login's
+# prompt cache is still warm (hooks/compact-before-switch.ts reads the marker).
+# Run detached by the status line, so nothing reads its output or its exit code.
+#
+# The marker is <config dir>/.session-switch-soon, three lines: login= the live
+# login, to= the login a cap would move the box to, reset= the epoch second the
+# window that crossed resets. It is written only when a login stands higher, so
+# a box with nowhere to go leaves the plugin inert, and once per login and
+# window, so the sessions compact once. A session's figures change often, so the
+# ask is also held to one per ACCT_SOON_ASK_S whatever it found: the stamp is
+# taken before the probe, not after, because the probe is the expense. Several
+# sessions asking in the same instant may each pass the stamp; their markers are
+# identical, which the plugin reads as one.
+#
+# `--dry-run --assume-spent` on the usage trigger is the decision the box would
+# take at ACCT_SPENT_PCT, so the target is the one the move would really make.
+# The login the status line saw must still be the live one: a marker naming a
+# login the box has left would be read as a switch coming off the new one.
+acct_switch_soon() {  # LOGIN RESET
+  local login="$1" reset="$2" marker stamp now last out to
+  case "${SESSION_PRE_SWITCH_COMPACT:-on}" in
+    on) ;;
+    off) return 0 ;;
+    *) echo "session --switch-soon: SESSION_PRE_SWITCH_COMPACT is '${SESSION_PRE_SWITCH_COMPACT:-}' — it takes on or off" >&2
+       return 4 ;;
+  esac
+  marker="$(acct_cfg)/.session-switch-soon"
+  stamp="$SESSION_DATA/switch-soon.asked"
+  if [ -r "$marker" ] && grep -qxF "login=$login" "$marker" && grep -qxF "reset=$reset" "$marker"; then
+    return 0
+  fi
+  now=$(now_epoch)
+  if [ -r "$stamp" ]; then
+    read -r last < "$stamp" || last=0
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    [ $(( now - last )) -ge "$ACCT_SOON_ASK_S" ] || return 0
+  fi
+  [ -w "$SESSION_DATA" ] || return 0
+  printf '%s\n' "$now" > "$stamp"
+
+  out=$(acct_auto --dry-run --assume-spent --trigger usage)
+  [ "$(_acct_out_val from "$out")" = "$login" ] || return 0
+  to=$(_acct_out_val to "$out")
+  [ -n "$to" ] && [ "$to" != - ] || return 0
+  # Renamed into place so a poll that catches the mtime never reads half of it.
+  printf 'login=%s\nto=%s\nreset=%s\n' "$login" "$to" "$reset" > "$marker.$$" \
+    && mv -f "$marker.$$" "$marker" || rm -f "$marker.$$"
 }
 
 # ── 7. Claude Code's credential locks ─────

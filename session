@@ -1665,12 +1665,19 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  capability ladder than the live one (5h and weekly gate every
                  model, the Fable weekly gates only Fable). A window counts
                  as spent at 98%, and the status line asks for a decision
-                 when the live login reaches it. Every decision leaves a row
-                 in the data root's switch-log.tsv. Options:
+                 when the live login reaches it. From 95% it also has the
+                 plugin compact its large sessions first, when a login
+                 could take over (SESSION_PRE_SWITCH_COMPACT=off in
+                 session.conf turns that off alone). Every decision leaves
+                 a row in the data root's switch-log.tsv. Options:
                  --trigger cap|auth|usage|manual (what asked; default
                  manual),
                  --sid SID (the session it is for, recorded on the row),
-                 --dry-run (rank and print; swaps and sends nothing).
+                 --dry-run (rank and print; swaps and sends nothing),
+                 --assume-spent (with --dry-run only: rank the live login
+                 as if its 5h and weekly windows were spent, so to= names
+                 where a cap would move the box, or - for nowhere; the
+                 cooldown neither holds that nor starts one).
                  Prints k=v lines. Exits 0 switched, 3 held, 4 refused,
                  5 error; 1 or 75 mean another decision holds the lock.
                  SESSION_AUTO_SWITCH=off in session.conf disables it;
@@ -1694,6 +1701,7 @@ EOF
   esac
 }
 [ "${1:-}" = account ] && { shift; acct_main "$@"; exit $?; }
+[ "${1:-}" = --switch-soon ] && { shift; acct_switch_soon "$@"; exit $?; }
 
 # -- Wiring check (`session doctor`) ------------------------------------------
 # Effect-based: every check asks whether the thing works HERE, on this machine,
@@ -2045,10 +2053,13 @@ doctor_main() {
   fi
 
   swmode="${SESSION_AUTO_SWITCH:-on}"
+  swpre="${SESSION_PRE_SWITCH_COMPACT:-on}"
   if [ "$swmode" = off ]; then
     doc pending switcher "off — SESSION_AUTO_SWITCH=off, so neither a cap death nor the status line's 98% trigger moves this box; that line is also the feature's instant rollback"
   elif [ "$swmode" != on ]; then
     doc FAIL switcher "SESSION_AUTO_SWITCH is '$swmode' — it takes on or off, and every decision refuses until it does"
+  elif [ "$swpre" != on ] && [ "$swpre" != off ]; then
+    doc FAIL switcher "SESSION_PRE_SWITCH_COMPACT is '$swpre' — it takes on or off, and no compaction ahead of a switch is asked for until it does"
   elif [ -n "$SESSION_SWITCH_NOTIFY" ] && [ ! -x "$SESSION_SWITCH_NOTIFY" ]; then
     doc FAIL switcher "SESSION_SWITCH_NOTIFY=$SESSION_SWITCH_NOTIFY is not executable — the box would move login and nothing would say so"
   elif [ ! -s "$SESSION_CFG/.credentials.json" ]; then
@@ -2068,7 +2079,7 @@ doctor_main() {
   elif ! command -v curl >/dev/null 2>&1; then
     doc pending switcher "no curl on PATH — a decision still runs, on the frozen figures in the per-login caches rather than on what the endpoint says now"
   else
-    doc ok switcher "on · notify ${SESSION_SWITCH_NOTIFY:-none} · $vaultn logins, $probeable with a token · $swlast · $swcap"
+    doc ok switcher "on · notify ${SESSION_SWITCH_NOTIFY:-none} · $vaultn logins, $probeable with a token · $swlast · $swcap · compaction ahead of a switch $swpre"
   fi
   [ -z "$swnote" ] || doc ok switcher "$swnote"
 
@@ -2467,6 +2478,7 @@ Accounts (several subscription logins, one config dir; `session account -h`):
                                    SESSION_AUTO_SWITCH=off in session.conf turns
                                    both off. `session account -h` has the
                                    options, the exit codes and the k=v output
+                                   (and the compaction the plugin does from 95%)
   session account expiry [--notify] each saved login's sign-in end; --notify pushes
                                    two days and six hours ahead (run it from cron)
   Adding a login = run /login in a session; it is vaulted automatically, and the
@@ -2508,6 +2520,11 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
   session --post-tool-batch        PostToolBatch: stop an attended turn before the
                                    request that would reach the auto-compaction
                                    ceiling; always exit 0, silent unless it stops
+  session --switch-soon LOGIN RESET  the status line's ask from 95% of a window:
+                                   if another login would take the box at the cap,
+                                   write <config dir>/.session-switch-soon for the
+                                   plugin to compact its large sessions on (once per
+                                   login and window, one ask per 15 minutes)
   session --focus-mark in|out C P  tmux client-focus logger (attended time)
   session --focus-mark tick [AGE]  activity sampler (AGE = recency window in
                                    seconds, default 90; set it to one sampling
