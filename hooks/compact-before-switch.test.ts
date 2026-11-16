@@ -27,6 +27,8 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
     files,
     tokens: undefined as number | undefined,
     compaction: 'ok' as 'ok' | 'veto' | 'reject',
+    // A compaction under way: the engine answers the call only once this resolves.
+    running: undefined as Promise<void> | undefined,
     refuseSubmit: false,
     compacts: [] as string[],
     submits: [] as string[],
@@ -46,8 +48,9 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
   }))
   // The call reads the transcript to hand the hooks beneath it.
   on('session.messages', () => ({ value: [] }))
-  on('session.compact', ($, e) => {
+  on('session.compact', async ($, e) => {
     w.compacts.push('compact')
+    await w.running
     if (w.compaction === 'reject') throw new Error('a turn is running')
     if (w.compaction === 'veto') return { skip: 'held by a hook' }
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }
@@ -327,7 +330,7 @@ test('mid-turn, the next model request is not sent; the turn is compacted and co
   await w.clock.advance(10_000)
   expect(w.compacts).toEqual(['compact'])
   expect(w.submits).toHaveLength(1)
-  expect(w.submits[0]).toContain('was compacted ahead of a login switch')
+  expect(w.submits[0]).toContain('paused to compact the conversation ahead of a login switch')
   expect(w.submits[0]).toContain('Continue where you left off')
   await w.clock.advance(60_000)
   expect(w.compacts).toHaveLength(1)
@@ -408,7 +411,27 @@ test('a failed compaction after a stopped request still continues the turn', asy
   await w.clock.advance(10_000)
   expect(w.compacts).toHaveLength(1)
   expect(w.submits).toHaveLength(1)
-  expect(w.submits[0]).not.toContain('was compacted')
+})
+
+// A reload of the plugin's code during the compaction drops this module's
+// state, so the prompt that continues the turn has to be the engine's by then.
+test('the turn\'s continuation is submitted while the compaction is still running', async ($, on) => {
+  const w = world(on)
+  let finish = () => {}
+  w.running = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  w.tokens = BIG
+  await $.session.start(START)
+  await begin($)
+  write(w, 1000)
+  await w.clock.advance(5000)
+  await step($, 0)
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.compacts).toHaveLength(1)
+  expect(w.submits).toHaveLength(1)
+  finish()
 })
 
 test('a continuation the engine refuses is logged', async ($, on) => {

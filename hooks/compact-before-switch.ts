@@ -37,24 +37,31 @@ import type { MainLoop } from './main-loop'
 // module waits, compacts at the next poll. One in the middle of a turn is
 // stopped at its next model request: the turn.step hook answers it without
 // calling next, which sends no request and ends the turn with the tool results
-// it already holds in the transcript, and the poll compacts once the turn has
-// ended and submits a prompt that carries the work on. Observed on Claude Code
-// 2.1.325: the turn ends with reason `answer`, the transcript keeps every
-// tool_use paired with its tool_result, and the model finishes the task from
-// the summary; stopped at its first request, the user's prompt survives the
-// compaction too. The turn's end fires the Stop hooks and the submitted prompt
-// the UserPromptSubmit hooks, as any turn boundary does. Such a compaction
-// reaches the classic PreCompact and PostCompact hooks as trigger `manual`, so
-// the session tool's compaction gate, which holds only `auto`, lets it through.
+// it already holds in the transcript. Once the turn has ended the poll starts
+// the compaction and, without waiting for it, submits the prompt that carries
+// the work on. The engine holds a plugin's prompt until the session is idle, so
+// it runs after the compaction, and it is the engine's from then on: a reload
+// of the plugin's code during the compaction drops this module's state, and a
+// prompt submitted only after the compaction was lost with it, leaving the
+// turn stopped. Observed on Claude Code 2.1.325: the turn ends with reason
+// `answer`, the transcript keeps every tool_use paired with its tool_result,
+// the prompt is drawn under the conversation while the compaction runs, and
+// the model finishes the task from the summary, through such a reload too;
+// stopped at its first request, the user's prompt survives the compaction. The
+// turn's end fires the Stop hooks and the submitted prompt the UserPromptSubmit
+// hooks, as any turn boundary does. Such a compaction reaches the classic
+// PreCompact and PostCompact hooks as trigger `manual`, so the session tool's
+// compaction gate, which holds only `auto`, lets it through.
 //
 // A rejected or vetoed compaction is logged and not retried: the marker is
-// spent either way.
+// spent either way, and a stopped turn is continued whatever became of it.
 const MARKER = '.session-switch-soon'
 const SWITCHED = '.session-login-switch'
 const POLL_MS = 5000
 const SETTLE_MS = 2000
 const WARM_MS = 60 * 60 * 1000
 const FLOOR = 200_000
+const CONTINUE = 'This turn was paused to compact the conversation ahead of a login switch. Continue where you left off.'
 
 const field = (text: string, key: string) => text.match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1]
 
@@ -121,28 +128,27 @@ export const register = (on: On, loop: MainLoop) => {
         const stopped = resume
         resume = false
         if (!qualifies && !stopped) return
-        let compacted = false
+        let compacting: Promise<void> | undefined
         const soon = qualifies ? pending : undefined
         if (soon !== undefined) {
           // Cleared before the first await, so an overlapping poll finds nothing.
           pending = undefined
           const resets = new Date(soon.reset * 1000).toISOString().slice(0, 16).replace('T', ' ')
           $.ui.log(`compacting ahead of a login switch off ${soon.login} (its window resets ${resets} UTC)`)
-          try {
-            const result = await $.session.compact()
-            if (result.skip === undefined) compacted = true
-            else $.ui.log(`compaction ahead of a login switch skipped: ${result.skip}`)
-          } catch (err) {
-            $.ui.log(`compaction ahead of a login switch failed: ${String(err)}`)
-          }
+          compacting = $.session.compact().then(
+            (result) => {
+              if (result.skip !== undefined) $.ui.log(`compaction ahead of a login switch skipped: ${result.skip}`)
+            },
+            (err: unknown) => {
+              $.ui.log(`compaction ahead of a login switch failed: ${String(err)}`)
+            },
+          )
         }
         if (stopped) {
-          const text = compacted
-            ? 'The conversation was compacted ahead of a login switch. Continue where you left off.'
-            : 'This turn was paused ahead of a login switch. Continue where you left off.'
-          const submitted = await $.prompt.submit({ text })
+          const submitted = await $.prompt.submit({ text: CONTINUE })
           if (submitted.drop !== undefined) $.ui.log(`the turn paused ahead of a login switch was not continued: ${submitted.drop}`)
         }
+        await compacting
       })().catch((err: unknown) => {
         $.ui.log(`the check for a compaction ahead of a login switch failed: ${String(err)}`)
       })
