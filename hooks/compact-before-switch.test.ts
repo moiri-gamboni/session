@@ -30,6 +30,9 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
     // A compaction under way: the engine answers the call only once this resolves.
     running: undefined as Promise<void> | undefined,
     refuseSubmit: false,
+    // The engine rejecting a call outright, as a hook's deny or a changed API would.
+    submitThrows: false,
+    usageThrows: false,
     compacts: [] as string[],
     submits: [] as string[],
     logs: [] as string[],
@@ -43,9 +46,12 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
     const text = files[e.path]?.text
     return text !== undefined ? { value: text } : { deny: 'ENOENT' }
   })
-  on('session.usage', () => ({
+  on('session.usage', () => {
+    if (w.usageThrows) throw new Error('no usage')
+    return {
     value: { startedAt: 0, context: { window: 1_000_000, ...(w.tokens === undefined ? {} : { tokens: w.tokens }) }, rateLimits: [] },
-  }))
+    }
+  })
   // The call reads the transcript to hand the hooks beneath it.
   on('session.messages', () => ({ value: [] }))
   on('session.compact', async ($, e) => {
@@ -57,6 +63,7 @@ function world(on: On, { env = { CLAUDE_CONFIG_DIR: CFG } }: { env?: Record<stri
   })
   on('prompt.submit', ($, e) => {
     w.submits.push(e.text)
+    if (w.submitThrows) throw new Error('denied')
     return w.refuseSubmit ? { drop: 'refused' } : { text: e.text, origin: e.origin }
   })
   on('ui.log', ($, e) => {
@@ -179,7 +186,7 @@ test('a cache that has been cold for an hour is left alone', { timeoutMs: 120_00
   const w = world(on)
   await ready($, w)
   await w.clock.advance(HOUR + 1000)
-  write(w, 1000)
+  write(w, 1000, soon(NOW / 1000 + 7200))
   await w.clock.advance(10_000)
   expect(w.compacts).toEqual([])
 })
@@ -277,10 +284,11 @@ test('a compaction waits for the turn to end and settle', async ($, on) => {
   await $.session.start(START)
   await begin($)
   write(w, 1000)
-  await w.clock.advance(60_000)
+  await w.clock.advance(63_500)
   expect(w.compacts).toEqual([])
+  // The poll 1.5 s after the turn ended finds it not yet settled.
   await end($)
-  await w.clock.advance(1000)
+  await w.clock.advance(1500)
   expect(w.compacts).toEqual([])
   await w.clock.advance(5000)
   expect(w.compacts).toHaveLength(1)
@@ -447,6 +455,57 @@ test('a continuation the engine refuses is logged', async ($, on) => {
   await w.clock.advance(10_000)
   expect(w.submits).toHaveLength(1)
   expect(w.logs.join('\n')).toContain('was not continued: refused')
+})
+
+test('a continuation the engine rejects is logged as a turn left paused', async ($, on) => {
+  const w = world(on)
+  w.submitThrows = true
+  w.tokens = BIG
+  await $.session.start(START)
+  await begin($)
+  write(w, 1000)
+  await w.clock.advance(5000)
+  await step($, 0)
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.submits).toHaveLength(1)
+  expect(w.logs.join('\n')).toContain('was not continued: ')
+})
+
+test('a marker that is removed cancels the compaction it asked for', async ($, on) => {
+  const w = world(on)
+  await ready($, w, 150_000)
+  write(w, 1000)
+  await w.clock.advance(10_000)
+  delete w.files[MARKER]
+  await w.clock.advance(10_000)
+  w.tokens = BIG
+  await w.clock.advance(30_000)
+  expect(w.compacts).toEqual([])
+})
+
+test('after an idle compaction the next turn\'s requests are sent', async ($, on) => {
+  const w = world(on)
+  await ready($, w)
+  write(w, 1000)
+  await w.clock.advance(10_000)
+  expect(w.compacts).toHaveLength(1)
+  await begin($)
+  await step($, 0)
+  expect(w.requests).toEqual([0])
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.submits).toEqual([])
+})
+
+test('a check that keeps failing the same way is logged once', async ($, on) => {
+  const w = world(on)
+  w.usageThrows = true
+  await ready($, w)
+  write(w, 1000)
+  await w.clock.advance(60_000)
+  expect(w.logs).toHaveLength(1)
+  expect(w.logs[0]).toContain('the check for a compaction ahead of a login switch failed')
 })
 
 test('SESSION_SWITCH_SOON_MARKER names the marker in place of the config directory\'s', async ($, on) => {

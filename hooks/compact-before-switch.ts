@@ -10,14 +10,18 @@ import type { MainLoop } from './main-loop'
 // switch is coming by writing the marker below when the live login nears the end
 // of a window and another saved login could take over (acct_switch_soon in the
 // CLI), three lines: login= the live login, to= the login the box would move
-// to, reset= the epoch second its window resets, which together name the
-// marker. A session compacts at most once for each marker, and not at all when
-// the box has already switched, because compacting then reads the whole
+// to, reset= the epoch second its window resets. The login and the reset name
+// the marker. A session compacts at most once for each marker, and not at all
+// when the box has already switched, because compacting then reads the whole
 // context uncached on the new login: .session-login-switch newer than the
-// marker is that switch.
+// marker is that switch. A marker that is removed cancels what it asked for,
+// which is how SESSION_PRE_SWITCH_COMPACT=off reaches a session: the status
+// line removes the marker, and this module never reads the conf.
 //
 // Compacting needs a context worth it and a cache that is warm: FLOOR tokens or
-// more, and a main-loop turn running or one that ended less than WARM_MS ago.
+// more, and a main-loop turn running or one that ended less than WARM_MS ago,
+// the one-hour prompt-cache lifetime (Claude Code's promptCacheTtl of 1h;
+// under the shorter default a session idle past it is compacted cold).
 // A cold cache gains nothing, since the compaction itself would read the whole
 // context uncached, as the session's next request would anyway, and a session
 // under the floor has little to save. A session that does not qualify when the
@@ -98,12 +102,14 @@ export const register = (on: On, loop: MainLoop) => {
     let seen = await mtime(markerPath)
     let lastKey = ''
     let pending: Soon | undefined
+    let lastFailure = ''
 
     $.clock.every(POLL_MS, () => {
       void (async () => {
         const written = await mtime(markerPath)
         if (written !== seen) {
           seen = written
+          if (written === 0) pending = undefined
           // A torn or missing file reads as no marker; the next write is seen.
           const text = await $.fs.read(markerPath).catch(() => '')
           const login = field(text, 'login')
@@ -145,12 +151,18 @@ export const register = (on: On, loop: MainLoop) => {
           )
         }
         if (stopped) {
-          const submitted = await $.prompt.submit({ text: CONTINUE })
+          // A rejection is a hook's deny or an API that changed, and would be
+          // one again on a retry, so it is reported like a drop.
+          const submitted = await $.prompt.submit({ text: CONTINUE }).catch((err: unknown) => ({ drop: String(err) }))
           if (submitted.drop !== undefined) $.ui.log(`the turn paused ahead of a login switch was not continued: ${submitted.drop}`)
         }
         await compacting
       })().catch((err: unknown) => {
-        $.ui.log(`the check for a compaction ahead of a login switch failed: ${String(err)}`)
+        // Once for each different failure: one that repeats would otherwise
+        // draw a line every poll for as long as a marker is pending.
+        const failure = String(err)
+        if (failure !== lastFailure) $.ui.log(`the check for a compaction ahead of a login switch failed: ${failure}`)
+        lastFailure = failure
       })
     })
     return started
