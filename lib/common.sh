@@ -84,8 +84,8 @@ SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-on}"
 # another login to move to, tells the plugin to compact its large sessions
 # first. `on` or `off`, validated like the switch's own: with `off` no marker is
 # written and the status line removes one left from before, which cancels it in
-# the sessions holding it. Has no effect while SESSION_AUTO_SWITCH is off, which
-# stops the ask at the status line.
+# the sessions holding it. SESSION_AUTO_SWITCH=off does both too: it stops the
+# ask at the status line.
 SESSION_PRE_SWITCH_COMPACT="${SESSION_PRE_SWITCH_COMPACT:-on}"
 # Optional executable called with one argument — the message — when the box
 # switches login by itself, and when a blank credential is refused. Empty means

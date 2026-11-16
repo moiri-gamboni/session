@@ -630,6 +630,12 @@ render "$P27b" SESSION_DATA_DIR="$D27n" >/dev/null    # now owned by this login
 render "$P27c" SESSION_DATA_DIR="$D27n" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
 report absent "$([ -e "$CFG/.session-switch-soon" ] && echo present || echo absent)" \
     "case 27: ... and with it off, a marker left from before is removed"
+# Any render does it, a first sighting that is never fresh included, and the
+# switcher turned off does it too: no move is coming for the marker to announce.
+printf 'login=%s\nto=other@example.com\nreset=%s\n' "$ACCT" "$FR" > "$CFG/.session-switch-soon"
+render "$P27a" SESSION_DATA_DIR="$TMP/data27u" SESSION_AUTO_SWITCH=off >/dev/null
+report absent "$([ -e "$CFG/.session-switch-soon" ] && echo present || echo absent)" \
+    "case 27: ... as it is with the switcher off, on a render that asks for nothing"
 D27p="$TMP/data27p"
 render "$P27a" SESSION_DATA_DIR="$D27p" >/dev/null
 render "$P27b" SESSION_DATA_DIR="$D27p" >/dev/null    # now owned by this login

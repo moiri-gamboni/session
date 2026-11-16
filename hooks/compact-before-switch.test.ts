@@ -484,6 +484,23 @@ test('a marker that is removed cancels the compaction it asked for', async ($, o
   expect(w.compacts).toEqual([])
 })
 
+test('a marker removed during a turn it was about to stop leaves the turn alone', async ($, on) => {
+  const w = world(on)
+  w.tokens = BIG
+  await $.session.start(START)
+  await begin($)
+  write(w, 1000)
+  await w.clock.advance(5000)
+  delete w.files[MARKER]
+  await w.clock.advance(5000)
+  await step($, 0)
+  expect(w.requests).toEqual([0])
+  await end($)
+  await w.clock.advance(10_000)
+  expect(w.compacts).toEqual([])
+  expect(w.submits).toEqual([])
+})
+
 test('after an idle compaction the next turn\'s requests are sent', async ($, on) => {
   const w = world(on)
   await ready($, w)

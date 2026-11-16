@@ -15,8 +15,9 @@ import type { MainLoop } from './main-loop'
 // when the box has already switched, because compacting then reads the whole
 // context uncached on the new login: .session-login-switch newer than the
 // marker is that switch. A marker that is removed cancels what it asked for,
-// which is how SESSION_PRE_SWITCH_COMPACT=off reaches a session: the status
-// line removes the marker, and this module never reads the conf.
+// which is how SESSION_PRE_SWITCH_COMPACT=off and SESSION_AUTO_SWITCH=off reach
+// a session: the status line removes the marker, and this module never reads
+// the conf.
 //
 // Compacting needs a context worth it and a cache that is warm: FLOOR tokens or
 // more, and a main-loop turn running or one that ended less than WARM_MS ago,
@@ -109,7 +110,12 @@ export const register = (on: On, loop: MainLoop) => {
         const written = await mtime(markerPath)
         if (written !== seen) {
           seen = written
-          if (written === 0) pending = undefined
+          // With it goes the stop a running turn was due, which no later line
+          // of this poll would withdraw.
+          if (written === 0) {
+            pending = undefined
+            due = false
+          }
           // A torn or missing file reads as no marker; the next write is seen.
           const text = await $.fs.read(markerPath).catch(() => '')
           const login = field(text, 'login')

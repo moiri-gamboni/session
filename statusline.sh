@@ -192,10 +192,7 @@ fi
 # login could take over, and the once-per-window bookkeeping, are the ask's own.
 # At ACCT_SPENT_PCT the decision is asked instead and this is not: the ask runs
 # the same probe under the decision's lock, and a decision that finds the lock
-# held reports busy and does not run. With SESSION_PRE_SWITCH_COMPACT off, a
-# marker left from before it was turned off is removed: sessions that hold it
-# pending would otherwise still compact on it, and the plugin, which cannot
-# read the conf, drops a marker that is gone.
+# held reports busy and does not run.
 if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITCH" = on ]; then
   . "$SESSION_HOME/lib/account.sh"
   _f5i=$(_intonly "$_f5"); _w7i=$(_intonly "$_w7")
@@ -208,9 +205,15 @@ if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITC
     elif [ "$_w7i" -ge "$ACCT_SOON_PCT" ] && [ "$_new_wr" -gt "$_now" ]; then _soon=$_new_wr
     fi
     [ "$_soon" -gt 0 ] && ( "$SESSION_HOME/session" --switch-soon "$_acct" "$_soon" </dev/null >/dev/null 2>&1 & )
-  elif [ -e "$SESSION_CFG/.session-switch-soon" ]; then
-    rm -f "$SESSION_CFG/.session-switch-soon"
   fi
+fi
+# With the compaction or the switcher turned off, a marker left from before
+# goes, on any render: sessions that hold it pending would otherwise still
+# compact on it, and the plugin, which cannot read the conf, drops a marker
+# that is gone.
+if { [ "$SESSION_PRE_SWITCH_COMPACT" = off ] || [ "$SESSION_AUTO_SWITCH" != on ]; } \
+   && [ -e "$SESSION_CFG/.session-switch-soon" ]; then
+  rm -f "$SESSION_CFG/.session-switch-soon"
 fi
 
 # --- Per-session usage sampling (read by `session usage`) ---
