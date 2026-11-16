@@ -581,8 +581,8 @@ render "$P27e" SESSION_DATA_DIR="$D27" >/dev/null
 report "--switch-soon $ACCT $FR" "$(callwait)" \
     "case 27: a figure between 95% and 98% still asks"
 
-# At 98% the decision itself is asked, and that is all: the ask for a compaction
-# would hold the decision lock the decision needs.
+# At 98% the decision itself is asked, and that is all: its move follows within
+# seconds.
 : > "$CALLS"
 render "$P27f" SESSION_DATA_DIR="$D27" >/dev/null
 report "account auto --trigger usage --sid $SID" "$(callwait)" \

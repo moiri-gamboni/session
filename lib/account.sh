@@ -1001,7 +1001,10 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
     _acct_say fail - - bad-option - -; return 5
   fi
 
-  [ "$locked" = 1 ] && { _acct_decide "$trigger" "$sid" "$dry" "$assume"; return $?; }
+  # An assume-spent ask swaps nothing, so it takes no lock: held for the
+  # seconds the probe takes, the lock would make a real decision arriving then
+  # read busy, and a busy decision is not retried.
+  { [ "$locked" = 1 ] || [ "$assume" = 1 ]; } && { _acct_decide "$trigger" "$sid" "$dry" "$assume"; return $?; }
 
   # The lock file lives under the data root, and lock_run opening it is the
   # first thing here that touches the filesystem — so a root that cannot hold it
@@ -1015,8 +1018,7 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
     _acct_say hold "$(acct_live_login)" - not-writable - -; return 3; }
 
   [ "$dry" = 1 ] && dryflag=--dry-run
-  [ "$assume" = 1 ] && dryflag="$dryflag --assume-spent"
-  # shellcheck disable=SC2086  # dryflag is up to two words, never a path
+  # shellcheck disable=SC2086  # dryflag is one word or none, never a path
   out=$(lock_run "$(acct_lock_file)" bash "$SESSION_HOME/session" account auto \
           --locked --trigger "$trigger" --sid "$sid" $dryflag)
   rc=$?
@@ -1061,17 +1063,20 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
 # figures change often, so the ask is also held to one per ACCT_SOON_ASK_S
 # whatever it found: the stamp is taken before the probe, not after, because
 # the probe is the expense. Several sessions asking in the same instant may each
-# pass the stamp; one takes the decision lock and the rest read busy and write
-# nothing.
+# pass the stamp; their markers are identical, which the plugin reads as one.
 #
 # `--dry-run --assume-spent` on the cap trigger is the decision a cap death on
 # the live login would take, so the marker covers both moves the box can make:
 # the one at ACCT_SPENT_PCT, onto a login serving every model, and the one a
 # cap death makes onto a login that serves everything but Fable.
 # The login the status line saw must still be the live one: a marker naming a
-# login the box has left would be read as a switch coming off the new one.
+# login the box has left would be read as a switch coming off the new one. The
+# ask runs outside the decision lock, so a decision can swap while it probes:
+# a switch marker that moved in the meantime means the box has left, and no
+# marker is written. One the swap writes just after this one is newer than it,
+# which the plugin reads as a switch.
 acct_switch_soon() {  # LOGIN RESET
-  local login="$1" reset="$2" marker stamp now last out to
+  local login="$1" reset="$2" marker stamp now last out to switched before
   case "${SESSION_PRE_SWITCH_COMPACT:-on}" in
     on) ;;
     off) return 0 ;;
@@ -1092,8 +1097,11 @@ acct_switch_soon() {  # LOGIN RESET
   [ -w "$SESSION_DATA" ] || return 0
   printf '%s\n' "$now" > "$stamp"
 
+  switched="$(acct_cfg)/.session-login-switch"
+  before=$(mtime_of "$switched")
   out=$(acct_auto --dry-run --assume-spent --trigger cap)
   [ "$(_acct_out_val from "$out")" = "$login" ] || return 0
+  [ "$(mtime_of "$switched")" = "$before" ] || return 0
   to=$(_acct_out_val to "$out")
   [ -n "$to" ] && [ "$to" != - ] || return 0
   # Renamed into place so a poll that catches the mtime never reads half of it.

@@ -5655,6 +5655,21 @@ DFAILEOF
         "assume-spent: ... the ask is not, and names where a cap would send the box now"
     report 1 "$(grep -c . "$DLOGC")" "assume-spent: ... and starts no cooldown of its own: the log still holds the one decision"
 
+    # The ask swaps nothing, so it takes no lock: a decision in flight does not
+    # make it busy, and it leaves no lock a real decision would find held.
+    WL=$(dworld); CL=$(curlstub)
+    dlive "$WL" a@example.com tok-a
+    dvent "$WL" a@example.com tok-a; dvent "$WL" b@example.com tok-b
+    dbody "$CL" tok-a 96 10 10; dbody "$CL" tok-b 10 10 10
+    DCLOCK=$DNOW; DNOTIFY=""
+    lock_run "$WL/data/switch.lock" sleep 3 &
+    dlkpid=$!
+    sleep 0.5
+    out=$(dauto "$WL" "$CL" --dry-run --assume-spent --trigger cap); rc=$?
+    report '3 dry-run b@example.com' "$rc $(dkv ev "$out") $(dkv to "$out")" \
+        "assume-spent: while another decision holds the lock the ask still answers, never busy"
+    wait "$dlkpid" 2>/dev/null
+
     # ── session --switch-soon: the marker the plugin compacts on ──────────────
     # One ask per quarter hour, one marker per login and window, and a marker
     # only when a login could take over.
@@ -5719,6 +5734,19 @@ DFAILEOF
     out=$(dsoon "$WSF" "$CSF" a@example.com 4000000000)
     report 'to=b@example.com' "$(grep '^to=' "$MSF" 2>&1)" \
         "switch-soon: a login lacking only Fable is one a cap death would move to, so it gets a marker"
+
+    # The box switching while the ask probes: a marker written after that would
+    # have the sessions compact on the login they just moved to.
+    WSW=$(dworld); CSW=$(curlstub); MSW="$WSW/cfg/.session-switch-soon"
+    dlive "$WSW" a@example.com tok-a
+    dvent "$WSW" a@example.com tok-a; dvent "$WSW" b@example.com tok-b
+    dbody "$CSW" tok-a 96 10 10; dbody "$CSW" tok-b 10 10 10
+    printf '#!/bin/sh\nprintf "from=a@example.com\\nto=b@example.com\\nreason=5h limit\\n" > "%s"\n' \
+        "$WSW/cfg/.session-login-switch" > "$CSW/during.tok-b"; chmod 755 "$CSW/during.tok-b"
+    DCLOCK=$DNOW
+    out=$(dsoon "$WSW" "$CSW" a@example.com 4000000000)
+    report "1 absent" "$(dasked "$CSW" tok-b) $([ -e "$MSW" ] && echo present || echo absent)" \
+        "switch-soon: a switch that lands while the ask probes leaves no marker"
 
     # The mode is the kill switch's to hold, and the switcher's.
     WK=$(dworld); CK=$(curlstub); MK="$WK/cfg/.session-switch-soon"

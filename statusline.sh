@@ -190,9 +190,8 @@ fi
 # can compact the large sessions first (`session --switch-soon`, lib/account.sh;
 # hooks/compact-before-switch.ts). This render only compares figures: whether a
 # login could take over, and the once-per-window bookkeeping, are the ask's own.
-# At ACCT_SPENT_PCT the decision is asked instead and this is not: the ask runs
-# the same probe under the decision's lock, and a decision that finds the lock
-# held reports busy and does not run.
+# At ACCT_SPENT_PCT the decision is asked instead and this is not: the move it
+# makes follows within seconds, which is no time to compact in.
 if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITCH" = on ]; then
   . "$SESSION_HOME/lib/account.sh"
   _f5i=$(_intonly "$_f5"); _w7i=$(_intonly "$_w7")
