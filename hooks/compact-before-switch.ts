@@ -36,10 +36,8 @@ import type { MainLoop } from './main-loop'
 // compaction too. The turn's end fires the Stop hooks and the submitted prompt
 // the UserPromptSubmit hooks, as any turn boundary does.
 //
-// After a compaction $.session.usage() reports no context size until the next
-// response, which reads as under the floor, so a session is not compacted twice
-// by one marker even if it was not marked as handled. A rejected or vetoed
-// compaction is logged and not retried: the marker is spent either way.
+// A rejected or vetoed compaction is logged and not retried: the marker is
+// spent either way.
 const MARKER = '.session-switch-soon'
 const SWITCHED = '.session-login-switch'
 const POLL_MS = 5000
