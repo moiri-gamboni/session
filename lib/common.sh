@@ -61,6 +61,7 @@ SESSION_PANEDIR="$SESSION_DATA/panes"
 SESSION_SNAPDIR="$SESSION_DATA/sessions"
 SESSION_ARCHIVE="$SESSION_DATA/archive"
 SESSION_RESUME_QUEUE="${SESSION_RESUME_QUEUE:-$SESSION_DATA/resume-queue.tsv}"
+SESSION_CCLOG="$SESSION_DATA/close-compact-log.tsv"
 SESSION_ACCOUNTS_DIR="${SESSION_ACCOUNTS_DIR:-$SESSION_CFG/accounts}"
 # The config dir this machine treats as its primary login. Everything else is a
 # secondary account and gets tagged as one — so on a machine whose normal config
@@ -87,6 +88,18 @@ SESSION_AUTO_SWITCH="${SESSION_AUTO_SWITCH:-on}"
 # the sessions holding it. SESSION_AUTO_SWITCH=off does both too: it stops the
 # ask at the status line.
 SESSION_PRE_SWITCH_COMPACT="${SESSION_PRE_SWITCH_COMPACT:-on}"
+# Whether a session closed holding a large context is compacted in the
+# background while its prompt cache is still warm (lib/closecompact.sh). `on` or
+# `off`: read when a session closes and again when the compaction is due, so
+# turning it off reaches the waiters already asleep. It does not depend on
+# SESSION_AUTO_SWITCH. The four below move its thresholds for tests and
+# rehearsals: the floor in tokens, the seconds after the last request when the
+# compaction starts and the latest it may, and how long a run may take.
+SESSION_CLOSE_COMPACT="${SESSION_CLOSE_COMPACT:-on}"
+SESSION_CLOSE_COMPACT_FLOOR="${SESSION_CLOSE_COMPACT_FLOOR:-200000}"
+SESSION_CLOSE_COMPACT_DELAY="${SESSION_CLOSE_COMPACT_DELAY:-3000}"
+SESSION_CLOSE_COMPACT_LATEST="${SESSION_CLOSE_COMPACT_LATEST:-3420}"
+SESSION_CLOSE_COMPACT_LIMIT="${SESSION_CLOSE_COMPACT_LIMIT:-600}"
 # Optional executable called with one argument — the message — when the box
 # switches login by itself, and when a blank credential is refused. Empty means
 # nothing is sent; the two callers are the only ones, and each covers an event

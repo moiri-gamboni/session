@@ -175,6 +175,17 @@ cd -P "$_d" && SESSION_HOME=$PWD || { echo "session: cannot enter $_d" >&2; exit
 [ -d "$_pwd" ] && { cd "$_pwd" || true; }
 . "$SESSION_HOME/lib/common.sh" || { echo "session: cannot read $SESSION_HOME/lib/common.sh" >&2; exit 1; }
 
+# The headless run that compacts a closed session (lib/closecompact.sh) is a
+# session to Claude Code, and its hooks reach every plumbing entry below. None of
+# them may act for it: a turn-log row would add a phantom span to `session time`,
+# a session-end would start another waiter, and a compaction gate would write a
+# decision. The run is started with this variable set and nothing else sets it.
+if [ -n "${SESSION_CLOSE_COMPACT_RUN:-}" ]; then
+  case "${1:-}" in
+    --hook|--turn-end|--turn-fail|--session-end|--subagent-start|--subagent-end|--compact-mark|--perm-mark|--compact-gate|--post-tool-batch|--rewake-waiter) exit 0 ;;
+  esac
+fi
+
 # PostToolBatch stop ("--post-tool-batch"): end an attended turn before the
 # request that would cross the auto-compaction ceiling, so the conversation is
 # not summarised whole and the context keeps the room a manual compaction needs
@@ -1723,7 +1734,7 @@ doctor_main() {
   esac
   local src m cache_f j jrc f v sl slsrc sl_ours cfg_bad last lr sid t r tot armed \
         newest_s have_e plat miss age crdl \
-        swmode swpre swnote swlast swcap swts swev vaultn probeable capd scoped lockf vlive
+        swmode swpre swnote swlast swcap swts swev vaultn probeable capd scoped lockf vlive ccmode ccnew
 
   echo "-- session doctor -------------------------------------------------"
   echo "  code     $SESSION_HOME"
@@ -2083,6 +2094,28 @@ doctor_main() {
   fi
   [ -z "$swnote" ] || doc ok switcher "$swnote"
 
+  # The compaction of a closed session is independent of the switcher: its own
+  # switch, its own hook entry, and it runs `claude`, which the hook finds on
+  # the PATH Claude Code gives it, not the one this shell has.
+  ccmode="${SESSION_CLOSE_COMPACT:-on}"
+  if [ "$ccmode" = off ]; then
+    doc pending compaction "off — SESSION_CLOSE_COMPACT=off, so a session closed holding a large context is left as it is"
+  elif [ "$ccmode" != on ]; then
+    doc FAIL compaction "SESSION_CLOSE_COMPACT is '$ccmode' — it takes on or off, and no closed session is compacted until it does"
+  elif ! jq -e '[.hooks.SessionEnd[]?.hooks[]? | select((.command? // "") | test("--session-end"))] | length > 0' \
+         "$SESSION_CFG/settings.json" >/dev/null 2>&1; then
+    doc pending compaction "no --session-end entry on SessionEnd in $SESSION_CFG/settings.json — nothing starts it (install.sh writes it)"
+  elif ! command -v claude >/dev/null 2>&1; then
+    doc pending compaction "no claude on PATH here — the background run needs it on the PATH Claude Code's hooks have"
+  else
+    ccnew="nothing logged yet"
+    if [ -s "$SESSION_CCLOG" ]; then
+      ccnew=$(awk -F'\t' -v now="$(now_epoch)" 'END { printf "newest %s %d\n", $3, now - $1 }' "$SESSION_CCLOG")
+      ccnew="${ccnew% *} $(dh "${ccnew##* }") ago"
+    fi
+    doc ok compaction "on · $ccnew · $SESSION_CCLOG"
+  fi
+
   # A blank live credential. Not one of the numbered checks: it reports a state
   # the machine is in rather than how it is wired, and says nothing when the
   # machine is not in it. The condition is "proven blank" rather than "not
@@ -2318,6 +2351,17 @@ if [ "${1:-}" = --compact-gate ]; then
   exit 0
 fi
 
+# Closing a large session compacts it in the background (lib/closecompact.sh):
+# the waiter that --session-end detaches, and the decision it starts when the
+# compaction is due. Neither reads stdin; both exit 0.
+case "${1:-}" in
+  --close-compact-wait|--close-compact)
+    . "$SESSION_HOME/lib/compact.sh"
+    . "$SESSION_HOME/lib/closecompact.sh"
+    if [ "$1" = --close-compact-wait ]; then cc_wait "${2:-}" "${3:-}" "${4:-}" "${5:-}"; else cc_decide "${2:-}" "${3:-}"; fi
+    exit 0 ;;
+esac
+
 # Hook plumbing: append one lifecycle event row to the turn log and exit 0
 # unconditionally with no output — several of these events treat exit 2 as
 # "block" (Stop: keep going; SubagentStop: don't stop; PostCompact is safe but
@@ -2335,10 +2379,10 @@ fi
 case "${1:-}" in
   --turn-end|--turn-fail|--session-end|--subagent-start|--subagent-end|--compact-mark|--perm-mark)
     if [ ! -t 0 ]; then
-      IFS=$'\t' read -r esid epid edet eaid < <(jq -r \
+      IFS=$'\t' read -r esid epid edet eaid etp ecwd < <(jq -r \
         '[(.session_id//"-"),(.prompt_id//"-"),
           (.error_type//.error//.reason//.trigger//.agent_type//"-"),
-          (.agent_id//"-")]|@tsv' 2>/dev/null || true)
+          (.agent_id//"-"),(.transcript_path//"-"),(.cwd//"-")]|@tsv' 2>/dev/null || true)
       if [ -n "${esid:-}" ] && [ "$esid" != "-" ]; then
         case "$1" in
           --turn-end) ev=e ;;      --turn-fail) ev=f ;;     --session-end) ev=x ;;
@@ -2357,7 +2401,15 @@ case "${1:-}" in
     fi
     # The logs stay bounded whether or not the statusline is installed: this is
     # the second producer, behind the same once-a-day marker as the first.
-    [ "$1" = --session-end ] && session_prune_daily
+    if [ "$1" = --session-end ]; then
+      # The waiter first: a prune that overran would take the hook, and with it
+      # the waiter not yet started, past the entry's timeout.
+      if [ -n "${esid:-}" ] && [ "$esid" != "-" ]; then
+        . "$SESSION_HOME/lib/closecompact.sh"
+        cc_session_end "$esid" "${edet:--}" "${etp:--}" "${ecwd:--}"
+      fi
+      session_prune_daily
+    fi
     exit 0 ;;
 esac
 
@@ -2514,6 +2566,16 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
                                    2 wakes the session at the reset/switch
   session --turn-end|--turn-fail|--session-end|--subagent-start|--subagent-end|
           --compact-mark|--perm-mark   append one lifecycle event row; always exit 0
+  session --close-compact-wait SID TRANSCRIPT CWD LOGIN
+  session --close-compact SID TOKEN  what --session-end starts for a session closed
+                                   holding 200,000 tokens or more: a detached waiter,
+                                   then a process that compacts the session with a
+                                   headless `claude -p --resume` about 50 minutes
+                                   after its last request, one row in
+                                   close-compact-log.tsv per decision (README
+                                   "Compacting a closed session");
+                                   SESSION_CLOSE_COMPACT=off in session.conf stops
+                                   it, waiters already asleep included
   session --compact-gate           PreCompact: hold an automatic compaction while the
                                    session is attended (README "The compaction
                                    hold"); always exit 0, one row per decision
@@ -2538,6 +2600,8 @@ Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usa
                             `session account` lists them when newer than the cache
   probe-body.<login>.json   a usage-endpoint response no window could be read
                             from; removed once a later probe reads
+  close-compact-log.tsv  one row per decision to compact a closed session, or not;
+                    never pruned
   session-log.tsv   per-session cost/token samples    turn-log.tsv  turn events
   switch-log.tsv    one row per decision about which login the box runs on; never
                     pruned, and the switcher's own control state
