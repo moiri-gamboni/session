@@ -7820,11 +7820,12 @@ STUB30
     case "$(row30 "$W30")" in "skipped	cache cold: last request "[0-9]*"s ago") r=yes ;; *) r=no ;; esac
     report yes "$r" "case 30 [cold]: a session closed too long after its last request is left alone: the compaction would read it uncached"
     report 0 "$(calls30 "$W30")" "case 30 [cold]: ... and claude is not run"
-    # The hour runs from when the request was sent: this one 8 s ago, its answer
-    # finished a second ago.
-    W30=$(w30 450000 8 claude-opus-5-5 7)
-    close30 "$W30" other >/dev/null; wait30 "$W30" 1
-    case "$(row30 "$W30")" in "skipped	cache cold: last request "[89]"s ago") r=yes ;; *) r=no ;; esac
+    # The hour runs from when the request was sent: this one 30 s ago, its answer
+    # finished 2 s ago, and 15 s are allowed. Counted from the answer it would
+    # still be compacted.
+    W30=$(w30 450000 30 claude-opus-5-5 28)
+    close30 "$W30" other SESSION_CLOSE_COMPACT_LATEST=15 >/dev/null; wait30 "$W30" 1
+    case "$(row30 "$W30")" in "skipped	cache cold: last request "[0-9]*"s ago") r=yes ;; *) r=no ;; esac
     report yes "$r" "case 30 [cold]: ... counted from the request, not from the end of its answer"
 
     # A login switch after the last request and before the close: the cache is the old login's although the box was on the new one at the close.
