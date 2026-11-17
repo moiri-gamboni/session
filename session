@@ -2097,8 +2097,9 @@ doctor_main() {
   [ -z "$swnote" ] || doc ok switcher "$swnote"
 
   # The compaction of a closed session is independent of the switcher: its own
-  # switch, its own hook entry, and it runs `claude`, which the hook finds on
-  # the PATH Claude Code gives it, not the one this shell has.
+  # switch. It rides on the SessionEnd entry the lifecycle rows already use, and
+  # it runs `claude`, which the hook finds on the PATH Claude Code gives it, not
+  # the one this shell has.
   ccmode="${SESSION_CLOSE_COMPACT:-on}"
   if [ "$ccmode" = off ]; then
     doc pending compaction "off — SESSION_CLOSE_COMPACT=off, so a session closed holding a large context is left as it is"
