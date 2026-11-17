@@ -117,11 +117,13 @@ cc_tail() {  # FILE
 
 # What a failed run said, for its row: the last lines of its stderr, else its
 # result (an error can come back as the result on stdout with nothing on
-# stderr), else the result's subtype; then its cost when it reported one.
+# stderr), else the result's subtype; then its cost when it reported one. The
+# text is cut short of the row's own limit so that the cost is never what is lost.
 cc_detail() {  # STDERR_FILE STDOUT_FILE [COST]
   local d
   d=$(cc_tail "$1")
-  [ -n "$d" ] || d=$(jq -r 'if (.result // "") != "" then .result else (.subtype // empty) end' "$2" | cut -c1-200)
+  [ -n "$d" ] || d=$(jq -r 'if (.result // "") != "" then .result else (.subtype // empty) end' "$2")
+  d=$(printf '%s' "$d" | cut -c1-300)
   [ -z "${3:-}" ] || d="${d:+$d }$3"
   printf '%s' "$d"
 }

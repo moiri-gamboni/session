@@ -300,7 +300,7 @@ A reader after one of the `detail` keys must take the newest row **that carries 
 |---|---|---|---|
 | `compacted` | the run finished and the transcript has a new compaction row | `-` | `tokens=<before>-><after>`, `secs=<wall seconds>` and, when the run reported a total and the session's earlier spending is known, `cost=<dollars the run itself cost>` |
 | `skipped` | nothing was started | why: `switched off`, `open again in process <pid>`, `further work since the close`, `last event was a compaction`, `login changed`, `login changed since the last request`, `cache cold: last request <n>s ago`, `cache lifetime <value>`, `folder gone: <path>`, `launch folder unknown`, `claude not on PATH`, `transcript gone` | `-` |
-| `failed` | the run ended without compacting | `exit <n>`, or `no compaction recorded` | the last lines of its stderr, joined with ` \| `, else its result text or subtype; then `cost=<dollars>` when the run reported a total |
+| `failed` | the run ended without compacting | `exit <n>`, or `no compaction recorded` | the last lines of its stderr, joined with ` \| `, else its result text or subtype; then `cost=<dollars>` when the run reported a total and the session's earlier spending is known |
 | `stopped` | the run was stopped | `open again in process <pid>` or `over the <n>s limit` | `secs=<n>`; what the run spent is not known, since it printed nothing |
 
 The rows are never pruned: one per qualifying close is too little to bound, and each is the only account of what a compaction did and cost.

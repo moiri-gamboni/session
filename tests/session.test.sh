@@ -7706,6 +7706,7 @@ case "$(cat "$d/mode" 2>/dev/null)" in
     failjson) printf '{"is_error":true,"result":"usage limit reached"}\n'; exit 1 ;;
     noboundary) printf '{"type":"result","subtype":"success","is_error":false,"result":"Not enough messages to compact","total_cost_usd":%s}\n' "$total"; exit 0 ;;
     noboundaryquiet) printf '{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":%s}\n' "$total"; exit 0 ;;
+    noboundarylong) printf 'x%.0s' $(seq 1 500) >&2; printf '{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":%s}\n' "$total"; exit 0 ;;
     hang) exec sleep 60 ;;
 esac
 printf '{"type":"system","subtype":"compact_boundary","uuid":"b-%s","timestamp":"2099-01-01T00:00:00.000Z","compactMetadata":{"trigger":"manual","preTokens":412000,"postTokens":16000}}\n' "$$" >> "$tp"
@@ -7971,6 +7972,10 @@ STUB30
     close30 "$W30" other >/dev/null; wait30 "$W30" 1
     report "failed	no compaction recorded	success cost=0.25" "$(awk -F'\t' 'END { print $3 "\t" $4 "\t" $5 }' "$W30/$LOG30")" \
         "case 30 [failed]: ... the result's subtype when it said nothing"
+    W30=$(w30 450000 0); printf noboundarylong > "$W30/stub/mode"
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    case "$(detail30 "$W30")" in xxx*" cost=0.25") r=yes ;; *) r=no ;; esac
+    report yes "$r" "case 30 [failed]: ... and when it printed a great deal, that is cut, not the cost after it"
     # A session compacted before and grown past the floor again holds an older boundary row.
     W30=$(w30 450000 0); printf noboundary > "$W30/stub/mode"
     { printf '{"type":"system","subtype":"compact_boundary","uuid":"b-old","timestamp":"2026-01-01T00:00:00.000Z","compactMetadata":{"preTokens":9,"postTokens":1}}\n'; cat "$(cat "$W30/stub/transcript")"; } > "$W30/t.tmp"
