@@ -774,6 +774,24 @@ probe 'session_prune_daily' SESSION_DATA_DIR="$PR" SESSION_NOW="$(( NOW + 86401 
 report no "$(grep -q 'second-old' "$PR/turn-log.tsv" && echo yes || echo no)" \
     "prune: a call a day later prunes again"
 
+# Claude Code cancels a status line run when a newer update arrives, and a render
+# cut off after it created its temp file leaves the file behind: its name carries
+# the render's pid, so nothing ever writes it again. The prune sweeps them once
+# they are old enough that no render can still be about to move one into place.
+touch -t 202001010000 "$PR/last-status.a@example.test.json.tmp.123" "$PR/turn-log.tsv.tmp.456"
+touch "$PR/last-status.a@example.test.json.tmp.789"
+printf '{}\n' > "$PR/last-status.a@example.test.json"; touch -t 202001010000 "$PR/last-status.a@example.test.json"
+printf 'x\n' > "$PR/tmp.notes"; touch -t 202001010000 "$PR/tmp.notes"
+probe 'session_prune_daily' SESSION_DATA_DIR="$PR" SESSION_NOW="$(( NOW + 2 * 86401 ))"
+report "absent absent" \
+    "$([ -e "$PR/last-status.a@example.test.json.tmp.123" ] && echo present || echo absent) $([ -e "$PR/turn-log.tsv.tmp.456" ] && echo present || echo absent)" \
+    "prune: temp files an hour old or more are swept from the data root"
+report present "$([ -e "$PR/last-status.a@example.test.json.tmp.789" ] && echo present || echo absent)" \
+    "prune: ... and one a render may still be about to move into place is not"
+report "present present" \
+    "$([ -e "$PR/last-status.a@example.test.json" ] && echo present || echo absent) $([ -e "$PR/tmp.notes" ] && echo present || echo absent)" \
+    "prune: ... and nothing else in the root is touched, however old"
+
 EMPTY="$TMP/emptyroot"
 report "0 absent" \
     "$(probe 'session_prune_daily; printf "%s %s\n" "$?" "$([ -d "$SESSION_DATA" ] && echo present || echo absent)"' SESSION_DATA_DIR="$EMPTY" SESSION_NOW="$NOW")" \
