@@ -544,8 +544,9 @@ session_prune_daily() {
   # it into place leaves it behind, and its name carries the pid, so nothing ever
   # writes it again, empty or complete. A kill cannot be trapped, so they are
   # swept here instead, once an hour old: no run is still about to move one by
-  # then.
-  find "$SESSION_DATA" -maxdepth 1 -type f -name '*.tmp.[0-9]*' -mmin +60 -delete
+  # then. The trailing slash is for a data root that is a symlink, which find
+  # does not follow without it.
+  find "$SESSION_DATA/" -maxdepth 1 -type f -name '*.tmp.[0-9]*' -mmin +60 -delete
   [ -d "$SESSION_SNAPDIR" ] && find "$SESSION_SNAPDIR" -type f -mtime +8 -delete
   [ -d "$SESSION_PANEDIR" ] && find "$SESSION_PANEDIR" -type f -mtime +8 -delete
   return 0

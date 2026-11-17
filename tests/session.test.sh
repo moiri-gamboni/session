@@ -792,6 +792,14 @@ report "present present" \
     "$([ -e "$PR/last-status.a@example.test.json" ] && echo present || echo absent) $([ -e "$PR/tmp.notes" ] && echo present || echo absent)" \
     "prune: ... and nothing else in the root is touched, however old"
 
+# The data root may be a symlink (a root kept on another volume): find does not
+# follow the one it is handed unless it ends in a slash.
+PRL="$TMP/prunereal"; mkdir -p "$PRL"; ln -s "$PRL" "$TMP/prunelink"
+touch -t 202001010000 "$PRL/last-status.a@example.test.json.tmp.321"
+probe 'session_prune_daily' SESSION_DATA_DIR="$TMP/prunelink" SESSION_NOW="$NOW"
+report absent "$([ -e "$PRL/last-status.a@example.test.json.tmp.321" ] && echo present || echo absent)" \
+    "prune: the temp-file sweep reaches a data root that is a symlink"
+
 EMPTY="$TMP/emptyroot"
 report "0 absent" \
     "$(probe 'session_prune_daily; printf "%s %s\n" "$?" "$([ -d "$SESSION_DATA" ] && echo present || echo absent)"' SESSION_DATA_DIR="$EMPTY" SESSION_NOW="$NOW")" \
