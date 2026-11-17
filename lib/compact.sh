@@ -89,27 +89,40 @@ compact_context() {  # TRANSCRIPT
 }
 
 # The main loop's last request, from the end of a transcript: "EPOCH TOKENS MODEL
-# COMPACTED". EPOCH is when it was made, TOKENS what it carried (input and
-# cache; the output it produced is not counted), MODEL the model that answered,
-# COMPACTED 1 when a compaction was recorded after it. Prints nothing when the
-# last 4 MB hold no request. Rows after a request can be large (a tool result)
-# and the one at the cut may be partial, hence the catch. Sidechain and API-error
-# rows and the synthetic ones with no usage are not requests.
+# COMPACTED LIFETIME". EPOCH is when the request was SENT, which is when the
+# prompt cache's lifetime starts: the time of the main-loop `api-request` row
+# the answer follows, or the answer's own time when the transcript has no such
+# row. A request row no answer followed (a request that failed, or one still
+# under way) refreshed nothing and counts for nothing. TOKENS is what the
+# request carried (input and cache; the output is not counted), MODEL the model
+# that answered, COMPACTED 1 when a compaction was recorded after it, LIFETIME
+# the cache lifetime its request asked for (`1h`, or `5m`, which is what a cache
+# marker with no `ttl` asks for; `-` when its row carried no markers or there
+# is none). Prints nothing when the last 4 MB hold no request. Rows after a
+# request can be large (a tool result) and the one at the cut may be partial,
+# hence the catch. Sidechain and API-error rows and the synthetic ones with no
+# usage are not requests, and a subagent's request rows (a source of its own)
+# are not the main loop's.
 compact_last_request() {  # TRANSCRIPT
   [ -r "$1" ] || return 0
   tail -c 4000000 "$1" | jq -Rsr '
     def carried: (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0);
+    def epoch: try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null;
+    def lifetime: [.cacheControl[]? | .value | (.ttl // "5m")] | if length == 0 then "-" else (. - ["1h"] | first) // "1h" end;
     split("\n") | map(select(. != ""))
-    | reduce .[] as $l ({r: null, c: 0};
+    | reduce .[] as $l ({r: null, q: null, c: 0};
         ($l | try fromjson catch null) as $r
-        | if ($r | type) == "object" and $r.type == "assistant"
+        | if ($r | type) == "object" and $r.type == "api-request"
+             and ($r.querySource == "repl_main_thread" or $r.querySource == "sdk")
+          then .q = {t: ($r.timestamp | epoch), l: ($r | lifetime)}
+          elif ($r | type) == "object" and $r.type == "assistant"
              and ($r.isApiErrorMessage | not) and ($r.isSidechain | not)
              and (($r.message.usage // {}) | carried) > 0
-          then .r = {t: (try ($r.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0),
-                     u: ($r.message.usage | carried), m: ($r.message.model // "-")}
+          then .r = {t: (.q.t // ($r.timestamp | epoch) // 0), u: ($r.message.usage | carried),
+                     m: ($r.message.model // "-"), l: (.q.l // "-")}
                | .c = 0
           elif ($r | type) == "object" and $r.type == "system" and $r.subtype == "compact_boundary"
           then .c = 1
           else . end)
-    | select(.r != null) | "\(.r.t) \(.r.u) \(.r.m) \(.c)"'
+    | select(.r != null) | "\(.r.t) \(.r.u) \(.r.m) \(.c) \(.r.l)"'
 }

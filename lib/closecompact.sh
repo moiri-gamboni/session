@@ -115,24 +115,41 @@ cc_tail() {  # FILE
   tail -n 5 "$1" | tr '\t' ' ' | awk 'NR > 1 { printf " | " } { printf "%s", $0 }'
 }
 
-# The waiter. A close names itself in the session's state file before anything
-# else, so an older waiter of the same session that wakes finds another name, or
+# What a failed run said, for its row: the last lines of its stderr, else its
+# result (an error can come back as the result on stdout with nothing on
+# stderr), else the result's subtype; then its cost when it reported one.
+cc_detail() {  # STDERR_FILE STDOUT_FILE [COST]
+  local d
+  d=$(cc_tail "$1")
+  [ -n "$d" ] || d=$(jq -r 'if (.result // "") != "" then .result else (.subtype // empty) end' "$2" | cut -c1-200)
+  [ -z "${3:-}" ] || d="${d:+$d }$3"
+  printf '%s' "$d"
+}
+
+# The waiter. A close first withdraws the claim an earlier close of the session
+# filed, then files its own in the session's state file once the session
+# qualifies, so an older waiter of the session that wakes finds another name, or
 # none, and leaves. Sessions that never qualify leave no row: that is every
 # session closed under the floor, and there are many.
 cc_wait() {  # SID TRANSCRIPT CWD LOGIN — the login the box was on at the close
-  local sid=$1 tp=$2 state token now last tokens model compacted dir wake
+  local sid=$1 tp=$2 state token now last tokens model compacted ttl dir wake
   [ -d "$SESSION_DATA" ] || return 0
   now=$(now_epoch)
   token="$now.$$"
   mkdir -p "$SESSION_SNAPDIR"
   state="$SESSION_SNAPDIR/$sid.closecompact"
   rm -f "$state"
-  read -r last tokens model compacted <<<"$(compact_last_request "$tp")"
+  read -r last tokens model compacted ttl <<<"$(compact_last_request "$tp")"
   [ -n "${last:-}" ] && [ "$tokens" -ge "$SESSION_CLOSE_COMPACT_FLOOR" ] || return 0
   if [ "$compacted" != 0 ]; then
     cc_log "$sid" skipped "last event was a compaction"
     return 0
   fi
+  # The 50 minutes assume a cache that lasts an hour.
+  case "$ttl" in
+    -|1h) ;;
+    *) cc_log "$sid" skipped "cache lifetime $ttl"; return 0 ;;
+  esac
   dir=$(cc_dir "$tp" "$3")
   if [ -z "$dir" ]; then
     cc_log "$sid" skipped "launch folder unknown"
@@ -152,14 +169,18 @@ cc_wait() {  # SID TRANSCRIPT CWD LOGIN — the login the box was on at the clos
 # Why the compaction must not start now, or nothing. Reads the decision's
 # variables.
 cc_refusal() {
-  local l c p age
+  local l c p age m
   [ "${SESSION_CLOSE_COMPACT:-on}" = on ] || { echo "switched off"; return; }
   [ -r "$tp" ] || { echo "transcript gone"; return; }
-  read -r l _ _ c <<<"$(compact_last_request "$tp")"
+  read -r l _ _ c _ <<<"$(compact_last_request "$tp")"
   [ "${l:-}" = "$last0" ] || { echo "further work since the close"; return; }
   [ "$c" = 0 ] || { echo "last event was a compaction"; return; }
   p=$(cc_open_pid "$sid" "")
   [ -z "$p" ] || { echo "open again in process $p"; return; }
+  # A switch after the last request leaves the cache with the login the box left,
+  # whichever login it is on at the close and now.
+  m=$(mtime_of "$SESSION_CFG/.session-login-switch") || m=0
+  [ "${m:-0}" -le "$last0" ] || { echo "login changed since the last request"; return; }
   [ "$(session_login_read)" = "$login0" ] || { echo "login changed"; return; }
   age=$(( $(now_epoch) - last0 ))
   [ "$age" -le "$SESSION_CLOSE_COMPACT_LATEST" ] || { echo "cache cold: last request ${age}s ago"; return; }
@@ -173,7 +194,7 @@ cc_refusal() {
 # this left out of its environment, and the guard variable that tells every
 # hook of `session` to leave the logs alone.
 cc_run() {
-  local out err pid start stop="" rc holder prior bd0 bd cost secs detail pre post
+  local out err pid start stop="" rc holder prior bd0 bd cost secs pre post
   out=$(mktemp "$SESSION_SNAPDIR/.close-compact.XXXXXX")
   err=$(mktemp "$SESSION_SNAPDIR/.close-compact.XXXXXX")
   prior=$(cc_cost_state "$tp")
@@ -197,22 +218,20 @@ cc_run() {
   secs=$(( $(date +%s) - start ))
   if [ -n "$stop" ]; then
     cc_log "$sid" stopped "$stop" "secs=$secs"
-  elif [ "$rc" -ne 0 ]; then
-    # An error can come back as the result on stdout with nothing on stderr.
-    detail=$(cc_tail "$err")
-    [ -n "$detail" ] || detail=$(jq -r '.result // empty' "$out" | cut -c1-200)
-    cc_log "$sid" failed "exit $rc" "$detail"
   else
+    # The run's total is the session's whole cost, the part it had spent before
+    # restored from the transcript; the run's own is the difference. A stopped
+    # run printed nothing, so its spend is not known.
+    cost=$(jq -r --arg p "$prior" 'if ($p | test("^[0-9.]+$")) and (.total_cost_usd | type) == "number"
+                                   then "cost=\(((.total_cost_usd - ($p | tonumber)) * 10000 | round) / 10000)" else empty end' "$out")
     bd=$(cc_boundary "$tp")
-    if [ -z "$bd" ] || [ "${bd%% *}" = "${bd0%% *}" ]; then
-      cc_log "$sid" failed "no compaction recorded" "$(jq -r '.result // empty' "$out" | cut -c1-200)"
+    if [ "$rc" -ne 0 ]; then
+      cc_log "$sid" failed "exit $rc" "$(cc_detail "$err" "$out" "$cost")"
+    elif [ -z "$bd" ] || [ "${bd%% *}" = "${bd0%% *}" ]; then
+      cc_log "$sid" failed "no compaction recorded" "$(cc_detail "$err" "$out" "$cost")"
     else
-      # The run's total is the session's whole cost, the part it had spent
-      # before restored from the transcript; the run's own is the difference.
-      cost=$(jq -r --arg p "$prior" 'if ($p | test("^[0-9.]+$")) and (.total_cost_usd | type) == "number"
-                                     then " cost=\(((.total_cost_usd - ($p | tonumber)) * 10000 | round) / 10000)" else empty end' "$out")
       read -r _ pre post <<<"$bd"
-      cc_log "$sid" compacted - "tokens=$pre->$post secs=$secs$cost"
+      cc_log "$sid" compacted - "tokens=$pre->$post secs=$secs${cost:+ $cost}"
     fi
   fi
   rm -f "$out" "$err"

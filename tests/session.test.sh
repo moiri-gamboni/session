@@ -7619,6 +7619,11 @@ else
             '{type:"assistant",isSidechain:false,timestamp:$t,
               message:{model:$m,usage:{input_tokens:10,cache_creation_input_tokens:1000,cache_read_input_tokens:($n-1010),output_tokens:50}}} + $x'
     }
+    rq29() {  # TIME [CACHE_CONTROL_JSON] [QUERY_SOURCE] -> the api-request row sent before an answer
+        local d='[{"path":["system",1],"value":{"type":"ephemeral","ttl":"1h"}}]'
+        jq -cn --arg t "$1" --argjson c "${2:-$d}" --arg q "${3:-repl_main_thread}" \
+            '{type:"api-request",timestamp:$t,querySource:$q,cacheControl:$c}'
+    }
     bd29='{"type":"system","subtype":"compact_boundary","timestamp":"2026-11-17T08:00:00.000Z","compactMetadata":{"preTokens":1,"postTokens":1}}'
     last29() {  # runs compact_last_request over $CL29/t.jsonl
         env -i PATH="$PATH" HOME="$FH" bash -c '. "$1/lib/common.sh"; . "$1/lib/compact.sh"; compact_last_request "$2"' _ "$SDIR" "$CL29/t.jsonl"
@@ -7630,19 +7635,47 @@ else
       lr29 2026-11-17T07:42:00.000Z 0 "<synthetic>" '{"message":{"model":"<synthetic>","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}'
       printf '{"type":"user","timestamp":"2026-11-17T07:50:00.000Z","message":{"content":"x"}}\n'
     } > "$CL29/t.jsonl"
-    report "1794900600 450000 claude-fable-5-2 0" "$(last29)" \
-        "case 29 [last request]: the newest main-loop request with usage: its time, what it carried (output left out), its model"
+    report "1794900600 450000 claude-fable-5-2 0 -" "$(last29)" \
+        "case 29 [last request]: the newest main-loop request with usage: its time, what it carried (output left out), its model; with no request rows the answer's time"
     { cat "$CL29/t.jsonl"; printf '%s\n' "$bd29"; } > "$CL29/t2.jsonl"; mv "$CL29/t2.jsonl" "$CL29/t.jsonl"
-    report "1794900600 450000 claude-fable-5-2 1" "$(last29)" \
+    report "1794900600 450000 claude-fable-5-2 1 -" "$(last29)" \
         "case 29 [last request]: a compaction after it is flagged"
     { cat "$CL29/t.jsonl"; lr29 2026-11-17T08:10:00.000Z 60000 claude-fable-5-2; } > "$CL29/t2.jsonl"; mv "$CL29/t2.jsonl" "$CL29/t.jsonl"
-    report "1794903000 60000 claude-fable-5-2 0" "$(last29)" \
+    report "1794903000 60000 claude-fable-5-2 0 -" "$(last29)" \
         "case 29 [last request]: a request after the compaction clears the flag"
     printf '{"type":"user","message":{"content":"x"}}\n' > "$CL29/t.jsonl"
     report "" "$(last29)" "case 29 [last request]: no request, nothing printed"
     # A cut row at the start of the tail window is skipped, not fatal.
     { printf '{"type":"assistant","message":{"usage":{"input_tok'; printf '\n'; lr29 2026-11-17T07:00:00.000Z 250000 claude-opus-5-5; } > "$CL29/t.jsonl"
-    report "1794898800 250000 claude-opus-5-5 0" "$(last29)" "case 29 [last request]: a partial row is skipped"
+    report "1794898800 250000 claude-opus-5-5 0 -" "$(last29)" "case 29 [last request]: a partial row is skipped"
+
+    # The cache's hour runs from when the request was sent, which is the request
+    # row's time; the answer rows come when the answer has finished.
+    { rq29 2026-11-17T07:29:50.000Z; lr29 2026-11-17T07:30:00.500Z 450000 claude-fable-5-2; lr29 2026-11-17T07:30:00.600Z 450000 claude-fable-5-2; } > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 1h" "$(last29)" \
+        "case 29 [request time]: the request row the answer follows gives the time, however long the answer took, for each of the answer's rows"
+    { rq29 2026-11-17T07:29:50.000Z; lr29 2026-11-17T07:30:00.500Z 450000 claude-fable-5-2; rq29 2026-11-17T08:00:00.000Z; } > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 1h" "$(last29)" \
+        "case 29 [request time]: a request row no answer followed refreshed nothing and is ignored"
+    { rq29 2026-11-17T07:29:50.000Z; lr29 2026-11-17T07:30:00.500Z 450000 claude-fable-5-2; rq29 2026-11-17T08:00:00.000Z; lr29 2026-11-17T08:00:02.000Z 100000 claude-opus-5-5 '{"isApiErrorMessage":true}'; } > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 1h" "$(last29)" \
+        "case 29 [request time]: nor does one answered by an API error"
+    { rq29 2026-11-17T07:00:00.000Z; rq29 2026-11-17T07:05:00.000Z '[]' agent:custom:reviewer; lr29 2026-11-17T07:10:00.000Z 450000 claude-fable-5-2; } > "$CL29/t.jsonl"
+    report "1794898800 450000 claude-fable-5-2 0 1h" "$(last29)" \
+        "case 29 [request time]: a subagent's request row is not the main loop's"
+    { rq29 2026-11-17T07:00:00.000Z '[]'; lr29 2026-11-17T07:10:00.000Z 450000 claude-fable-5-2; } > "$CL29/t.jsonl"
+    report "1794898800 450000 claude-fable-5-2 0 -" "$(last29)" \
+        "case 29 [request time]: a request row with no cache markers says nothing of the lifetime"
+
+    # The lifetime the request asked for. A marker with no `ttl` asks for the
+    # default five minutes (observed with promptCacheTtl set to 5m).
+    cc29() { rq29 2026-11-17T07:29:50.000Z "$1"; lr29 2026-11-17T07:30:00.500Z 450000 claude-fable-5-2; }
+    cc29 '[{"path":["system",1],"value":{"type":"ephemeral","ttl":"1h"}},{"path":["messages",1],"value":{"type":"ephemeral","ttl":"1h"}}]' > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 1h" "$(last29)" "case 29 [lifetime]: every marker asking for an hour reads 1h"
+    cc29 '[{"path":["system",1],"value":{"type":"ephemeral"}},{"path":["messages",1],"value":{"type":"ephemeral"}}]' > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 5m" "$(last29)" "case 29 [lifetime]: markers with no ttl read 5m"
+    cc29 '[{"path":["system",1],"value":{"type":"ephemeral","ttl":"1h"}},{"path":["messages",1],"value":{"type":"ephemeral"}}]' > "$CL29/t.jsonl"
+    report "1794900590 450000 claude-fable-5-2 0 5m" "$(last29)" "case 29 [lifetime]: one marker short of an hour makes it 5m"
 fi
 
 echo "--- case 30: a session closed holding a large context is compacted in the background ---"
@@ -7661,20 +7694,22 @@ printf '%s\n' "$*" >> "$d/argv"
 printf 'cwd=%s guard=%s entry=%s sid=%s tmux=%s/%s\n' "$PWD" "${SESSION_CLOSE_COMPACT_RUN-unset}" "${CLAUDE_CODE_ENTRYPOINT-unset}" "${CLAUDE_CODE_SESSION_ID-unset}" "${TMUX-unset}" "${TMUX_PANE-unset}" >> "$d/env"
 echo $$ > "$d/pid"
 tp=$(cat "$d/transcript"); sid=$(cat "$d/sid")
+total=$(cat "$d/total" 2>/dev/null || echo 1.25)
 if [ -s "$d/hooks" ]; then
-    for h in --hook --compact-gate --compact-mark --subagent-end --turn-end --session-end; do
-        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","reason":"other","trigger":"manual","agent_id":"a1","prompt_id":"p9"}' "$sid" "$tp" "$PWD" \
+    for h in --hook --turn-end --turn-fail --session-end --subagent-start --subagent-end --compact-mark --perm-mark --compact-gate --post-tool-batch --rewake-waiter; do
+        printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","reason":"other","trigger":"manual","agent_id":"a1","prompt_id":"p9","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$sid" "$tp" "$PWD" \
             | CLAUDE_CODE_ENTRYPOINT=cli bash "$(cat "$d/bin")" "$h" >> "$d/hookout"
     done
 fi
 case "$(cat "$d/mode" 2>/dev/null)" in
-    fail) echo "API Error: overloaded" >&2; echo "try again later" >&2; exit 1 ;;
+    fail) printf 'API Error:\toverloaded\n' >&2; echo "try again later" >&2; exit 1 ;;
     failjson) printf '{"is_error":true,"result":"usage limit reached"}\n'; exit 1 ;;
-    noboundary) printf '{"type":"result","is_error":false,"result":"Not enough messages to compact"}\n'; exit 0 ;;
+    noboundary) printf '{"type":"result","subtype":"success","is_error":false,"result":"Not enough messages to compact","total_cost_usd":%s}\n' "$total"; exit 0 ;;
+    noboundaryquiet) printf '{"type":"result","subtype":"success","is_error":false,"result":"","total_cost_usd":%s}\n' "$total"; exit 0 ;;
     hang) exec sleep 60 ;;
 esac
 printf '{"type":"system","subtype":"compact_boundary","uuid":"b-%s","timestamp":"2099-01-01T00:00:00.000Z","compactMetadata":{"trigger":"manual","preTokens":412000,"postTokens":16000}}\n' "$$" >> "$tp"
-printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":4200,"total_cost_usd":1.25}\n'
+printf '{"type":"result","subtype":"success","is_error":false,"duration_ms":4200,"total_cost_usd":%s}\n' "$total"
 STUB30
     chmod +x "$FT30/claude"
     CHILD30=$(mktemp -d "$TMP/cp30.XXXXXX")     # a PATH without claude
@@ -7683,9 +7718,14 @@ STUB30
     done
     LOG30=data/close-compact-log.tsv
 
+    report "on 200000 3000 3420 600 yes" \
+        "$(probe 'printf "%s %s %s %s %s " "$SESSION_CLOSE_COMPACT" "$SESSION_CLOSE_COMPACT_FLOOR" "$SESSION_CLOSE_COMPACT_DELAY" "$SESSION_CLOSE_COMPACT_LATEST" "$SESSION_CLOSE_COMPACT_LIMIT"
+                if [ "$SESSION_CLOSE_COMPACT_DELAY" -lt "$SESSION_CLOSE_COMPACT_LATEST" ] && [ "$SESSION_CLOSE_COMPACT_LATEST" -lt 3600 ]; then echo yes; else echo no; fi')" \
+        "case 30 [defaults]: on, a 200,000-token floor, a start 50 minutes after the last request and no later than 57, a 10-minute run, all inside the hour"
+
     # A world as an interactive session left it: the launch folder, a transcript
     # in the project folder named for it, a login, and the stub run.
-    w30() {  # TOKENS AGE_SECONDS [MODEL] -> the world
+    w30() {  # TOKENS AGE_SECONDS [MODEL] [SECONDS_THE_ANSWER_TOOK] -> the world
         local w slug t iso
         w=$(world); mkdir -p "$w/work/sub" "$w/stub"
         slug=$(printf '%s' "$w/work" | sed 's/[^A-Za-z0-9]/-/g')
@@ -7695,8 +7735,12 @@ STUB30
         printf '%s\n' "$UUID" > "$w/stub/sid"; printf '%s\n' "$BIN" > "$w/stub/bin"
         t=$(( $(date +%s) - $2 ))
         iso=$(perl -MPOSIX -e 'print POSIX::strftime("%Y-%m-%dT%H:%M:%S.250Z", gmtime($ARGV[0]))' "$t")
+        isa=$(perl -MPOSIX -e 'print POSIX::strftime("%Y-%m-%dT%H:%M:%S.250Z", gmtime($ARGV[0] + $ARGV[1]))' "$t" "${4:-1}")
         { jq -cn --arg c "$w/work" --arg t "$iso" '{type:"user",isSidechain:false,cwd:$c,timestamp:$t,message:{content:"go"}}'
-          jq -cn --arg t "$iso" --arg m "${3:-claude-opus-5-5}" --argjson n "$1" '{type:"assistant",isSidechain:false,timestamp:$t,
+          # The request goes out at $iso and its answer is written a second later.
+          [ -n "${NOROW30:-}" ] || jq -cn --arg t "$iso" '{type:"api-request",timestamp:$t,querySource:"repl_main_thread",
+              cacheControl:[{path:["system",1],value:{type:"ephemeral",ttl:"1h",scope:"global"}},{path:["messages",1,"content",8],value:{type:"ephemeral",ttl:"1h"}}]}'
+          jq -cn --arg t "$isa" --arg m "${3:-claude-opus-5-5}" --argjson n "$1" '{type:"assistant",isSidechain:false,timestamp:$t,
               message:{model:$m,usage:{input_tokens:10,cache_creation_input_tokens:1000,cache_read_input_tokens:($n-1010),output_tokens:50}}}'
           printf '{"type":"cost-state","totalCostUSD":1.0}\n'
         } > "$(cat "$w/stub/transcript")"
@@ -7756,23 +7800,53 @@ STUB30
     report "cwd=$W30/work guard=1 entry=unset sid=unset tmux=unset/unset" "$(cat "$W30/stub/env")" "case 30 [folder]: ... from its launch folder"
 
     # ── when it starts is set by the last request, not by the close ───────────
-    W30=$(w30 450000 5)
+    # Two sessions closed together with DELAY 30 and LATEST 60. The first made its
+    # last request 20 s ago, so it is due 10 s after the close: counted from the
+    # close it would be 30 s, and counted from nothing it would be at once. The
+    # second's was 40 s ago, past DELAY, so it starts at once.
+    WA=$(w30 450000 20); WB=$(w30 450000 40)
     t0=$(date +%s)
-    close30 "$W30" prompt_input_exit SESSION_CLOSE_COMPACT_DELAY=8 SESSION_CLOSE_COMPACT_LATEST=14 >/dev/null
-    wait30 "$W30" 1
-    d30=$(( $(awk -F'\t' 'END { print $1 }' "$W30/$LOG30") - t0 ))
-    report "compacted	-" "$(row30 "$W30")" "case 30 [timing]: a session left idle before it was closed is compacted"
-    report 1 "$(( d30 >= 2 && d30 <= 5 ? 1 : 0 ))" "case 30 [timing]: ... DELAY after its last request (here 3 s after the close, not 8): took ${d30}s"
-    W30=$(w30 450000 3)
-    t0=$(date +%s)
-    close30 "$W30" other SESSION_CLOSE_COMPACT_DELAY=2 SESSION_CLOSE_COMPACT_LATEST=20 >/dev/null; wait30 "$W30" 1
-    report 1 "$(( $(awk -F'\t' 'END { print $1 }' "$W30/$LOG30") - t0 <= 2 ? 1 : 0 ))" \
-        "case 30 [timing]: a close after that moment starts the compaction at once"
+    close30 "$WA" prompt_input_exit SESSION_CLOSE_COMPACT_DELAY=30 SESSION_CLOSE_COMPACT_LATEST=60 >/dev/null
+    close30 "$WB" other SESSION_CLOSE_COMPACT_DELAY=30 SESSION_CLOSE_COMPACT_LATEST=60 >/dev/null
+    wait30 "$WB" 1 45; wait30 "$WA" 1 45
+    dA=$(( $(awk -F'\t' 'END { print $1 }' "$WA/$LOG30") - t0 )); dB=$(( $(awk -F'\t' 'END { print $1 }' "$WB/$LOG30") - t0 ))
+    report "compacted	-" "$(row30 "$WA")" "case 30 [timing]: a session left idle before it was closed is compacted"
+    report 1 "$(( dA >= 5 && dA <= 20 ? 1 : 0 ))" "case 30 [timing]: ... DELAY after its last request: 10 s after the close, not 30 and not at once (took ${dA}s)"
+    report "compacted	-" "$(row30 "$WB")" "case 30 [timing]: a session closed after that moment is compacted"
+    report 1 "$(( dB <= 12 ? 1 : 0 ))" "case 30 [timing]: ... at once, nowhere near the 30 s DELAY (took ${dB}s)"
     W30=$(w30 450000 6)
     close30 "$W30" other >/dev/null; wait30 "$W30" 1
     case "$(row30 "$W30")" in "skipped	cache cold: last request "[0-9]*"s ago") r=yes ;; *) r=no ;; esac
     report yes "$r" "case 30 [cold]: a session closed too long after its last request is left alone: the compaction would read it uncached"
     report 0 "$(calls30 "$W30")" "case 30 [cold]: ... and claude is not run"
+    # The hour runs from when the request was sent: this one 8 s ago, its answer
+    # finished a second ago.
+    W30=$(w30 450000 8 claude-opus-5-5 7)
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    case "$(row30 "$W30")" in "skipped	cache cold: last request "[89]"s ago") r=yes ;; *) r=no ;; esac
+    report yes "$r" "case 30 [cold]: ... counted from the request, not from the end of its answer"
+
+    # A login switch after the last request and before the close: the cache is the old login's although the box was on the new one at the close.
+    WA=$(w30 450000 20); WB=$(w30 450000 20)
+    : > "$WA/cfg/.session-login-switch"; perl -e 'utime $ARGV[0], $ARGV[0], $ARGV[1]' $(( $(date +%s) - 10 )) "$WA/cfg/.session-login-switch"
+    : > "$WB/cfg/.session-login-switch"; perl -e 'utime $ARGV[0], $ARGV[0], $ARGV[1]' $(( $(date +%s) - 60 )) "$WB/cfg/.session-login-switch"
+    close30 "$WA" other SESSION_CLOSE_COMPACT_LATEST=60 >/dev/null; close30 "$WB" other SESSION_CLOSE_COMPACT_LATEST=60 >/dev/null
+    wait30 "$WA" 1; wait30 "$WB" 1
+    report "skipped	login changed since the last request" "$(row30 "$WA")" \
+        "case 30 [login]: a switch after the last request and before the close is left alone: the cache is the old login's"
+    report 0 "$(calls30 "$WA")" "case 30 [login]: ... and claude is not run"
+    report "compacted	-" "$(row30 "$WB")" "case 30 [login]: a switch before the last request does not matter"
+
+    # The cache lifetime the request asked for: only an hour makes the 50 minutes safe.
+    W5=$(w30 450000 0); W6=$(w30 450000 0); WN=$(NOROW30=1 w30 450000 0)
+    sed -i.bak 's/"ttl":"1h"/"ttl":"5m"/g' "$(cat "$W5/stub/transcript")"
+    sed -i.bak 's/,"ttl":"1h"//g' "$(cat "$W6/stub/transcript")"
+    for w in "$W5" "$W6" "$WN"; do close30 "$w" other >/dev/null; done
+    wait30 "$W5" 1; wait30 "$W6" 1; wait30 "$WN" 1
+    report "skipped	cache lifetime 5m" "$(row30 "$W5")" "case 30 [lifetime]: a request that asked for five minutes is skipped, with the lifetime named"
+    report "skipped	cache lifetime 5m" "$(row30 "$W6")" "case 30 [lifetime]: ... and so is one whose markers carry no lifetime, which is the default five minutes"
+    report 0 "$(( $(calls30 "$W5") + $(calls30 "$W6") ))" "case 30 [lifetime]: ... and claude is not run"
+    report "compacted	-" "$(row30 "$WN")" "case 30 [lifetime]: a transcript with no request rows says nothing of it and is compacted"
 
     # ── decided when the waiter wakes ─────────────────────────────────────────
     W30=$(w30 450000 0); close30 "$W30" other SESSION_CLOSE_COMPACT_DELAY=3 SESSION_CLOSE_COMPACT_LATEST=9 >/dev/null
@@ -7796,9 +7870,10 @@ STUB30
     W30=$(w30 450000 0); close30 "$W30" other SESSION_CLOSE_COMPACT_DELAY=3 SESSION_CLOSE_COMPACT_LATEST=9 >/dev/null
     # The waiter names itself in its state file once it has read the transcript.
     i=0; while [ ! -e "$W30/data/sessions/$UUID.closecompact" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$(( i + 1 )); done
-    lr=$(jq -cn --arg t "$(perl -MPOSIX -e 'print POSIX::strftime("%Y-%m-%dT%H:%M:%S.500Z", gmtime(time + 1))')" \
-        '{type:"assistant",isSidechain:false,timestamp:$t,message:{model:"claude-opus-5-5",usage:{input_tokens:10,cache_creation_input_tokens:1000,cache_read_input_tokens:300000,output_tokens:5}}}')
-    printf '%s\n' "$lr" >> "$(cat "$W30/stub/transcript")"
+    nt=$(perl -MPOSIX -e 'print POSIX::strftime("%Y-%m-%dT%H:%M:%S.500Z", gmtime(time + 1))')
+    { jq -cn --arg t "$nt" '{type:"api-request",timestamp:$t,querySource:"repl_main_thread",cacheControl:[]}'
+      jq -cn --arg t "$nt" '{type:"assistant",isSidechain:false,timestamp:$t,message:{model:"claude-opus-5-5",usage:{input_tokens:10,cache_creation_input_tokens:1000,cache_read_input_tokens:300000,output_tokens:5}}}'
+    } >> "$(cat "$W30/stub/transcript")"
     wait30 "$W30" 1
     report "skipped	further work since the close" "$(row30 "$W30")" "case 30 [work]: a session that was worked in since the close is left alone"
 
@@ -7890,8 +7965,28 @@ STUB30
 
     W30=$(w30 450000 0); printf noboundary > "$W30/stub/mode"
     close30 "$W30" other >/dev/null; wait30 "$W30" 1
-    report "failed	no compaction recorded	Not enough messages to compact" "$(awk -F'\t' 'END { print $3 "\t" $4 "\t" $5 }' "$W30/$LOG30")" \
-        "case 30 [failed]: a run that exits 0 and leaves no compaction row is a failure, with what it said"
+    report "failed	no compaction recorded	Not enough messages to compact cost=0.25" "$(awk -F'\t' 'END { print $3 "\t" $4 "\t" $5 }' "$W30/$LOG30")" \
+        "case 30 [failed]: a run that exits 0 and leaves no compaction row is a failure, with what it said and what it cost"
+    W30=$(w30 450000 0); printf noboundaryquiet > "$W30/stub/mode"
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    report "failed	no compaction recorded	success cost=0.25" "$(awk -F'\t' 'END { print $3 "\t" $4 "\t" $5 }' "$W30/$LOG30")" \
+        "case 30 [failed]: ... the result's subtype when it said nothing"
+    # A session compacted before and grown past the floor again holds an older boundary row.
+    W30=$(w30 450000 0); printf noboundary > "$W30/stub/mode"
+    { printf '{"type":"system","subtype":"compact_boundary","uuid":"b-old","timestamp":"2026-01-01T00:00:00.000Z","compactMetadata":{"preTokens":9,"postTokens":1}}\n'; cat "$(cat "$W30/stub/transcript")"; } > "$W30/t.tmp"
+    mv "$W30/t.tmp" "$(cat "$W30/stub/transcript")"
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    report "failed	no compaction recorded" "$(row30 "$W30")" "case 30 [failed]: an older boundary row is not this run's compaction"
+    # The session's earlier spending is the newest cost-state row, not the first.
+    W30=$(w30 450000 0); printf 3.25 > "$W30/stub/total"
+    printf '{"type":"cost-state","totalCostUSD":3.0}\n' >> "$(cat "$W30/stub/transcript")"
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    case "$(detail30 "$W30")" in *"cost=0.25") r=yes ;; *) r=no ;; esac
+    report yes "$r" "case 30 [compacted]: the run's cost is taken against the newest of the transcript's cost-state rows"
+    W30=$(w30 450000 0); printf fail > "$W30/stub/mode"
+    close30 "$W30" other >/dev/null; wait30 "$W30" 1
+    report "5 API Error: overloaded | try again later" "$(awk -F'\t' 'END { print NF " " $5 }' "$W30/$LOG30")" \
+        "case 30 [failed]: a tab in what the run printed does not add a column to the row"
 
     W30=$(w30 450000 0)
     grep -v '"cost-state"' "$(cat "$W30/stub/transcript")" > "$W30/t.tmp"; mv "$W30/t.tmp" "$(cat "$W30/stub/transcript")"
@@ -7950,6 +8045,17 @@ STUB30
     report "x" "$(awk -F'\t' '{print $3}' "$W30/data/turn-log.tsv" | tr '\n' ' ' | sed 's/ $//')" \
         "case 30 [guard]: ... and the turn log holds the close's own row alone: no turn, compaction, subagent, gate or session-end row from the run"
     report "" "$(cat "$W30/stub/hookout" 2>/dev/null)" "case 30 [guard]: ... and none of the run's hooks printed anything"
+    # Every entry of the guard, each fed a payload on stdin, with and without it.
+    entries30="--hook --turn-end --turn-fail --session-end --subagent-start --subagent-end --compact-mark --perm-mark --compact-gate --post-tool-batch --rewake-waiter"
+    pl30=$(printf '{"session_id":"%s","transcript_path":"/t.jsonl","cwd":"/w","reason":"other","trigger":"manual","agent_id":"a1","prompt_id":"p9","hook_event_name":"StopFailure","error_type":"rate_limit"}' "$UUID")
+    GW=$(world); GC=$(world); gout=""; cout=""
+    for h in $entries30; do
+        gout="$gout$(printf '%s' "$pl30" | sess "$GW" SESSION_CLOSE_COMPACT_RUN=1 CLAUDE_CODE_ENTRYPOINT=cli -- "$h")"
+        cout="$cout$(printf '%s' "$pl30" | sess "$GC" -- "$h")"
+    done
+    report "0 0 0" "$(lines30 "$GW/data/turn-log.tsv") $(ls "$GW/data/sessions" | grep -c .) ${#gout}" \
+        "case 30 [guard]: all eleven entries leave the turn log, the session state and the output alone under the guard"
+    report 9 "$(lines30 "$GC/data/turn-log.tsv")" "case 30 [guard]: ... where the same calls without it write nine rows (the control)"
 fi
 
 echo
