@@ -30,8 +30,6 @@
 # session's id; and `claude -p --resume ID /compact`, run from the launch folder
 # on the model of the last request, reads the cache the session left.
 
-CC_POLL=1   # seconds between looks at a running compaction
-
 # Run a command detached: a fresh session (so it is out of the hook's process
 # group) that is not a descendant either, since Claude Code kills the hook's
 # descendants as well as its group when the entry times out. perl does the
@@ -154,7 +152,7 @@ cc_wait() {  # SID TRANSCRIPT CWD LOGIN — the login the box was on at the clos
 # Why the compaction must not start now, or nothing. Reads the decision's
 # variables.
 cc_refusal() {
-  local l c p
+  local l c p age
   [ "${SESSION_CLOSE_COMPACT:-on}" = on ] || { echo "switched off"; return; }
   [ -r "$tp" ] || { echo "transcript gone"; return; }
   read -r l _ _ c <<<"$(compact_last_request "$tp")"
@@ -163,8 +161,8 @@ cc_refusal() {
   p=$(cc_open_pid "$sid" "")
   [ -z "$p" ] || { echo "open again in process $p"; return; }
   [ "$(session_login_read)" = "$login0" ] || { echo "login changed"; return; }
-  [ $(( $(now_epoch) - last0 )) -le "$SESSION_CLOSE_COMPACT_LATEST" ] \
-    || { echo "cache cold: last request $(( $(now_epoch) - last0 ))s ago"; return; }
+  age=$(( $(now_epoch) - last0 ))
+  [ "$age" -le "$SESSION_CLOSE_COMPACT_LATEST" ] || { echo "cache cold: last request ${age}s ago"; return; }
   [ -d "$dir" ] || { echo "folder gone: $dir"; return; }
   command -v claude >/dev/null 2>&1 || echo "claude not on PATH"
 }
@@ -192,7 +190,7 @@ cc_run() {
     if [ $(( $(date +%s) - start )) -ge "$SESSION_CLOSE_COMPACT_LIMIT" ]; then
       stop="over the ${SESSION_CLOSE_COMPACT_LIMIT}s limit"; break
     fi
-    sleep "$CC_POLL"
+    sleep 1
   done
   [ -z "$stop" ] || kill "$pid"
   rc=0; wait "$pid" || rc=$?
