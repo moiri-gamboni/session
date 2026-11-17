@@ -1609,6 +1609,18 @@ else
     rm -f "$W15/data/resume-queue.tsv"
     out=$( (sess "$W15" PATH="$NOTMUX" -- reboot -n >/dev/null) 2>&1 ); rc=$?
     report 0 "$rc" "case 15: reboot --dry-run works without tmux — it writes a snapshot and nothing else"
+    # A headless run registers as an interactive session too; it is not one to reopen.
+    printf '{"pid":%d,"sessionId":"%s","name":"run","status":"idle","tmux":"","messagingSocketPath":"","kind":"interactive","entrypoint":"sdk-cli","cwd":"%s","updatedAt":3}\n' \
+        "$PPID" "$UUID2" "$TMP" > "$W15/cfg/sessions/$PPID.json"
+    rm -f "$W15/data/resume-queue.tsv"
+    (sess "$W15" PATH="$NOTMUX" -- reboot -n >/dev/null 2>&1)
+    report "$UUID" "$(cut -f1 "$W15/data/resume-queue.tsv")" \
+        "case 15: a headless run's registry record (kind interactive, entrypoint sdk-cli) is not in the reboot snapshot"
+    printf '{"pid":%d,"sessionId":"%s","name":"cli","status":"idle","tmux":"","messagingSocketPath":"","kind":"interactive","entrypoint":"cli","cwd":"%s","updatedAt":3}\n' \
+        "$PPID" "$UUID2" "$TMP" > "$W15/cfg/sessions/$PPID.json"
+    (sess "$W15" PATH="$NOTMUX" -- reboot -n >/dev/null 2>&1)
+    report "2" "$(cut -f1 "$W15/data/resume-queue.tsv" | grep -c .)" "case 15: ... while one with another entrypoint, or none, is"
+    rm -f "$W15/cfg/sessions/$PPID.json"
     rm -f "$W15/data/resume-queue.tsv"
     # peers, by contrast, invokes no tmux at all — it reads the presence
     # registry and prints the pane id the registry recorded. A tmux guard here

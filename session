@@ -760,7 +760,9 @@ live_sessions() {
   regdir="$SESSION_CFG/sessions"
   for f in "$regdir"/*.json; do [ -e "$f" ] && { found=1; break; }; done
   [ "$found" = 1 ] || return 0
-  jq -rs '[.[] | select(.kind == "interactive")]
+  # A headless run registers as interactive too, under its own pid and with the
+  # entrypoint sdk-cli; it is not a window to reopen.
+  jq -rs '[.[] | select(.kind == "interactive" and (.entrypoint // "") != "sdk-cli")]
           | group_by(.sessionId) | map(max_by(.updatedAt))
           | .[] | [.pid, .sessionId, (.cwd // "")] | @tsv' "$regdir"/*.json 2>/dev/null \
     | while IFS=$'\t' read -r pid sid cwd; do
