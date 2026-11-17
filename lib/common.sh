@@ -529,10 +529,9 @@ session_prune_daily() {
   # Claude Code cancels a status line run, and kills a hook that outlives its
   # timeout, at any point: one cut off between creating a temp file and moving
   # it into place leaves it behind, and its name carries the pid, so nothing ever
-  # writes it again (killing renders at random points left one, empty or
-  # complete, in 19 of 250 with TERM and 15 of 250 with KILL). A kill cannot be
-  # trapped, so they are swept here instead, once an hour old: no run is still
-  # about to move one by then.
+  # writes it again, empty or complete. A kill cannot be trapped, so they are
+  # swept here instead, once an hour old: no run is still about to move one by
+  # then.
   find "$SESSION_DATA" -maxdepth 1 -type f -name '*.tmp.[0-9]*' -mmin +60 -delete
   [ -d "$SESSION_SNAPDIR" ] && find "$SESSION_SNAPDIR" -type f -mtime +8 -delete
   [ -d "$SESSION_PANEDIR" ] && find "$SESSION_PANEDIR" -type f -mtime +8 -delete
