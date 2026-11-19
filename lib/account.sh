@@ -54,9 +54,10 @@
 # limit, so `_acct_decide` passes its 5-hour figure as 0 (acct_no_five_hour,
 # section 4).
 #
-# ── the threshold is an argument ────────────────────────────────────────────
-# "Spent" means at or above a percentage the caller supplies, so the policy is
-# testable at any threshold; the decision in section 6 passes ACCT_SPENT_PCT.
+# ── the thresholds are an argument ──────────────────────────────────────────
+# "Spent" means at or above a percentage the caller supplies for that window,
+# as one FIVE:WEEK:FABLE argument (98:99:98), so the policy is testable at any
+# thresholds; the decision in section 6 passes the three of section 2.
 
 # ── 2. constants ──────────────────────────
 # Two intervals, and they are deliberately not one. The cooldown bounds
@@ -136,11 +137,12 @@ acct_num() {  # CELL -> an integer, or -1
 # or `-` for none. Inputs may be raw table cells or integers: each goes through
 # acct_num, which is idempotent over its own output, so there is one
 # normalising step and no arithmetic ever meets a sentinel.
-acct_blocked() {  # THRESHOLD FIVE WEEK FABLE UNKNOWN_BLOCKS -> - | 5h[,week][,fable]
-  local thr="$1" unk="$5" out=""
-  _acct_spent "$thr" "$(acct_num "$2")" "$unk" && out="5h"
-  _acct_spent "$thr" "$(acct_num "$3")" "$unk" && out="${out:+$out,}week"
-  _acct_spent "$thr" "$(acct_num "$4")" "$unk" && out="${out:+$out,}fable"
+acct_blocked() {  # FIVE:WEEK:FABLE FIVE WEEK FABLE UNKNOWN_BLOCKS -> - | 5h[,week][,fable]
+  local thr5 thrw thrf unk="$5" out=""
+  IFS=: read -r thr5 thrw thrf <<<"$1"
+  _acct_spent "$thr5" "$(acct_num "$2")" "$unk" && out="5h"
+  _acct_spent "$thrw" "$(acct_num "$3")" "$unk" && out="${out:+$out,}week"
+  _acct_spent "$thrf" "$(acct_num "$4")" "$unk" && out="${out:+$out,}fable"
   printf '%s\n' "${out:--}"
 }
 _acct_spent() {  # THRESHOLD VALUE UNKNOWN_BLOCKS
@@ -192,7 +194,7 @@ acct_admissible() {  # CAND_BLOCKS LIVE_BLOCKS
 #
 # The winner carries the highest tier of any row, so a caller can rank first
 # and test admissibility once: if the winner is inadmissible, no candidate is.
-acct_rank() {  # THRESHOLD  (rows on stdin) -> the winning login, or nothing
+acct_rank() {  # FIVE:WEEK:FABLE  (rows on stdin) -> the winning login, or nothing
   local thr="$1" login fresh f5 wk fb tier fkey worst
   while IFS=$'\t' read -r login fresh f5 wk fb; do
     f5=$(acct_num "$f5"); wk=$(acct_num "$wk"); fb=$(acct_num "$fb")
@@ -203,7 +205,7 @@ acct_rank() {  # THRESHOLD  (rows on stdin) -> the winning login, or nothing
     # zero-padded because the key is compared as bytes: unpadded, 10 would beat
     # 9 on the first digit. Three digits is enough — the tier digit sorts
     # first, so two rows only meet here when they are on the same rung, and on
-    # rungs 1 and 2 every window that counts is below the threshold, which is
+    # rungs 1 and 2 every window that counts is below its threshold, which is
     # never above 100.
     worst=$f5
     [ "$wk" -gt "$worst" ] && worst=$wk
@@ -786,7 +788,7 @@ _acct_decide() {  # TRIGGER SID DRY ASSUME
     *)  echo "session account auto: SESSION_AUTO_SWITCH is '${SESSION_AUTO_SWITCH:-}' — it takes on or off" >&2
         _acct_say refuse - - bad-mode - -; return 4 ;;
   esac
-  thr=$ACCT_SPENT_PCT
+  thr="$ACCT_SPENT_PCT:$ACCT_SPENT_PCT:$ACCT_SPENT_PCT"
   cfg=$(acct_cfg)
   [ -s "$cfg/.credentials.json" ] || {
     echo "session account auto: this Claude Code stores credentials in the macOS Keychain, which this build cannot swap; see README.md" >&2

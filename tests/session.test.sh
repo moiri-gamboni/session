@@ -4185,16 +4185,26 @@ abc|-1
 NUM20EOF
 
 # ── acct_blocked: which windows are spent, in canonical order ───────────────
-report fable  "$(acct_blocked 90 2 65 100 0)"   "case 20: acct_blocked names the Fable window alone"
-report -      "$(acct_blocked 90 2 65 40 0)"    "case 20: ... and a dash when nothing is spent"
-report 5h     "$(acct_blocked 90 103 31 54 0)"  "case 20: ... a five-hour window over 100%"
-report 5h,week,fable "$(acct_blocked 90 95 95 95 0)" "case 20: ... all three in canonical order"
-report 5h     "$(acct_blocked 90 90 10 10 0)"   "case 20: ... at the threshold, not merely above it"
-report fable  "$(acct_blocked 90 '~0%' '65%' '100%' 0)" "case 20: ... over raw table cells as well as integers"
-report 5h     "$(acct_blocked 90 -1 10 10 1)"   "case 20: an unknown window blocks when UNKNOWN_BLOCKS=1"
-report -      "$(acct_blocked 90 -1 10 10 0)"   "case 20: ... and does not when it is 0"
-report fable  "$(acct_blocked 90 10 10 -1 1)"   "case 20: ... which is what caps an unknown-Fable candidate at tier 1"
-report -      "$(acct_blocked 101 100 100 100 0)" "case 20: a threshold above every figure blocks nothing"
+report fable  "$(acct_blocked 90:90:90 2 65 100 0)"   "case 20: acct_blocked names the Fable window alone"
+report -      "$(acct_blocked 90:90:90 2 65 40 0)"    "case 20: ... and a dash when nothing is spent"
+report 5h     "$(acct_blocked 90:90:90 103 31 54 0)"  "case 20: ... a five-hour window over 100%"
+report 5h,week,fable "$(acct_blocked 90:90:90 95 95 95 0)" "case 20: ... all three in canonical order"
+report 5h     "$(acct_blocked 90:90:90 90 10 10 0)"   "case 20: ... at the threshold, not merely above it"
+report fable  "$(acct_blocked 90:90:90 '~0%' '65%' '100%' 0)" "case 20: ... over raw table cells as well as integers"
+report 5h     "$(acct_blocked 90:90:90 -1 10 10 1)"   "case 20: an unknown window blocks when UNKNOWN_BLOCKS=1"
+report -      "$(acct_blocked 90:90:90 -1 10 10 0)"   "case 20: ... and does not when it is 0"
+report fable  "$(acct_blocked 90:90:90 10 10 -1 1)"   "case 20: ... which is what caps an unknown-Fable candidate at tier 1"
+report -      "$(acct_blocked 101:101:101 100 100 100 0)" "case 20: a threshold above every figure blocks nothing"
+# Each window against its own bar: FIVE:WEEK:FABLE, as the decision passes them.
+report 5h,week,fable "$(acct_blocked 10:20:30 10 20 30 0)" "case 20: each window is spent at its own threshold in FIVE:WEEK:FABLE order"
+report -      "$(acct_blocked 10:20:30 9 19 29 0)"  "case 20: ... and none is spent one under it"
+report -      "$(acct_blocked 98:99:98 97 98 97 0)" "case 20: with the decision's bars, each window one under its own is not spent"
+report 5h     "$(acct_blocked 98:99:98 98 10 10 0)" "case 20: ... the five-hour window is spent at 98"
+report -      "$(acct_blocked 98:99:98 10 98 10 0)" "case 20: ... the weekly window is not spent at 98"
+report week   "$(acct_blocked 98:99:98 10 99 10 0)" "case 20: ... but is at 99"
+report fable  "$(acct_blocked 98:99:98 10 10 98 0)" "case 20: ... and the Fable window is spent at 98"
+report 5h,week,fable "$(acct_blocked 98:99:98 98 99 98 0)" "case 20: ... all three at their own bars"
+report week   "$(acct_blocked 98:99:98 10 -1 10 1)" "case 20: an unknown window still blocks under per-window bars when UNKNOWN_BLOCKS=1"
 
 # ── acct_tier: the capability ladder ────────────────────────────────────────
 report 2 "$(acct_tier -)"             "case 20: acct_tier 2 — nothing blocked, every model served"
@@ -4238,11 +4248,11 @@ TBL20=$(printf '%s\t%s\t%s\t%s\t%s\n' \
 pick20() {  # LIVE_BLOCKS  (rows on stdin) -> the login the switcher would move to
     local liveb="$1" tbl win row f5 wk fb
     tbl=$(cat)
-    win=$(printf '%s\n' "$tbl" | acct_rank 90)
+    win=$(printf '%s\n' "$tbl" | acct_rank 90:90:90)
     [ -n "$win" ] || return 0
     row=$(printf '%s\n' "$tbl" | awk -F'\t' -v l="$win" '$1 == l { print; exit }')
     IFS=$'\t' read -r _ _ f5 wk fb <<<"$row"
-    acct_admissible "$(acct_blocked 90 "$f5" "$wk" "$fb" 1)" "$liveb" && printf '%s\n' "$win"
+    acct_admissible "$(acct_blocked 90:90:90 "$f5" "$wk" "$fb" 1)" "$liveb" && printf '%s\n' "$win"
     return 0
 }
 
@@ -4270,25 +4280,39 @@ report bbb "$(printf 'aaa\tprobe\t-\tn/a\t?\nbbb\tprobe\t50\t50\t50\n' | pick20 
 report "" "$(printf 'aaa\tprobe\t-\tn/a\t?\n' | pick20 fable)" \
     "case 20: ... and on its own it is no candidate at all"
 
-report bbb "$(printf 'aaa\tprobe\t10\t10\t95\nbbb\tfrozen\t10\t10\t10\n' | acct_rank 90)" \
+report bbb "$(printf 'aaa\tprobe\t10\t10\t95\nbbb\tfrozen\t10\t10\t10\n' | acct_rank 90:90:90)" \
     "case 20: acct_rank puts the highest tier first, ahead of probe freshness"
-report bbb "$(printf 'aaa\tfrozen\t10\t10\t10\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+report bbb "$(printf 'aaa\tfrozen\t10\t10\t10\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90:90:90)" \
     "case 20: ... then probe-verified ahead of frozen, whatever the headroom"
-report aaa "$(printf 'aaa\tprobe\t10\t10\t100\nbbb\tprobe\t50\t50\t95\n' | acct_rank 90)" \
+report aaa "$(printf 'aaa\tprobe\t10\t10\t100\nbbb\tprobe\t50\t50\t95\n' | acct_rank 90:90:90)" \
     "case 20: ... then the worst window among the ones the tier depends on — Fable is spent on both, so it does not rank them"
-report bbb "$(printf 'aaa\tprobe\t10\t10\t80\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+report bbb "$(printf 'aaa\tprobe\t10\t10\t80\nbbb\tprobe\t50\t50\t50\n' | acct_rank 90:90:90)" \
     "case 20: ... while at tier 2 Fable does rank them, so the row with 80% there loses to one at 50% everywhere"
-report aaa "$(printf 'bbb\tprobe\t10\t10\t10\naaa\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+report aaa "$(printf 'bbb\tprobe\t10\t10\t10\naaa\tprobe\t10\t10\t10\n' | acct_rank 90:90:90)" \
     "case 20: ... and a tie breaks on the name"
-report 'B@example.com' "$(printf 'B@example.com\tprobe\t10\t10\t10\na@example.com\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+report 'B@example.com' "$(printf 'B@example.com\tprobe\t10\t10\t10\na@example.com\tprobe\t10\t10\t10\n' | acct_rank 90:90:90)" \
     "case 20: ... collated as bytes, so the answer does not move with the machine's locale"
-report aaa "$(printf 'aaa\tprobe\t9\t9\t9\nbbb\tprobe\t10\t10\t10\n' | acct_rank 90)" \
+report aaa "$(printf 'aaa\tprobe\t9\t9\t9\nbbb\tprobe\t10\t10\t10\n' | acct_rank 90:90:90)" \
     "case 20: ... and the windows compare as numbers, so 10% does not outrank 9% on its first digit"
-report "" "$(printf '' | acct_rank 90)" "case 20: no rows, no winner"
-report aaa "$(printf 'aaa\tprobe\t10\t10\t10\n' | acct_rank 90)" "case 20: one row wins on its own"
-report aaa "$(printf '\naaa\tprobe\t50\t50\t50\n' | acct_rank 90)" \
+report "" "$(printf '' | acct_rank 90:90:90)" "case 20: no rows, no winner"
+report aaa "$(printf 'aaa\tprobe\t10\t10\t10\n' | acct_rank 90:90:90)" "case 20: one row wins on its own"
+report aaa "$(printf '\naaa\tprobe\t50\t50\t50\n' | acct_rank 90:90:90)" \
     "case 20: a blank row cannot suppress a real candidate — it is tier 0 and frozen by construction"
-report "" "$(printf '\n' | acct_rank 90)" "case 20: ... and on its own it wins nothing"
+report "" "$(printf '\n' | acct_rank 90:90:90)" "case 20: ... and on its own it wins nothing"
+
+# Each window ranks against its own bar too. The first row's five-hour figure
+# is at its bar and the second's weekly figure is under its own, so the second is
+# on tier 2 and the first on tier 0 although the first sorts first by name.
+report bbb "$(printf 'aaa\tprobe\t98\t10\t10\nbbb\tprobe\t10\t98\t10\n' | acct_rank 98:99:98)" \
+    "case 20: acct_rank spares a weekly figure at 98, which is under its bar, and not a five-hour one"
+# Tier comes before probe freshness, so a clean frozen login outranks a probed
+# one that is spent or short of Fable.
+report aaa "$(printf 'aaa\tfrozen\t10\t10\t10\nbbb\tprobe\t10\t99\t10\n' | acct_rank 98:99:98)" \
+    "case 20: ... a weekly figure at 99 is tier 0, below a clean login even a frozen one"
+report aaa "$(printf 'aaa\tfrozen\t10\t10\t10\nbbb\tprobe\t10\t10\t98\n' | acct_rank 98:99:98)" \
+    "case 20: ... a Fable figure at 98 is tier 1, below a clean login even a frozen one"
+report bbb "$(printf 'aaa\tprobe\t10\t99\t10\nbbb\tfrozen\t10\t10\t98\n' | acct_rank 98:99:98)" \
+    "case 20: ... and tier 1 stands above tier 0, a probed one included"
 
 echo "--- wake-target: a spent Fable window is what the waiter sleeps to ---"
 
