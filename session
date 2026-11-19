@@ -1677,10 +1677,10 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  login: hold unless one stands strictly higher on the
                  capability ladder than the live one (5h and weekly gate every
                  model, the Fable weekly gates only Fable). A window counts
-                 as spent just short of its cap (the weekly's bar sits a
-                 point above the 5-hour window's), and the status line asks
-                 for a decision when the live login's 5-hour or weekly
-                 window reaches it. Shortly before that it also has the
+                 as spent at 98% (5-hour, Fable weekly) or 99% (weekly),
+                 and the status line asks for a decision when the live
+                 login's 5-hour or weekly window reaches it. From 95% of
+                 the 5-hour window or 98% of the weekly it also has the
                  plugin compact its large sessions first, when a login
                  could take over (SESSION_PRE_SWITCH_COMPACT=off in
                  session.conf turns that off alone). Every decision leaves
@@ -2536,7 +2536,7 @@ Accounts (several subscription logins, one config dir; `session account -h`):
                                    SESSION_AUTO_SWITCH=off in session.conf turns
                                    both off. `session account -h` has the
                                    options, the exit codes and the k=v output
-                                   (and the compaction the plugin does before it)
+                                   (and the compaction the plugin does ahead of a switch)
   session account expiry [--notify] each saved login's sign-in end; --notify pushes
                                    two days and six hours ahead (run it from cron)
   Adding a login = run /login in a session; it is vaulted automatically, and the

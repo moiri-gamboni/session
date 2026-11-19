@@ -574,9 +574,9 @@ report "--switch-soon $ACCT $FR" "$(callwait)" \
 render "$P27c" SESSION_DATA_DIR="$D27" >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" "case 27: ... and the same figure rendered again asks nothing more"
-# The weekly window's bars sit three points higher than the 5-hour window's
-# (weekly: compaction from 98%, decision at 99%), because it fills slowly enough
-# that a compaction started at 95% would finish hours before the switch.
+# The weekly window has its own, higher figures (compaction from 98%, decision
+# at 99%): it fills slowly enough that a compaction started at 95% would finish
+# long before the switch.
 : > "$CALLS"
 render "$P27d" SESSION_DATA_DIR="$D27" >/dev/null
 sleep 1
