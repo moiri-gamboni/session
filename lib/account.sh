@@ -84,22 +84,37 @@
 ACCT_COOLDOWN_S=900
 ACCT_PROBATION_S=600
 
-# A window counts as spent at 98%, just short of the cap: the status line asks
-# for a decision when a fresh figure reaches it (the usage trigger), so the box
-# moves before any turn dies on the cap, and a candidate this close to its cap
-# is not worth moving every session onto. A login at 90% of its week still has
-# hours of work in it, and switching away from one, or refusing to switch to
-# one, would strand that, so this is deliberately not the 90% the StopFailure
-# waiter uses to guess which window a dead turn hit.
-ACCT_SPENT_PCT=98
+# A window counts as spent at its own bar, just short of its cap: the status
+# line asks for a decision when a fresh figure for the live login reaches it
+# (the usage trigger), so the box moves before any turn dies on the cap, and a
+# candidate this close to its cap is not worth moving every session onto. The
+# bars differ because the windows fill at different speeds. Measured on this
+# machine's logs, the 5-hour window goes from 95% to 98% in a median 2.4
+# minutes, so its bar is 98% and no higher. The weekly window takes at least
+# 11.5 minutes over the same three points (a median 46 minutes, a quarter of the
+# climbs over 2.5 hours), 98% to 99% a median 12 minutes and 99% to 100% at
+# least 4, so a weekly bar of 99% still moves the box before the cap. The Fable
+# weekly is not in the status line's payload, so nothing asks for a decision on
+# it; its bar, 98%, is the one a decision taken for another reason applies. None
+# of these is the 90% the StopFailure waiter uses to guess which window a dead
+# turn hit: a login at 90% of a window still has hours of work in it, and
+# switching away from one, or refusing to switch to one, would strand that.
+ACCT_SPENT_5H_PCT=98
+ACCT_SPENT_WEEK_PCT=99
+ACCT_SPENT_FABLE_PCT=98
 
-# From this figure the status line tells the plugin a move is coming, so it can
-# compact its large sessions while the old login's cache is still warm (README,
-# Compacting ahead of a switch). Three points under ACCT_SPENT_PCT is minutes of
-# work on a 5-hour window at the pace that fills it, hours on a weekly one, and
-# a compaction takes a minute or two.
+# From these figures the status line tells the plugin a move is coming, so it
+# can compact its large sessions while the old login's cache is still warm
+# (README, Compacting ahead of a switch). A compaction takes one to five minutes,
+# so the figure has to come that long before the window's spent bar. The 5-hour
+# window, a median 2.4 minutes from 95% to its bar, is asked from 95%. The
+# weekly, whose three points from 95% to its bar take at least 11.5 minutes and
+# a median 46, is asked from 98%, a median 12 minutes short of its bar: from 95%
+# the compaction would be done long before the switch.
 # shellcheck disable=SC2034  # read by statusline.sh
-ACCT_SOON_PCT=95
+ACCT_SOON_5H_PCT=95
+# shellcheck disable=SC2034  # read by statusline.sh
+ACCT_SOON_WEEK_PCT=98
 # How often that ask may probe the logins, whatever it found. Its own number,
 # not the decision cooldown's: it limits what an ask costs, where the cooldown
 # limits how often the box may move.
@@ -574,10 +589,11 @@ acct_log_key() {  # KEY -> the value, or non-zero if no row carries it
 # swap, so unlike section 3 it runs only inside a `session` process. Three of
 # them reach it: a human typing the verb, the auto-resume waiter on a cap or
 # auth death, and the status line when a fresh figure for the live login
-# reaches ACCT_SPENT_PCT. The last two have no one reading stderr — on the
-# waiter's path stderr is the wake channel, and the status line runs the
-# decision detached with its output discarded — which is why every diagnostic
-# here goes to the audit row and the k=v output instead.
+# reaches its window's spent bar (ACCT_SPENT_5H_PCT, ACCT_SPENT_WEEK_PCT). The
+# last two have no one reading stderr — on the waiter's path stderr is the wake
+# channel, and the status line runs the decision detached with its output
+# discarded — which is why every diagnostic here goes to the audit row and the
+# k=v output instead.
 
 # The decision's mutex, resolved per call like the log's path so both follow
 # SESSION_DATA wherever a caller puts it.
@@ -788,7 +804,7 @@ _acct_decide() {  # TRIGGER SID DRY ASSUME
     *)  echo "session account auto: SESSION_AUTO_SWITCH is '${SESSION_AUTO_SWITCH:-}' — it takes on or off" >&2
         _acct_say refuse - - bad-mode - -; return 4 ;;
   esac
-  thr="$ACCT_SPENT_PCT:$ACCT_SPENT_PCT:$ACCT_SPENT_PCT"
+  thr="$ACCT_SPENT_5H_PCT:$ACCT_SPENT_WEEK_PCT:$ACCT_SPENT_FABLE_PCT"
   cfg=$(acct_cfg)
   [ -s "$cfg/.credentials.json" ] || {
     echo "session account auto: this Claude Code stores credentials in the macOS Keychain, which this build cannot swap; see README.md" >&2
@@ -909,7 +925,7 @@ _acct_decide() {  # TRIGGER SID DRY ASSUME
   winner=$(printf '%s' "$rankrows" | acct_rank "$thr")
   if [ -n "$winner" ]; then
     wblocks=$(printf '%s' "$cinfo" | awk -F'\t' -v l="$winner" '$1 == l { print $2; exit }')
-    # On the usage trigger the live login is at ACCT_SPENT_PCT, not dead, and
+    # On the usage trigger the live login is at its spent bar, not dead, and
     # still serves every model it served, Fable included. A move onto a login
     # without Fable would stop every Fable session with nothing telling it to
     # change model, so that move waits for the cap death, whose wake-up says so.
@@ -1049,27 +1065,28 @@ acct_auto() {  # [--trigger cap|auth|usage|manual] [--sid SID] [--dry-run [--ass
   return $rc
 }
 
-# The ask behind the status line's ACCT_SOON_PCT trigger: tell the plugin the
-# box is about to move, so it compacts its large sessions while the old login's
-# prompt cache is still warm (hooks/compact-before-switch.ts reads the marker).
-# Run detached by the status line, so nothing reads its output or its exit code.
+# The ask behind the status line's compaction trigger (ACCT_SOON_5H_PCT,
+# ACCT_SOON_WEEK_PCT): tell the plugin the box is about to move, so it compacts
+# its large sessions while the old login's prompt cache is still warm
+# (hooks/compact-before-switch.ts reads the marker). Run detached by the status
+# line, so nothing reads its output or its exit code.
 #
 # The marker is <config dir>/.session-switch-soon, three lines: login= the live
 # login, to= the login a cap would move the box to, reset= the epoch second the
 # window that crossed resets. It is written only when a login stands higher, so
 # a box with nowhere to go leaves the plugin inert, and not again while it
 # names this login and window, so the sessions compact once for it. The marker
-# names one window: with the weekly and the 5-hour figures both past
-# ACCT_SOON_PCT it follows whichever the status line last named, and each change
-# lets a session that has grown past the floor again compact again. A session's
-# figures change often, so the ask is also held to one per ACCT_SOON_ASK_S
+# names one window: with the weekly and the 5-hour figures both past their
+# compaction figures it follows whichever the status line last named, and each
+# change lets a session that has grown past the floor again compact again. A
+# session's figures change often, so the ask is also held to one per ACCT_SOON_ASK_S
 # whatever it found: the stamp is taken before the probe, not after, because
 # the probe is the expense. Several sessions asking in the same instant may each
 # pass the stamp; their markers are identical, which the plugin reads as one.
 #
 # `--dry-run --assume-spent` on the cap trigger is the decision a cap death on
 # the live login would take, so the marker covers both moves the box can make:
-# the one at ACCT_SPENT_PCT, onto a login serving every model, and the one a
+# the one at a window's spent bar, onto a login serving every model, and the one a
 # cap death makes onto a login that serves everything but Fable.
 # The login the status line saw must still be the live one: a marker naming a
 # login the box has left would be read as a switch coming off the new one. The

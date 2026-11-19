@@ -498,7 +498,7 @@ report "" "$(cat "$CALLS")" "case 24: an unknown login never calls account save"
 report present "$(exists "$TMP/data24b/session-log.tsv")" \
     "case 24: ... and the render still does the rest of its work"
 
-echo "--- case 26: a fresh figure at the switch threshold asks for a decision ---"
+echo "--- case 26: a fresh figure at a window's switch threshold asks for a decision ---"
 
 # The decision runs detached, so the stub's record is polled for rather than
 # read straight after the render returns.
@@ -511,15 +511,15 @@ D26="$TMP/data26"
 touch "$VAULT/$ACCT.json"   # newer than the credentials: no autosave call in the record
 P26a="$TMP/p26a.json"; mkpayload "$SID" 0.1 90 50 "$FR" "$WR" "switch" > "$P26a"
 P26b="$TMP/p26b.json"; mkpayload "$SID" 0.2 91 50 "$FR" "$WR" "switch" > "$P26b"
-P26c="$TMP/p26c.json"; mkpayload "$SID" 0.3 91 98 "$FR" "$WR" "switch" > "$P26c"
+P26c="$TMP/p26c.json"; mkpayload "$SID" 0.3 91 99 "$FR" "$WR" "switch" > "$P26c"
 render "$P26a" SESSION_DATA_DIR="$D26" >/dev/null    # first sighting: unowned, never fresh
 : > "$CALLS"
 render "$P26b" SESSION_DATA_DIR="$D26" >/dev/null
 sleep 1
-report "" "$(cat "$CALLS")" "case 26: a fresh figure below 98% asks for nothing"
+report "" "$(cat "$CALLS")" "case 26: a fresh figure well below both thresholds asks for nothing"
 render "$P26c" SESSION_DATA_DIR="$D26" >/dev/null
 report "account auto --trigger usage --sid $SID" "$(callwait)" \
-    "case 26: a fresh weekly figure at 98% asks for a decision on the usage trigger"
+    "case 26: a fresh weekly figure at 99% asks for a decision on the usage trigger"
 : > "$CALLS"
 render "$P26c" SESSION_DATA_DIR="$D26" >/dev/null
 sleep 1
@@ -548,7 +548,7 @@ render "$P26c" SESSION_DATA_DIR="$D26o" SESSION_AUTO_SWITCH=off >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" "case 26: with the switcher off, nothing is asked"
 
-echo "--- case 27: a fresh figure at 95% asks for a compaction ahead of the switch ---"
+echo "--- case 27: a fresh figure at 95% of the 5-hour window or 98% of the weekly asks for a compaction ahead of the switch ---"
 
 # Same shape as case 26: a first sighting is never fresh, and the ask runs
 # detached, so the stub's record is polled for.
@@ -558,14 +558,15 @@ p27() {  # COST FIVE WEEK -> a payload file
     printf '%s\n' "$TMP/p27.$1.json"
 }
 P27a=$(p27 0.1 90 50); P27b=$(p27 0.2 94 50); P27c=$(p27 0.3 95 50)
-P27d=$(p27 0.4 50 95); P27e=$(p27 0.5 97 50); P27f=$(p27 0.6 99 50)
+P27d=$(p27 0.4 50 97); P27e=$(p27 0.5 97 50); P27f=$(p27 0.6 98 50)
+P27w98=$(p27 0.9 50 98); P27w99=$(p27 0.95 50 99)
 
 D27="$TMP/data27"
 render "$P27a" SESSION_DATA_DIR="$D27" >/dev/null    # first sighting: unowned, never fresh
 : > "$CALLS"
 render "$P27b" SESSION_DATA_DIR="$D27" >/dev/null
 sleep 1
-report "" "$(cat "$CALLS")" "case 27: a fresh figure below 95% asks for nothing"
+report "" "$(cat "$CALLS")" "case 27: a fresh five-hour figure at 94% asks for nothing"
 render "$P27c" SESSION_DATA_DIR="$D27" >/dev/null
 report "--switch-soon $ACCT $FR" "$(callwait)" \
     "case 27: a fresh five-hour figure at 95% asks, naming the login and the window's reset"
@@ -573,32 +574,47 @@ report "--switch-soon $ACCT $FR" "$(callwait)" \
 render "$P27c" SESSION_DATA_DIR="$D27" >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" "case 27: ... and the same figure rendered again asks nothing more"
+# The weekly window's bars sit three points higher than the 5-hour window's
+# (weekly: compaction from 98%, decision at 99%), because it fills slowly enough
+# that a compaction started at 95% would finish hours before the switch.
+: > "$CALLS"
 render "$P27d" SESSION_DATA_DIR="$D27" >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: a fresh weekly figure at 97% asks for nothing"
+render "$P27w98" SESSION_DATA_DIR="$D27" >/dev/null
 report "--switch-soon $ACCT $WR" "$(callwait)" \
-    "case 27: a fresh weekly figure at 95% asks too, with the weekly window's reset"
+    "case 27: a fresh weekly figure at 98% asks for a compaction, with the weekly window's reset"
+sleep 1
+report 1 "$(grep -c . "$CALLS")" "case 27: ... and not for the decision"
 : > "$CALLS"
 render "$P27e" SESSION_DATA_DIR="$D27" >/dev/null
 report "--switch-soon $ACCT $FR" "$(callwait)" \
-    "case 27: a figure between 95% and 98% still asks"
+    "case 27: a five-hour figure between 95% and 98% still asks"
 
-# At 98% the decision itself is asked, and that is all: its move follows within
-# seconds.
+# At 98% of the 5-hour window or 99% of the weekly the decision itself is asked,
+# and that is all: its move follows within seconds.
 : > "$CALLS"
 render "$P27f" SESSION_DATA_DIR="$D27" >/dev/null
 report "account auto --trigger usage --sid $SID" "$(callwait)" \
-    "case 27: a figure at 98% or more asks the decision and not the compaction"
+    "case 27: a five-hour figure at 98% asks the decision and not the compaction"
+sleep 1
+report 1 "$(grep -c . "$CALLS")" "case 27: ... and nothing else"
+: > "$CALLS"
+render "$P27w99" SESSION_DATA_DIR="$D27" >/dev/null
+report "account auto --trigger usage --sid $SID" "$(callwait)" \
+    "case 27: a weekly figure at 99% asks the decision and not the compaction"
 sleep 1
 report 1 "$(grep -c . "$CALLS")" "case 27: ... and nothing else"
 
-# Both windows over the line: the five-hour one's reset names the marker; and a
-# window whose reset has already passed names nothing to cover.
+# Both windows in their compaction band: the five-hour one's reset names the
+# marker; and a window whose reset has already passed names nothing to cover.
 D27b="$TMP/data27b"
-P27g=$(p27 0.7 96 96)
+P27g=$(p27 0.7 95 98)
 render "$P27a" SESSION_DATA_DIR="$D27b" >/dev/null
 render "$P27b" SESSION_DATA_DIR="$D27b" >/dev/null    # now owned by this login
 : > "$CALLS"
 render "$P27g" SESSION_DATA_DIR="$D27b" >/dev/null
-report "--switch-soon $ACCT $FR" "$(callwait)" "case 27: both windows at 95% name the five-hour window's reset"
+report "--switch-soon $ACCT $FR" "$(callwait)" "case 27: both windows in their band (5-hour 95%, weekly 98%) name the five-hour window's reset"
 D27r="$TMP/data27r"
 P27h="$TMP/p27h.json"; mkpayload "$SID" 0.8 96 50 "$(( NOW - 60 ))" "$WR" "soon" > "$P27h"
 render "$P27a" SESSION_DATA_DIR="$D27r" >/dev/null
@@ -649,7 +665,14 @@ render "$P27b" SESSION_DATA_DIR="$D27q" >/dev/null    # now owned by this login
 : > "$CALLS"
 render "$P27f" SESSION_DATA_DIR="$D27q" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
 report "account auto --trigger usage --sid $SID" "$(callwait)" \
-    "case 27: ... and turning the compaction off leaves the decision at 98% alone"
+    "case 27: ... and turning the compaction off leaves the decision alone"
+D27v="$TMP/data27v"
+render "$P27a" SESSION_DATA_DIR="$D27v" >/dev/null
+render "$P27b" SESSION_DATA_DIR="$D27v" >/dev/null    # now owned by this login
+: > "$CALLS"
+render "$P27w98" SESSION_DATA_DIR="$D27v" SESSION_PRE_SWITCH_COMPACT=off >/dev/null
+sleep 1
+report "" "$(cat "$CALLS")" "case 27: ... and a weekly figure at 98%, short of its decision, asks nothing with the compaction off"
 
 D27s="$TMP/data27s"
 render "$P27a" SESSION_DATA_DIR="$D27s" >/dev/null
@@ -658,7 +681,7 @@ render "$P27b" SESSION_DATA_DIR="$D27s" >/dev/null    # owned by the first login
 render "$P27c" SESSION_DATA_DIR="$D27s" CLAUDE_CONFIG_DIR="$CFG26" >/dev/null
 sleep 1
 report "" "$(cat "$CALLS")" \
-    "case 27: the first fresh figure after a login switch asks nothing, as at 98%"
+    "case 27: the first fresh figure after a login switch asks nothing, as for the decision"
 
 echo "--- case 25: an unreadable lib is a refusal, not a wrong status line ---"
 

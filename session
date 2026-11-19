@@ -1677,8 +1677,10 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  login: hold unless one stands strictly higher on the
                  capability ladder than the live one (5h and weekly gate every
                  model, the Fable weekly gates only Fable). A window counts
-                 as spent at 98%, and the status line asks for a decision
-                 when the live login reaches it. From 95% it also has the
+                 as spent just short of its cap (the weekly's bar sits a
+                 point above the 5-hour window's), and the status line asks
+                 for a decision when the live login's 5-hour or weekly
+                 window reaches it. Shortly before that it also has the
                  plugin compact its large sessions first, when a login
                  could take over (SESSION_PRE_SWITCH_COMPACT=off in
                  session.conf turns that off alone). Every decision leaves
@@ -1987,10 +1989,11 @@ doctor_main() {
     doc pending platform "macOS: \`session account\` cannot swap the login (credentials are in the Keychain)"
   fi
 
-  # 11. The automatic switcher: whether a cap death here, or the status line's
-  #     98% trigger, can move the box onto another vaulted login by itself. Read rather than run — invoking
-  #     `session account auto` would take the decision lock and write an audit
-  #     row for a question nobody asked.
+  # 11. The automatic switcher: whether a cap death here, or the status line
+  #     seeing a window nearly spent, can move the box onto another vaulted
+  #     login by itself. Read rather than run — invoking `session account auto`
+  #     would take the decision lock and write an audit row for a question
+  #     nobody asked.
   #
   #     The elif chain below is two lists, not one. The mode and the two
   #     pendings for a missing credential and a second login are the decision
@@ -2068,7 +2071,7 @@ doctor_main() {
   swmode="${SESSION_AUTO_SWITCH:-on}"
   swpre="${SESSION_PRE_SWITCH_COMPACT:-on}"
   if [ "$swmode" = off ]; then
-    doc pending switcher "off — SESSION_AUTO_SWITCH=off, so neither a cap death nor the status line's 98% trigger moves this box; that line is also the feature's instant rollback"
+    doc pending switcher "off — SESSION_AUTO_SWITCH=off, so neither a cap death nor the status line's trigger moves this box; that line is also the feature's instant rollback"
   elif [ "$swmode" != on ]; then
     doc FAIL switcher "SESSION_AUTO_SWITCH is '$swmode' — it takes on or off, and every decision refuses until it does"
   elif [ "$swpre" != on ] && [ "$swpre" != off ]; then
@@ -2081,7 +2084,7 @@ doctor_main() {
     doc pending switcher "$vaultn vaulted login(s) in $acctdir — a switch needs somewhere to go; \`session account save\` captures each one after its \`/login\`"
   # StopFailure is the hook a turn dying on a cap or an authentication failure
   # reaches; without an armed entry there the switcher has no way to meet such
-  # a death (only the status line's 98% trigger remains). The probe is
+  # a death (only the status line's trigger remains). The probe is
   # structural, because `rewake-waiter` appears in a settings.json that arms
   # nothing (a commented-out entry, an entry on another event, or this one with
   # asyncRewake false, which the harness then runs synchronously).
@@ -2529,11 +2532,11 @@ Accounts (several subscription logins, one config dir; `session account -h`):
                                    than the live one, and move to it if so. The
                                    StopFailure rewake entry runs it on a cap or
                                    authentication death, and the status line
-                                   when the live login reaches 98% of a window;
+                                   when the live login nearly spends a window;
                                    SESSION_AUTO_SWITCH=off in session.conf turns
                                    both off. `session account -h` has the
                                    options, the exit codes and the k=v output
-                                   (and the compaction the plugin does from 95%)
+                                   (and the compaction the plugin does before it)
   session account expiry [--notify] each saved login's sign-in end; --notify pushes
                                    two days and six hours ahead (run it from cron)
   Adding a login = run /login in a session; it is vaulted automatically, and the
@@ -2585,11 +2588,11 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
   session --post-tool-batch        PostToolBatch: stop an attended turn before the
                                    request that would reach the auto-compaction
                                    ceiling; always exit 0, silent unless it stops
-  session --switch-soon LOGIN RESET  the status line's ask from 95% of a window:
-                                   if another login would take the box at the cap,
-                                   write <config dir>/.session-switch-soon for the
-                                   plugin to compact its large sessions on (once per
-                                   login and window, one ask per 15 minutes)
+  session --switch-soon LOGIN RESET  the status line's ask shortly before a window
+                                   is spent: if another login would take the box at
+                                   the cap, write <config dir>/.session-switch-soon
+                                   for the plugin to compact its large sessions on
+                                   (once per login and window, one ask per 15 minutes)
   session --focus-mark in|out C P  tmux client-focus logger (attended time)
   session --focus-mark tick [AGE]  activity sampler (AGE = recency window in
                                    seconds, default 90; set it to one sampling
@@ -3603,7 +3606,7 @@ if [ "$mode" = rewake ]; then
   # death: the status line wrote it before the request that hit the cap, so a
   # window that has just run out still reads a few points low. A fixed number
   # and not a setting: nothing else reads it, and the switcher's own bar for a
-  # login being out is ACCT_SPENT_PCT (lib/account.sh).
+  # login being out is the ACCT_SPENT_*_PCT of lib/account.sh, one per window.
   CAP_NEAR_PCT=90
   f_near=0; w_near=0; fb_near=0
   [ "$f_stale" = 0 ] && (( fp >= CAP_NEAR_PCT )) && f_near=1

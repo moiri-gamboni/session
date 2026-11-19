@@ -5359,9 +5359,10 @@ else
     report 0 "$(dasked "$CD11" tok-e)" \
         "decide: ... and an entry with no expiry is never even asked"
 
-    # ── spent means 98% ───────────────────────────────────────────────────────
-    # A login at 97% of a window still has work in it, so it neither counts as
-    # out when live nor disqualifies a candidate. At 98% it is out on both sides.
+    # ── spent means 98% of the 5-hour window and Fable, 99% of the weekly ────
+    # A login one point under its window's bar still has work in it, so it
+    # neither counts as out when live nor disqualifies a candidate. At the bar it
+    # is out on both sides.
     WD12=$(dworld); CD12=$(curlstub)
     dlive "$WD12" a@example.com tok-a
     dvent "$WD12" a@example.com tok-a; dvent "$WD12" b@example.com tok-b
@@ -5377,8 +5378,42 @@ else
     dvent "$WD12b" a@example.com tok-a; dvent "$WD12b" b@example.com tok-b
     dbody "$CD12b" tok-a 100 10 10; dbody "$CD12b" tok-b 10 98 10
     out=$(dauto "$WD12b" "$CD12b" --trigger cap)
+    report 'switch b@example.com 2' "$(dkv ev "$out") $(dkv to "$out") $(dkv tier "$out")" \
+        "decide: a candidate at 98% of its week is not spent, so the box moves to it"
+
+    WD12c=$(dworld); CD12c=$(curlstub)
+    dlive "$WD12c" a@example.com tok-a
+    dvent "$WD12c" a@example.com tok-a; dvent "$WD12c" b@example.com tok-b
+    dbody "$CD12c" tok-a 100 10 10; dbody "$CD12c" tok-b 10 99 10
+    out=$(dauto "$WD12c" "$CD12c" --trigger cap)
     report 'hold no-candidate' "$(dkv ev "$out") $(dkv reason "$out")" \
-        "decide: a candidate at 98% of its week is spent, so it is no climb"
+        "decide: a candidate at 99% of its week is spent, so it is no climb"
+
+    # Each window against its own bar through the whole decision, as a dry run
+    # (nothing is swapped, so one world serves every row). First the candidate's
+    # side, with a live login that serves nothing: one point under a bar is a
+    # climb, a window at its bar is not.
+    for row in '97 98 97|b@example.com climbed 2' '98 10 10|- no-candidate 0' '10 99 10|- no-candidate 0' \
+               '10 98 10|b@example.com climbed 2' '10 10 98|b@example.com climbed 1' '10 10 97|b@example.com climbed 2'; do
+        WDM=$(dworld); CDM=$(curlstub); read -r m5 mw mf <<<"${row%%|*}"
+        dlive "$WDM" a@example.com tok-a
+        dvent "$WDM" a@example.com tok-a; dvent "$WDM" b@example.com tok-b
+        dbody "$CDM" tok-a 100 10 10; dbody "$CDM" tok-b "$m5" "$mw" "$mf"
+        out=$(dauto "$WDM" "$CDM" --dry-run --trigger cap)
+        report "${row##*|}" "$(dkv to "$out") $(dkv reason "$out") $(dkv tier "$out")" \
+            "decide [bars]: a candidate at 5h/week/Fable ${row%%|*} against a live login that serves nothing"
+    done
+    # Then the live login's side, on the usage trigger, with a clean candidate:
+    # the live login is out at the bar of the window it is at, and not before.
+    for row in '97 10 10|- live-clean' '98 10 10|b@example.com climbed' '10 98 10|- live-clean' '10 99 10|b@example.com climbed'; do
+        WDM=$(dworld); CDM=$(curlstub); read -r m5 mw mf <<<"${row%%|*}"
+        dlive "$WDM" a@example.com tok-a
+        dvent "$WDM" a@example.com tok-a; dvent "$WDM" b@example.com tok-b
+        dbody "$CDM" tok-a "$m5" "$mw" "$mf"; dbody "$CDM" tok-b 10 10 10
+        out=$(dauto "$WDM" "$CDM" --dry-run --trigger usage)
+        report "${row##*|}" "$(dkv to "$out") $(dkv reason "$out")" \
+            "decide [bars]: a live login at 5h/week/Fable ${row%%|*} on the usage trigger"
+    done
 
     WD13=$(dworld); CD13=$(curlstub)
     dlive "$WD13" a@example.com tok-a
@@ -5396,6 +5431,14 @@ else
     report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
         "decide: a live login at 98% of its five hours is out, so the box climbs off it"
 
+    WD13w=$(dworld); CD13w=$(curlstub)
+    dlive "$WD13w" a@example.com tok-a
+    dvent "$WD13w" a@example.com tok-a; dvent "$WD13w" b@example.com tok-b
+    dbody "$CD13w" tok-a 10 98 10; dbody "$CD13w" tok-b 10 10 10
+    out=$(dauto "$WD13w" "$CD13w" --trigger cap)
+    report 'hold live-clean' "$(dkv ev "$out") $(dkv reason "$out")" \
+        "decide: a live login at 98% of its week is not out, so a death there moves nothing"
+
     # ── the usage trigger: the status line asking before any turn dies ────────
     # A fresh figure at the threshold reaches a decision of its own. Its holds
     # bound only its own retries: a cap or authentication death after one still
@@ -5405,9 +5448,9 @@ else
     WD13u=$(dworld); CD13u=$(curlstub); DLOG13u="$WD13u/data/switch-log.tsv"
     dlive "$WD13u" a@example.com tok-a
     dvent "$WD13u" a@example.com tok-a; dvent "$WD13u" b@example.com tok-b
-    dbody "$CD13u" tok-a 10 98 10; dbody "$CD13u" tok-b 10 10 10
+    dbody "$CD13u" tok-a 10 99 10; dbody "$CD13u" tok-b 10 10 10
     out=$(dauto "$WD13u" "$CD13u" --trigger usage --sid sid-u); rc=$?
-    report 0 "$rc" "decide [usage]: a live login at 98% of its week switches on the usage trigger"
+    report 0 "$rc" "decide [usage]: a live login at 99% of its week switches on the usage trigger"
     report 'switch b@example.com' "$(dkv ev "$out") $(dkv to "$out")" \
         "decide [usage]: ... to the login that stands higher"
     report 'switch usage climbed' "$(awk -F'\t' 'NR==1{print $2, $5, $6}' "$DLOG13u")" \
@@ -5415,6 +5458,16 @@ else
     report "$(printf 'from=a@example.com\nto=b@example.com\nreason=weekly limit')" \
         "$(cat "$WD13u/cfg/.session-login-switch" 2>&1)" \
         "decide [usage]: ... and leaving the switch marker running sessions reload on"
+
+    WD13x=$(dworld); CD13x=$(curlstub); DLOG13x="$WD13x/data/switch-log.tsv"
+    dlive "$WD13x" a@example.com tok-a
+    dvent "$WD13x" a@example.com tok-a; dvent "$WD13x" b@example.com tok-b
+    dbody "$CD13x" tok-a 10 98 10; dbody "$CD13x" tok-b 10 10 10
+    out=$(dauto "$WD13x" "$CD13x" --trigger usage --sid sid-u); rc=$?
+    report '3 hold live-clean' "$rc $(dkv ev "$out") $(dkv reason "$out")" \
+        "decide [usage]: a live login at 98% of its week is not spent, so the usage trigger holds"
+    report 'tok-a absent' "$(jq -r '.claudeAiOauth.accessToken' "$WD13x/cfg/.credentials.json") $([ -e "$WD13x/cfg/.session-login-switch" ] && echo present || echo absent)" \
+        "decide [usage]: ... leaving the live login and writing no switch marker"
 
     WD13h=$(dworld); CD13h=$(curlstub); DLOG13h="$WD13h/data/switch-log.tsv"
     dlive "$WD13h" a@example.com tok-a
@@ -5646,7 +5699,7 @@ DFAILEOF
         "decide: ... and nothing is decided on it"
 
     # ── --assume-spent: where a cap on the live login would send the box ──────
-    # The ask behind the status line's 95% trigger. The live login is ranked as
+    # The ask behind the status line's compaction trigger. The live login is ranked as
     # if its five-hour and weekly windows were spent, on the figures it really
     # has for Fable, and everything else is a dry run.
     DNOTE_AS="$TMP/decide-notified-as"
@@ -5787,7 +5840,8 @@ DFAILEOF
         "switch-soon: ... and writes the marker once a login stands higher"
 
     # A login that serves everything but Fable is where a cap death would send
-    # the box, though the status line's 98% trigger would not: it gets a marker.
+    # the box, though the status line's decision, asked before the cap, would
+    # not: it gets a marker.
     WSF=$(dworld); CSF=$(curlstub); MSF="$WSF/cfg/.session-switch-soon"
     dlive "$WSF" a@example.com tok-a
     dvent "$WSF" a@example.com tok-a; dvent "$WSF" b@example.com tok-b
@@ -5796,6 +5850,20 @@ DFAILEOF
     out=$(dsoon "$WSF" "$CSF" a@example.com 4000000000)
     report 'to=b@example.com' "$(grep '^to=' "$MSF" 2>&1)" \
         "switch-soon: a login lacking only Fable is one a cap death would move to, so it gets a marker"
+
+    # A candidate counts as spent at the bar of its own window: 99% of the
+    # weekly, so one at 98% is a login the box could move onto and one at 99% is
+    # not.
+    for row in '98|to=b@example.com' '99|absent'; do
+        WSB=$(dworld); CSB=$(curlstub); MSB="$WSB/cfg/.session-switch-soon"
+        dlive "$WSB" a@example.com tok-a
+        dvent "$WSB" a@example.com tok-a; dvent "$WSB" b@example.com tok-b
+        dbody "$CSB" tok-a 96 98 10; dbody "$CSB" tok-b 10 "${row%%|*}" 10
+        DCLOCK=$DNOW
+        out=$(dsoon "$WSB" "$CSB" a@example.com 4000000000)
+        report "${row##*|}" "$([ -e "$MSB" ] && grep '^to=' "$MSB" || echo absent)" \
+            "switch-soon: a candidate at ${row%%|*}% of its week: ${row##*|}"
+    done
 
     # The box switching while the ask probes: a marker written after that would
     # have the sessions compact on the login they just moved to.

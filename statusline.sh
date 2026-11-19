@@ -175,33 +175,35 @@ elif [ "$_owner" = "$_acct" ] && [ -s "$_cache" ] \
 fi
 
 # Switch before the cap (`session account auto`, lib/account.sh §6): a fresh
-# figure for the live login at ACCT_SPENT_PCT asks for a decision, so the box
-# moves while every session is still running rather than after a turn has died
-# on the cap. Only a fresh figure asks, and only when the figure it replaced
-# was this login's too: the first response after a switch can still carry the
-# outgoing login's windows, which a decision would then be asked to act on. A
-# session's figures are fresh only when one of its windows moved, so it asks
-# per change of its figures, not per render; the decision's own cooldown bounds
-# what those asks cost. Detached, with every stream closed, because the decision
-# probes each login for up to 5 s and nothing here reads its outcome; its lock,
-# cooldown and audit row are its own.
+# figure for the live login at its window's spent bar (ACCT_SPENT_5H_PCT,
+# ACCT_SPENT_WEEK_PCT) asks for a decision, so the box moves while every session
+# is still running rather than after a turn has died on the cap. Only a fresh
+# figure asks, and only when the figure it replaced was this login's too: the
+# first response after a switch can still carry the outgoing login's windows,
+# which a decision would then be asked to act on. A session's figures are fresh
+# only when one of its windows moved, so it asks per change of its figures, not
+# per render; the decision's own cooldown bounds what those asks cost.
+# Detached, with every stream closed, because the decision probes each login
+# for up to 5 s and nothing here reads its outcome; its lock, cooldown and audit
+# row are its own.
 #
-# Short of that, from ACCT_SOON_PCT, the plugin is told a move is coming so it
-# can compact the large sessions first (`session --switch-soon`, lib/account.sh;
+# Short of that, from the window's compaction figure (ACCT_SOON_5H_PCT,
+# ACCT_SOON_WEEK_PCT), the plugin is told a move is coming so it can compact the
+# large sessions first (`session --switch-soon`, lib/account.sh;
 # hooks/compact-before-switch.ts). This render only compares figures: whether a
 # login could take over, and the once-per-window bookkeeping, are the ask's own.
-# At ACCT_SPENT_PCT the decision is asked instead and this is not: the move it
+# At a spent bar the decision is asked instead and this is not: the move it
 # makes follows within seconds, which is no time to compact in.
 if [ "$_fresh" = 1 ] && [ "${_p_owner:-}" = "$_acct" ] && [ "$SESSION_AUTO_SWITCH" = on ]; then
   . "$SESSION_HOME/lib/account.sh"
   _f5i=$(_intonly "$_f5"); _w7i=$(_intonly "$_w7")
-  if [ "$_f5i" -ge "$ACCT_SPENT_PCT" ] || [ "$_w7i" -ge "$ACCT_SPENT_PCT" ]; then
+  if [ "$_f5i" -ge "$ACCT_SPENT_5H_PCT" ] || [ "$_w7i" -ge "$ACCT_SPENT_WEEK_PCT" ]; then
     ( "$SESSION_HOME/session" account auto --trigger usage --sid "$_sid" </dev/null >/dev/null 2>&1 & )
   elif [ "$SESSION_PRE_SWITCH_COMPACT" != off ]; then
     # The reset of the window that crossed, so one marker covers one window.
     _soon=0
-    if [ "$_f5i" -ge "$ACCT_SOON_PCT" ] && [ "$_new_fr" -gt "$_now" ]; then _soon=$_new_fr
-    elif [ "$_w7i" -ge "$ACCT_SOON_PCT" ] && [ "$_new_wr" -gt "$_now" ]; then _soon=$_new_wr
+    if [ "$_f5i" -ge "$ACCT_SOON_5H_PCT" ] && [ "$_new_fr" -gt "$_now" ]; then _soon=$_new_fr
+    elif [ "$_w7i" -ge "$ACCT_SOON_WEEK_PCT" ] && [ "$_new_wr" -gt "$_now" ]; then _soon=$_new_wr
     fi
     [ "$_soon" -gt 0 ] && ( "$SESSION_HOME/session" --switch-soon "$_acct" "$_soon" </dev/null >/dev/null 2>&1 & )
   fi
