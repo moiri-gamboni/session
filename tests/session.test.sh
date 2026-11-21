@@ -8204,6 +8204,84 @@ STUB30
     report 9 "$(lines30 "$GC/data/turn-log.tsv")" "case 30 [guard]: ... where the same calls without it write nine rows (the control)"
 fi
 
+echo "--- case 31: account lists the other config dirs' logins, for reading only ---"
+
+if ! have jq || ! have perl; then
+    skip "case 31: other config dirs' logins" "needs jq and perl"
+else
+    # One machine, two config dirs: the session's own (two logins) and another
+    # with its own vault (one login). SESSION_PEER_CFGS names both, as a conf
+    # shared by the two would, plus a directory that does not exist.
+    N31=$(date +%s)
+    pvent() {  # VAULT_DIR LOGIN TOKEN EXPIRES_S
+        printf '{"email":"%s","login":"%s","oauthAccount":{"emailAddress":"%s"},"claudeAiOauth":{"accessToken":"%s","expiresAt":%s000}}\n' \
+            "$2" "$2" "$2" "$3" "$4" > "$1/$2.json"
+    }
+    W31=$(world); V31="$W31/vault"; P31="$W31/other"; C31=$(curlstub)
+    mkdir -p "$V31" "$P31/accounts"
+    pvent "$V31" a@example.com tok-a $(( N31 + 3600 )); pvent "$V31" b@example.com tok-b $(( N31 + 3600 ))
+    mklogin "$W31" a@example.com
+    jq -c '{claudeAiOauth}' "$V31/a@example.com.json" > "$W31/cfg/.credentials.json"
+    pvent "$P31/accounts" p@example.com tok-p $(( N31 + 3600 ))
+    printf '{"oauthAccount":{"emailAddress":"p@example.com"}}\n' > "$P31/.claude.json"
+    jq -c '{claudeAiOauth}' "$P31/accounts/p@example.com.json" > "$P31/.credentials.json"
+    printf '{"limits":[{"kind":"weekly_all","group":"weekly","percent":50,"resets_at":"2099-01-01T00:00:00.5+00:00","scope":null},{"kind":"weekly_scoped","group":"weekly","percent":83,"resets_at":"2099-01-01T00:00:00.123456+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null}}]}\n' \
+        > "$C31/body.tok-p"
+    PEERS31="$W31/cfg:$TMP/no-such-config-dir:$P31"
+    (cd "$P31" && find . | LC_ALL=C sort; cat .credentials.json accounts/p@example.com.json) > "$TMP/other-before"
+    cp "$W31/cfg/.credentials.json" "$TMP/own-creds-31"
+
+    out=$(sess "$W31" PATH="$C31:$PATH" SESSION_ACCOUNTS_DIR="$V31" SESSION_PEER_CFGS="$PEERS31" -- account 2>&1); rc=$?
+    report 0 "$rc" "case 31: account list exits 0 with other config dirs named"
+    report "live -" "$(printf '%s\n' "$out" | awk '$3 == "p@example.com" { print $1, $2 }')" \
+        "case 31: the other dir's login is listed, marked live there, with no row number to switch by"
+    report "50% 83% now" "$(printf '%s\n' "$out" | awk '$3 == "p@example.com" { print $6, $8, $9 }')" \
+        "case 31: ... with its weekly and Fable figures read from the usage endpoint"
+    report yes "$(printf '%s\n' "$out" | awk -v d="$P31" 'index($0, d) { seen = 1 } $3 == "p@example.com" && seen { print "yes" }')" \
+        "case 31: ... under a line naming the config dir it belongs to"
+    report "1 1 1" "$(printf '%s\n' "$out" | grep -c 'a@example.com') $(printf '%s\n' "$out" | grep -c 'b@example.com') $(printf '%s\n' "$out" | grep -c 'p@example.com')" \
+        "case 31: the session's own dir, named in the same setting, is not listed a second time"
+    report "1 2" "$(printf '%s\n' "$out" | awk '$3 == "a@example.com" { print $2 } $2 == "b@example.com" { print $1 }' | tr '\n' ' ' | sed 's/ $//')" \
+        "case 31: ... and its own logins keep their row numbers"
+    report yes "$( (cd "$P31" && find . | LC_ALL=C sort; cat .credentials.json accounts/p@example.com.json) | cmp -s - "$TMP/other-before" && echo yes || echo no)" \
+        "case 31: listing writes nothing in the other config dir"
+
+    out=$( (sess "$W31" PATH="$C31:$PATH" SESSION_ACCOUNTS_DIR="$V31" SESSION_PEER_CFGS="$PEERS31" -- account use p@ >/dev/null) 2>&1 ); rc=$?
+    report 1 "$rc" "case 31: account use refuses a login of another config dir"
+    report yes "$(printf '%s\n' "$out" | grep -qF "$P31" && echo yes || echo no)" \
+        "case 31: ... naming the config dir it is saved in"
+    report yes "$(cmp -s "$TMP/own-creds-31" "$W31/cfg/.credentials.json" && (cd "$P31" && find . | LC_ALL=C sort; cat .credentials.json accounts/p@example.com.json) | cmp -s - "$TMP/other-before" && echo yes || echo no)" \
+        "case 31: ... with both dirs' credentials untouched"
+    # A substring that several of this dir's own logins share fails as
+    # ambiguous, and that is the whole reason: nothing about the other dir.
+    out=$( (sess "$W31" PATH="$C31:$PATH" SESSION_ACCOUNTS_DIR="$V31" SESSION_PEER_CFGS="$PEERS31" -- account use example >/dev/null) 2>&1 ); rc=$?
+    report "1 yes no" "$rc $(printf '%s\n' "$out" | grep -q 'matches 2 logins' && echo yes || echo no) $(printf '%s\n' "$out" | grep -qF "$P31" && echo yes || echo no)" \
+        "case 31: an ambiguous name is refused as ambiguous, with no line about the other config dir"
+
+    # A login saved in both dirs is asked about once, with this dir's token:
+    # two fetches of one login at once would share their scratch files.
+    pvent "$P31/accounts" a@example.com tok-dup $(( N31 + 3600 ))
+    rm -f "$C31"/asked.*
+    out=$(sess "$W31" PATH="$C31:$PATH" SESSION_ACCOUNTS_DIR="$V31" SESSION_PEER_CFGS="$PEERS31" -- account 2>&1); rc=$?
+    report "0 yes no" "$rc $([ -e "$C31/asked.tok-a" ] && echo yes || echo no) $([ -e "$C31/asked.tok-dup" ] && echo yes || echo no)" \
+        "case 31: a login saved in both dirs is fetched once, with this dir's own token"
+
+    # The automatic switch ranks the session's own vault alone: both of its
+    # logins spent, and a clear one in the other dir, is a hold with no target.
+    WA31=$(dworld); CA31=$(curlstub); PA31="$WA31/other"; mkdir -p "$PA31/accounts"
+    dlive "$WA31" a@example.com tok-a
+    dvent "$WA31" a@example.com tok-a; dvent "$WA31" b@example.com tok-b
+    printf '{"email":"p@example.com","login":"p@example.com","oauthAccount":{"emailAddress":"p@example.com"},"claudeAiOauth":{"accessToken":"tok-p","expiresAt":%s000}}\n' \
+        "$DEXP" > "$PA31/accounts/p@example.com.json"
+    dbody "$CA31" tok-a 100 10 10; dbody "$CA31" tok-b 100 10 10; dbody "$CA31" tok-p 1 1 1
+    out=$(sess "$WA31" PATH="$CA31:$PATH" SESSION_ACCOUNTS_DIR="$WA31/vault" SESSION_PEER_CFGS="$PA31" \
+            SESSION_NOW="$DNOW" SESSION_SWITCH_NOTIFY="" -- account auto --dry-run --trigger cap 2>&1)
+    report '- no-candidate' "$(dkv to "$out") $(dkv reason "$out")" \
+        "case 31: the automatic switch never moves to a login of another config dir"
+    report no "$([ -e "$CA31/asked.tok-p" ] && echo yes || echo no)" \
+        "case 31: ... and does not ask the usage endpoint about it"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]

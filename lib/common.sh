@@ -68,6 +68,11 @@ SESSION_ACCOUNTS_DIR="${SESSION_ACCOUNTS_DIR:-$SESSION_CFG/accounts}"
 # dir is not ~/.claude, session.conf names it here and the tag goes back to
 # meaning "not the usual login".
 SESSION_PRIMARY_CFG="${SESSION_PRIMARY_CFG:-$HOME/.claude}"
+# Colon-separated config dirs on this machine whose saved logins `session
+# account` lists together. Every dir's session.conf can carry the same list:
+# a session skips its own dir, lists the others' logins for reading, and
+# still switches only within its own vault.
+SESSION_PEER_CFGS="${SESSION_PEER_CFGS:-}"
 # attended idle-cap: seconds of credit past the last interaction
 SESSION_ATTEND_GRACE="${SESSION_ATTEND_GRACE:-600}"
 # The tail defaults to the bridge, which is what the single-number model was.

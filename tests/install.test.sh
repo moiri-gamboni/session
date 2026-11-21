@@ -1154,6 +1154,7 @@ printf 'SESSION_PRE_SWITCH_COMPACT=off\n' >> "$CWT/session.conf"
 printf 'SESSION_CLOSE_COMPACT=off\n' >> "$CWT/session.conf"
 printf 'SESSION_SWITCH_NOTIFY="${SESSION_SWITCH_NOTIFY:-/tmp/notify-wt.sh}"\n' >> "$CWT/session.conf"
 printf 'SESSION_TASK_WORKSPACES="${SESSION_TASK_WORKSPACES:-/tmp/ws-a:/tmp/ws-b}"\n' >> "$CWT/session.conf"
+printf 'SESSION_PEER_CFGS="${SESSION_PEER_CFGS:-/tmp/cfg-a:/tmp/cfg-b}"\n' >> "$CWT/session.conf"
 out=$(inst "$CWT" --bindir "$BWT" --attend-grace 600); rc=$?
 report 0 "$rc" "hand-set knobs: a re-run carrying another flag exits 0"
 report "off" "$(conf_value "$CWT/session.conf" SESSION_AUTO_SWITCH)" \
@@ -1166,6 +1167,8 @@ report "/tmp/notify-wt.sh" "$(conf_value "$CWT/session.conf" SESSION_SWITCH_NOTI
     "hand-set knobs: ... with its notify target still recorded"
 report "/tmp/ws-a:/tmp/ws-b" "$(conf_value "$CWT/session.conf" SESSION_TASK_WORKSPACES)" \
     "hand-set knobs: ... and the status line's task workspaces too"
+report "/tmp/cfg-a:/tmp/cfg-b" "$(conf_value "$CWT/session.conf" SESSION_PEER_CFGS)" \
+    "hand-set knobs: ... and the config dirs whose logins are listed together"
 
 report "$SHIPPED_BEFORE" "$(shipped_sums)" "the suite modified none of the shipped files in the checkout"
 

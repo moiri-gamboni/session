@@ -1299,10 +1299,42 @@ acct_expiry() {  # [--notify]
 # outright — the bare email is a prefix of its own Team seat's name, so no
 # substring picks the plan when both are vaulted), or a unique case-insensitive
 # substring.
-acct_paths() {
-  ls -1 "$acctdir"/*.json 2>/dev/null | sed 's/\.json$//' | LC_ALL=C sort | sed 's/$/.json/' || true
+acct_paths() {  # [VAULT_DIR] — this config dir's vault unless another is named
+  ls -1 "${1:-$acctdir}"/*.json 2>/dev/null | sed 's/\.json$//' | LC_ALL=C sort | sed 's/$/.json/' || true
 }
-acct_resolve() {  # $1=row number | name | substring -> vault path on stdout
+# The other config dirs whose saved logins `list` shows under this one's
+# (SESSION_PEER_CFGS in lib/common.sh): each entry that has a vault and is not
+# this session's own config dir, one per line. Their logins are there to be
+# read. `use` resolves a name in this dir's vault alone and the automatic
+# switch ranks acct_paths alone, because a login installed here from another
+# dir would put every session of this dir on that dir's account.
+acct_peer_cfgs() {
+  local d self
+  [ -n "${SESSION_PEER_CFGS:-}" ] || return 0
+  self=$(realpath_of "$SESSION_CFG")
+  printf '%s\n' "$SESSION_PEER_CFGS" | tr ':' '\n' | while IFS= read -r d; do
+    [ -n "$d" ] && [ -d "$d/accounts" ] || continue
+    [ "$(realpath_of "$d")" = "$self" ] && continue
+    printf '%s\n' "$d"
+  done
+}
+acct_peer_paths() {  # -> every vault entry of those dirs
+  local d
+  acct_peer_cfgs | while IFS= read -r d; do acct_paths "$d/accounts"; done
+}
+# The first of those entries a name or a substring of one picks, for `use` to
+# say where a login is saved when this dir's vault holds none by that name. A
+# row number names nothing there: the other dirs' rows carry none.
+acct_peer_match() {  # NAME|SUBSTRING -> a vault path, or non-zero
+  local m="${1:-}" p b
+  case "$m" in ''|*[!0-9]*) ;; *) return 1 ;; esac
+  [ -n "$m" ] || return 1
+  acct_peer_paths | while IFS= read -r p; do
+    b=${p##*/}; b=${b%.json}
+    printf '%s\n' "$b" | grep -qiF -- "$m" && { printf '%s\n' "$p"; break; }
+  done | grep .
+}
+acct_resolve() {  # $1=row number | name | substring -> vault path on stdout; 2 when no login here has that name, 1 otherwise
   local m="${1:-}" hits n p b lm
   case "$m" in
     ''|*[!0-9]*) ;;
@@ -1328,7 +1360,7 @@ acct_resolve() {  # $1=row number | name | substring -> vault path on stdout
   if [ "$n" = 0 ]; then
     echo "session account: no saved login matches '$m'" >&2
     echo "  saved: $(acct_paths | sed 's|.*/||; s|\.json$||' | tr '\n' ' ')" >&2
-    return 1
+    return 2
   fi
   if [ "$n" -gt 1 ]; then
     echo "session account: '$m' matches $n logins:" >&2
@@ -1442,7 +1474,8 @@ acct_print_row() {  # MARKER NUMBER LOGIN
 # probe (lib/account.sh §4), which is the only thing here that talks to the
 # usage endpoint, so what the table lists and what a switching decision reads
 # come from one fetcher. The rows are for a caller that is deciding something;
-# `list` is not, and a login the probe could not read keeps its last figure.
+# `use` is not, and a login the probe could not read keeps its last figure.
+# `list` runs the same probe itself, over the other config dirs' vaults too.
 acct_fetch_fable() { acct_paths | acct_probe_all >/dev/null; }
 
 # Install a vaulted login: the whole write sequence (credential, identity, then
@@ -1567,8 +1600,11 @@ acct_main() {
       local live vf name mark anyout=0
       live=$(acct_live_login)
       [ -n "$(acct_paths)" ] || { echo "session account: no saved logins yet at $acctdir" >&2; return 1; }
-      acct_fetch_fable
-      local i=0
+      # One fetch per login name, this dir's entry first: the probe's children
+      # key their scratch files by the name, so a login saved in two dirs
+      # fetched twice at once would write over itself.
+      { acct_paths; acct_peer_paths; } | awk -F/ '!seen[$NF]++' | acct_probe_all >/dev/null
+      local i=0 peer plive
       acct_header
       while IFS= read -r vf; do
         [ -n "$vf" ] || continue
@@ -1582,6 +1618,22 @@ acct_main() {
         elif acct_signin_ended "$vf"; then mark=out; anyout=1; fi
         acct_print_row "$mark" "$i" "$name"
       done < <(acct_paths)
+      # The other config dirs' logins, each dir under a line naming it. `live`
+      # marks the login that dir is on; the number column is a dash, since
+      # `use` takes none of them.
+      while IFS= read -r peer; do
+        [ -n "$(acct_paths "$peer/accounts")" ] || continue
+        plive=$( SESSION_CFG="$peer"; SESSION_ACCOUNTS_DIR="$peer/accounts"; session_login_read )
+        case "$peer" in "$HOME"/*) name="~${peer#"$HOME"}" ;; *) name=$peer ;; esac
+        printf '\n  %s, another config dir (listed for reading; switch its logins from a session there):\n' "$name"
+        while IFS= read -r vf; do
+          name=$(acct_name_of "$vf")
+          mark=""
+          if [ "$name" = "$plive" ]; then mark=live
+          elif acct_signin_ended "$vf"; then mark=out; anyout=1; fi
+          acct_print_row "$mark" - "$name"
+        done < <(acct_paths "$peer/accounts")
+      done < <(acct_peer_cfgs)
       [ "$anyout" = 1 ] && printf '\n  out: its sign-in has ended; /login to it to use it again (use refuses it)\n'
       printf '\n  switch: session account use <#|name>   (next request, running sessions included)\n'
       ;;
@@ -1594,7 +1646,9 @@ acct_main() {
       [ -s "$cfg/.credentials.json" ] || {
         echo "session account use: this Claude Code stores credentials in the macOS Keychain, which this build cannot swap; see README.md" >&2
         return 1; }
-      vf=$(acct_resolve "$m") || return 1
+      vf=$(acct_resolve "$m") || {
+        [ $? = 2 ] && vf=$(acct_peer_match "$m") && echo "  $(acct_name_of "$vf") is saved in ${vf%/accounts/*}, another config dir: a login is switched only within its own config dir, so run this from a session there" >&2
+        return 1; }
       email=$(acct_name_of "$vf")
       # On the live login with a blank token, reinstalling its saved copy is the
       # restore doctor and the sign-out push advise, so it goes ahead.
@@ -1661,7 +1715,11 @@ Usage: session account [list | use <#|name> | save | rm <name> | auto [opts] | e
                  fetched from the usage endpoint with each login's token while
                  that token is unexpired (never refreshed); a login whose token
                  lapsed shows its last fetch. Needs curl; n/a when never fetched.
-                 AGE is the age of the row's oldest figure; - means no data
+                 AGE is the age of the row's oldest figure; - means no data.
+                 The logins of the other config dirs SESSION_PEER_CFGS names
+                 follow, each dir under its own line, with the same figures
+                 and no row number: they are listed for reading, `use` refuses
+                 them and `auto` never moves to one
   use <#|name>   switch the live login in place. Takes a row number from the
                  list, the whole login name (always wins), or a unique
                  case-insensitive substring of it. A login is named by its
