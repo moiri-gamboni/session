@@ -246,7 +246,7 @@ fi
 transcript_of() {  # $1=sid -> its transcript path (empty if none readable); walks the whole store, so never from --hook
   local jsonl
   [ -d "$SESSION_CFG/projects" ] || return 0
-  jsonl=$(find "$SESSION_CFG/projects" -name "$1.jsonl" -print -quit)
+  jsonl=$(find "$SESSION_CFG/projects/" -name "$1.jsonl" -print -quit)
   { [ -n "$jsonl" ] && [ -r "$jsonl" ]; } && printf '%s' "$jsonl"
 }
 # The FIRST auto-title, for the one-shot peer-name promotion in the hook below.
@@ -553,6 +553,10 @@ title_of_file() {  # $1=transcript path -> its title (empty if none)
 # reader never sees a half-written index. A refresh that cannot write (data
 # root read-only, disk full) says so on stderr and the last index is served
 # as it stands; only a store with no index at all fails the lookup.
+# Every find over the store (here, transcript_of, the name lookup, scan_sessions)
+# starts at ".../projects/" with the slash: a config dir may share another's
+# store through a symlinked projects, which find does not follow without it,
+# and the refresh would then read the store as empty and drop every row.
 title_index() {  # refreshes the index and prints its path; nothing without one
   local cfgp="$SESSION_CFG/projects" idx="$SESSION_DATA/title-index.tsv" work
   [ -d "$cfgp" ] || return 1
@@ -561,9 +565,9 @@ title_index() {  # refreshes the index and prints its path; nothing without one
     return
   fi
   : > "$work/stamp"
-  find "$cfgp" -name '*.jsonl' > "$work/all"
+  find "$cfgp/" -name '*.jsonl' > "$work/all"
   if [ -f "$idx" ]; then
-    find "$cfgp" -name '*.jsonl' -newer "$idx" > "$work/changed"
+    find "$cfgp/" -name '*.jsonl' -newer "$idx" > "$work/changed"
   else
     echo "session id: building the title index over the transcript store ($(du -sh "$cfgp" 2>/dev/null | cut -f1)) — once; later queries read it" >&2
     cp "$work/all" "$work/changed"
@@ -631,7 +635,7 @@ EOF
   if [ -z "$m" ]; then
     cfgp="$SESSION_CFG/projects"
     if [ -d "$cfgp" ] && [ "$lmode" = name ]; then
-      m=$(find "$cfgp" -name "$q*.jsonl" | while IFS= read -r f; do
+      m=$(find "$cfgp/" -name "$q*.jsonl" | while IFS= read -r f; do
             s=$(basename "$f" .jsonl)
             printf '%s\t%s\n' "$s" "$(title_of_file "$f")"
           done | LC_ALL=C sort -u)
@@ -797,7 +801,7 @@ scan_sessions() {  # $1=hours
   local f sid dir title
   # BSD find has no -printf, so the mtime is read per file. The ordering is
   # load-bearing: the newest session has to be the first row offered.
-  find "$SESSION_CFG/projects" -name '*.jsonl' -mmin "-$(( $1 * 60 ))" 2>/dev/null \
+  find "$SESSION_CFG/projects/" -name '*.jsonl' -mmin "-$(( $1 * 60 ))" 2>/dev/null \
     | while IFS= read -r f; do
         # A transcript can vanish between find and stat, and an unreadable one
         # cannot be resumed anyway. Skipping keeps the ordering a real ordering:

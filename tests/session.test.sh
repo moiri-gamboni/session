@@ -3391,6 +3391,54 @@ else
         "cov: ... and the next query does not rebuild it"
 fi
 
+echo "--- cov: two config dirs sharing one transcript store through a symlinked projects ---"
+
+if ! have jq; then
+    skip "cov: title_index_through_linked_projects" "no jq"
+else
+    # A second config dir whose projects (and sessions) are symlinks to the first
+    # one's, both on one data root. find does not follow a symlink it is handed
+    # as its starting point unless the path ends in a slash, so a store reached
+    # through one read as empty, and the refresh dropped every row of the shared
+    # index.
+    WLP=$(world); mkdir -p "$WLP/cfg/projects/-w-x" "$WLP/cfgB"
+    LPA=a0000000-0000-0000-0000-00000000000a
+    LPB=b0000000-0000-0000-0000-00000000000b
+    printf '{"type":"ai-title","aiTitle":"Linked store alpha"}\n' > "$WLP/cfg/projects/-w-x/$LPA.jsonl"
+    printf '{"type":"ai-title","aiTitle":"Linked store beta"}\n'  > "$WLP/cfg/projects/-w-x/$LPB.jsonl"
+    ln -s "$WLP/cfg/projects" "$WLP/cfgB/projects"
+    ln -s "$WLP/cfg/sessions" "$WLP/cfgB/sessions"
+    LPIDX="$WLP/data/title-index.tsv"
+    lp_rows() { wc -l < "$LPIDX" | tr -d ' '; }
+
+    report "$LPA" "$(sess "$WLP" -- id 'store alpha' 2>"$TMP/lp-err")" \
+        "title_index_through_linked_projects: the real config dir resolves a title"
+    report 2 "$(lp_rows)" "title_index_through_linked_projects: ... and indexes both transcripts"
+    report "$LPB" "$(sess "$WLP" CLAUDE_CONFIG_DIR="$WLP/cfgB" -- id 'store beta' 2>"$TMP/lp-err")" \
+        "title_index_through_linked_projects: a config dir whose projects is a symlink resolves a title"
+    report 2 "$(lp_rows)" "title_index_through_linked_projects: ... and the shared index keeps its rows"
+    report "$LPA" "$(sess "$WLP" -- id 'store alpha' 2>"$TMP/lp-err")" \
+        "title_index_through_linked_projects: the real config dir still resolves its title afterwards"
+
+    # The other walks of the store: a title written after the index was built
+    # (the refresh's -newer pass), a lookup by id prefix, and a resume scan.
+    printf '{"type":"custom-title","customTitle":"Linked store gamma","sessionId":"%s"}\n' "$LPB" \
+        >> "$WLP/cfg/projects/-w-x/$LPB.jsonl"
+    report "$LPB" "$(sess "$WLP" CLAUDE_CONFIG_DIR="$WLP/cfgB" -- id 'store gamma' 2>"$TMP/lp-err")" \
+        "title_index_through_linked_projects: a title written since the index was built is re-read through the link"
+    report "Linked store gamma" "$(sess "$WLP" CLAUDE_CONFIG_DIR="$WLP/cfgB" -- name "${LPB%%-*}" 2>"$TMP/lp-err")" \
+        "title_index_through_linked_projects: session name finds a transcript by id prefix through the link"
+    LPD=$(mktemp -d "$TMP/lpd.XXXXXX")
+    LPC=c0000000-0000-0000-0000-00000000000c
+    LPSLUG=$(printf '%s' "$LPD" | tr '/.' '--')
+    mkdir -p "$WLP/cfg/projects/$LPSLUG" "$TMP/ftlp"
+    printf '{"type":"user","cwd":"%s"}\n' "$LPD" > "$WLP/cfg/projects/$LPSLUG/$LPC.jsonl"
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/ftlp/tmux"; chmod +x "$TMP/ftlp/tmux"
+    report 1 "$(sess "$WLP" CLAUDE_CONFIG_DIR="$WLP/cfgB" PATH="$TMP/ftlp:$PATH" -- resume --scan 999 -n 2>&1 \
+                    | grep -c "would reopen  ${LPC%%-*}" || true)" \
+        "title_index_through_linked_projects: resume --scan offers a transcript found through the link"
+fi
+
 echo "--- cov: --file, a malformed guard spec, and --compact over a real cache ---"
 
 if ! have jq; then
