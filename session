@@ -1625,7 +1625,7 @@ acct_main() {
         [ -n "$(acct_paths "$peer/accounts")" ] || continue
         plive=$( SESSION_CFG="$peer"; SESSION_ACCOUNTS_DIR="$peer/accounts"; session_login_read )
         case "$peer" in "$HOME"/*) name="~${peer#"$HOME"}" ;; *) name=$peer ;; esac
-        printf '\n  %s, another config dir (listed for reading; switch its logins from a session there):\n' "$name"
+        printf '\n  %s:\n' "$name"
         while IFS= read -r vf; do
           name=$(acct_name_of "$vf")
           mark=""
