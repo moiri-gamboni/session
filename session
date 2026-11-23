@@ -2245,7 +2245,8 @@ doctor_main() {
 # vsc-<window> tab identity), pane, Claude session id. sid comes from the
 # statusline's pane map at log time, so later pane id recycling can't rewrite
 # history. ms precision keeps rapid switches ordered (the hooks run async via
-# run-shell -b). Always exits 0.
+# run-shell -b). The tmux forms always exit 0; the web form is a program's call
+# and has its own exit codes, described where it is handled.
 #
 # CLIENT must come from #{hook_client}, NOT #{client_name}: in a per-client hook
 # #{client_name} resolves to the command queue's *current* client, which is some
@@ -2257,6 +2258,35 @@ doctor_main() {
 # and #{hook_pane} are EMPTY for client hooks, so session and pane are resolved
 # from the client below instead.
 if [ "${1:-}" = --focus-mark ]; then
+  # "web in|out|act CLIENT SESSION_ID": a page that stands in for the terminal
+  # logs the attention it gets under the session it shows, in the row the tmux
+  # forms write, so the reader's span, idle cap and one-human rules apply as they
+  # do to a tab: `in` opens the client's span, `act` is an interaction, `out`
+  # closes it, and an `in` nothing follows is credited SESSION_ATTEND_TAIL
+  # seconds. The client name stands where tmux has a pane id because the reader
+  # remembers the last session id seen per pane to resolve rows logged without
+  # one: a `-` pane would give every web client one shared memory, and an
+  # unresolved tmux row would be credited to whichever web session spoke last.
+  # A name can never equal a tmux pane id, which starts with %. This is a
+  # program's call, not a hook's: a bad argument exits 2 and a row that cannot
+  # be stamped or written exits 1, since a row stamped with nothing reads as
+  # epoch 0 and the time would vanish without a trace. It needs no tmux, so it
+  # comes before the tmux check.
+  if [ "${2:-}" = web ]; then
+    wusage() {
+      echo "usage: session --focus-mark web <in|out|act> <client> <session id>   (client: A-Z a-z 0-9 _ -, at most 32)" >&2
+      exit 2
+    }
+    [ $# -eq 5 ] || wusage
+    case "$3" in in|out|act) ;; *) wusage ;; esac
+    case "$4" in ''|*[!A-Za-z0-9_-]*) wusage ;; esac
+    [ "${#4}" -le 32 ] || wusage
+    [[ $5 =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || wusage
+    wts=$(epoch_ms)
+    [ -n "$wts" ] || exit 1
+    printf '%s\t%s\t%s\t-\t%s\t%s\n' "$wts" "$3" "$4" "$4" "$5" >> "$flog" || exit 1
+    exit 0
+  fi
   # A host without tmux has no client focus to track. Exit 0 and say nothing:
   # this runs from a tmux hook and a cron line, neither of which has a reader.
   command -v tmux >/dev/null 2>&1 || exit 0
@@ -2659,6 +2689,13 @@ Plumbing (wired into settings.json + tmux by install.sh; not for interactive use
   session --focus-mark tick [AGE]  activity sampler (AGE = recency window in
                                    seconds, default 90; set it to one sampling
                                    interval plus slack)
+  session --focus-mark web in|out|act CLIENT SESSION_ID
+                                   called by a web client's server, not wired by
+                                   install.sh: that client's focus and activity
+                                   as the session's attended time (CLIENT: up to
+                                   32 of A-Z a-z 0-9 _ -; exits 2 on a bad
+                                   argument; a client that moves to another
+                                   session sends `in` for it)
 
 Data (under the data root — SESSION_DATA_DIR, default <config dir>/session-usage;
 `session doctor` prints the resolved path):

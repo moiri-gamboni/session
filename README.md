@@ -184,7 +184,7 @@ Everything is one environment variable with a default, declared once: the `SESSI
 | `SESSION_TASK_WORKSPACES` | unset | colon-separated task workspaces, or glob patterns matching them, whose session-task pointer the status line reads beside the one above the working directory ([The status line](#the-status-line)) |
 | `SESSION_PRIMARY_CFG` | `$HOME/.claude` | the config dir this machine treats as its primary login |
 | `SESSION_PEER_CFGS` | unset | colon-separated config dirs on this machine whose saved logins `session account` lists together ([Accounts](#accounts)). Every dir's `session.conf` can carry the same list: a session skips its own |
-| `SESSION_NOW` | unset | a fixed "now" for the date layer; tests only |
+| `SESSION_NOW` | unset | a fixed "now" for the date layer and the stamps of focus rows; tests only |
 | `SESSION_LOCK_WAIT` | `15` | seconds the credential swap waits for each of Claude Code's lock directories ([Accounts](#accounts)); tests only |
 | `SESSION_LOGIN_SWITCH_MARKER` | `<config dir>/.session-login-switch` | the marker file the plugin's hooks module watches in a session ([Running sessions after a switch](#running-sessions-after-a-switch)); read by the plugin, not the CLI; tests only, because touching the real marker reloads every running session |
 | `SESSION_SWITCH_SOON_MARKER` | `<config dir>/.session-switch-soon` | the marker the plugin watches to compact ahead of a switch ([Compacting ahead of a switch](#compacting-ahead-of-a-switch)); read by the plugin, not the CLI; tests only, because touching the real marker acts on every running session |
@@ -221,7 +221,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 |---|---|
 | `turn-log.tsv` | turn and lifecycle events, one row per event |
 | `session-log.tsv` | per-session cost/token samples, written by the statusline |
-| `focus-log.tsv` | focused-tab flanks and activity marks, from the tmux hooks and the cron tick |
+| `focus-log.tsv` | focused-tab flanks and activity marks, from the tmux hooks and the cron tick, and a web client's from `--focus-mark web` |
 | `switch-log.tsv` | one row per decision about which login the box runs on, and the switcher's own control state |
 | `signin-warned.tsv` | `login<TAB>end<TAB>stage` for every sign-in-end warning `account expiry --notify` has sent (`2d`, `6h`), so each is sent once per login and sign-in; delete it to have due warnings sent again |
 | `last-status.<login>.json` | the rate-limit cache, one per subscription login |
@@ -267,7 +267,7 @@ Mode 700, files 600, and a `.gitignore` containing `*` (written by both the inst
 
 Turn wall time is `e` minus `s`, tool execution included; the gap from an `e` to the next `s` is time between turns. The payload cannot give either figure (`cost.total_duration_ms` ticks through idle time, `total_api_duration_ms` leaves out tool time), which is why hooks mark the boundaries. Each lifecycle mode appends exactly one row, exits 0 and prints nothing (the two modes of [the compaction hold](#the-compaction-hold) append a row only when they decide something, and print the decision), with field values `@tsv`-escaped; `--hook` writes the `s` row first, needing no usage data.
 
-**`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`.
+**`focus-log.tsv`** — 6 columns: `ts` (epoch seconds with milliseconds), `ev`, tmux client, tmux session, pane, session id. `ev` is `in`, `out` or `act`; a `switch` hook resolves the focused client and logs an `in`. The session id is resolved from the pane map **at log time**, so later pane-id recycling cannot rewrite history. Millisecond precision keeps rapid switches ordered, since the tmux hooks run asynchronously through `run-shell -b`. A web client's rows hold its name as client and as pane, and `-` as tmux session.
 
 **`session-log.tsv`** — 21 columns, and readers must tolerate shorter lines from older rows: `ts`, `sid`, `cost_usd`, `five%`, `week%`, `five_reset`, `week_reset`, `duration_ms`, `api_duration_ms`, `total_output_tokens`, `total_input_tokens`, `context%`, `cache_read`, `cache_creation`, `cur_input`, `cur_output`, `lines_added`, `lines_removed`, `model_id`, `prompt_id`, `account`. The attribution estimator reads columns 1–8; column 8, the process's cumulative wall clock, distinguishes two processes rendering under one session id (a `--resume` beside a live original), so cost deltas are taken within one process. Column 21 separates two subscription logins, since rate-limit windows are per login. The other columns are logged for later views. A row is appended when the session's cumulative cost moves, plus a 10-minute idle heartbeat.
 
@@ -355,7 +355,9 @@ Then `tmux source-file ~/.tmux.conf`. Without them everything else still works, 
 
 The tick logs an activity mark, stamped with the client's actual input time, for every client with input in the last 90 seconds, focused or not; typing and scrolling both count (tmux mouse mode makes wheel events input). Attention stops accruing `SESSION_ATTEND_TAIL` seconds after the last interaction, so a tab left focused on an empty desk does not count. Another scheduler works in place of cron: `--focus-mark tick AGE` sets the recency window, which should be one tick interval plus some slack.
 
-`--focus-mark` exits 0 and says nothing on a host without tmux — it runs from a tmux hook and a cron line, neither of which has a reader.
+The tmux forms of `--focus-mark` exit 0 and say nothing on a host without tmux — they run from a tmux hook and a cron line, neither of which has a reader.
+
+`session --focus-mark web in|out|act CLIENT SESSION_ID` logs a web client's attention (a page that stands in for the terminal) as attended time of that session, in the same rows and under the same idle cap and one-person rule as a tmux client: an `in` that nothing follows is credited `SESSION_ATTEND_TAIL` seconds, and a client that moves to another session sends `in` for it. `CLIENT` is `A-Za-z0-9_-`, up to 32 characters, and `SESSION_ID` a full session UUID; a malformed argument exits 2 with nothing written, a row that cannot be written exits 1, and neither tmux nor the cron tick is needed.
 
 ## The compaction hold
 
@@ -551,7 +553,7 @@ A session that holds a large context and is closed before Claude Code's own idle
 
 `session reboot` snapshots every live interactive session to the resume queue and reboots (`sudo systemctl reboot`, or `sudo shutdown -r now` where there is no systemctl); `session resume` reopens one tmux window per snapshotted session and clears the queue. `--scan [HOURS]` is the recovery path when no snapshot was taken, reading the transcript store instead. `session reboot -n` writes and prints the snapshot without rebooting, so a shutdown started some other way still comes back with its sessions; `session resume -n` prints what it would reopen and leaves the queue alone.
 
-Both **refuse with a message naming tmux** when tmux is absent. `session peers` works without tmux (it reads Claude Code's presence registry), and `--focus-mark` is a silent no-op.
+Both **refuse with a message naming tmux** when tmux is absent. `session peers` works without tmux (it reads Claude Code's presence registry), and the tmux forms of `--focus-mark` are silent no-ops.
 
 `SESSION_TMUX_MAIN_GUARD`, when set to an executable, runs before `resume` opens windows: a host's own pre-resume check. Running `session resume` automatically at boot needs a service unit, which is the host's business and not this installer's.
 

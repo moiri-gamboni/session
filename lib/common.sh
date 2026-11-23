@@ -122,7 +122,7 @@ SESSION_LIVE_DAYS=8
 SESSION_LIVE_FLOOR_DAYS=$(( SESSION_LIVE_DAYS - 1 ))
 # shellcheck disable=SC2034  # read by install.sh
 SESSION_BINDIR_DEFAULT="$HOME/.local/bin"
-# tests only: a fixed "now" for the date layer
+# tests only: a fixed "now" for the date layer and the focus rows' stamps
 SESSION_NOW="${SESSION_NOW:-}"
 # tests only: how many seconds the credential swap waits for each of Claude
 # Code's lock directories before it gives up
@@ -379,7 +379,11 @@ fmt_epoch() {  # N FMT -> the formatted local time
 
 # Sub-second stamp for focus rows. `date +%s.%3N` is GNU-only: BSD date prints
 # the %3N literally, and every "$1+0" comparison downstream then reads 0.
-epoch_ms() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+# SESSION_NOW, when set, is the whole second (tests only).
+epoch_ms() {
+  if [ -n "${SESSION_NOW:-}" ]; then printf '%s.000\n' "$SESSION_NOW"; return; fi
+  perl -MTime::HiRes=time -e 'printf "%.3f\n", time'
+}
 
 # ── Process inspection ───────────────────────────────────────────────────────
 # /proc on Linux, ps elsewhere. Tests override this predicate to exercise the

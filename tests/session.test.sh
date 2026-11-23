@@ -8282,6 +8282,116 @@ else
         "case 31: ... and does not ask the usage endpoint about it"
 fi
 
+echo "--- case 32: --focus-mark web counts a page's time as the session's attended time ---"
+
+if ! have jq; then
+    skip "case 32: focus-mark web" "no jq"
+else
+    W32=$(world)
+    T32=$(( DAY0 + 3600 ))
+    # `time` needs a turn log to exist; this one holds a turn of another session
+    printf '%s\t%s\ts\tp1\t-\t-\n%s\t%s\te\tp1\t-\t-\n' \
+        $(( DAY0 + 60 )) "$UUID2" $(( DAY0 + 120 )) "$UUID2" > "$W32/data/turn-log.tsv"
+    # The rows are stamped with SESSION_NOW, so each call names the second it happens at.
+    web32() {  # WORLD AT EVENT CLIENT SID
+        sess "$1" SESSION_NOW="$2" -- --focus-mark web "$3" "$4" "$5"
+    }
+    attended32() {  # WORLD SID [VAR=VAL ...] -> attended_s at noon
+        local w=$1 s=$2; shift 2
+        sess "$w" CLAUDE_CODE_SESSION_ID="$s" SESSION_NOW=$NOON "$@" -- time --json | jq -r '.attended_s'
+    }
+
+    web32 "$W32" "$T32" in web-1a2b3c4d "$UUID"; rc=$?
+    report 0 "$rc" "case 32 [in]: exits 0"
+    report "$T32.000	in	web-1a2b3c4d	-	web-1a2b3c4d	$UUID" "$(cat "$W32/data/focus-log.tsv")" \
+        "case 32 [in]: one row, with the page's client name in the client and pane fields and the session id"
+    web32 "$W32" $(( T32 + 30 )) act web-1a2b3c4d "$UUID"
+    report "$(( T32 + 30 )).000	act	web-1a2b3c4d	-	web-1a2b3c4d	$UUID" "$(sed -n 2p "$W32/data/focus-log.tsv")" \
+        "case 32 [act]: the row is an act, shaped like the in row"
+    web32 "$W32" $(( T32 + 60 )) out web-1a2b3c4d "$UUID"
+    report 60 "$(attended32 "$W32" "$UUID")" "case 32: in, act, out is the time between in and out"
+    report 0 "$(attended32 "$W32" "$UUID2")" "case 32: ... credited to that session alone"
+
+    # A second page on the same session, open inside the first one's span: the
+    # one person is at the page they touched last, so the first page's time
+    # ends where the second begins instead of both being counted.
+    W32b=$(world); cp "$W32/data/turn-log.tsv" "$W32b/data/"
+    web32 "$W32b" "$T32" in web-aaaa "$UUID"
+    web32 "$W32b" $(( T32 + 10 )) act web-aaaa "$UUID"
+    web32 "$W32b" $(( T32 + 60 )) out web-aaaa "$UUID"
+    report 60 "$(attended32 "$W32b" "$UUID")" "case 32 [overlap]: one page open for 60 s attends 60 s"
+    web32 "$W32b" $(( T32 + 20 )) in web-bbbb "$UUID"
+    web32 "$W32b" $(( T32 + 30 )) act web-bbbb "$UUID"
+    web32 "$W32b" $(( T32 + 50 )) out web-bbbb "$UUID"
+    report 50 "$(attended32 "$W32b" "$UUID")" \
+        "case 32 [overlap]: a second page inside it adds nothing for the overlap (20 s + 30 s, not 60 s + 30 s)"
+
+    # An act carries the stretch on: 500 s of silence is inside the bridge, so
+    # the window ends an idle tail after the act, not after the in.
+    W32f=$(world); cp "$W32/data/turn-log.tsv" "$W32f/data/"
+    web32 "$W32f" "$T32" in web-1a2b3c4d "$UUID"
+    web32 "$W32f" $(( T32 + 500 )) act web-1a2b3c4d "$UUID"
+    report 1100 "$(attended32 "$W32f" "$UUID")" "case 32 [act]: an act extends an open stretch by the idle tail"
+
+    # One client that moves to another session says so with a fresh in, which
+    # closes its span on the first; an act alone does not move it.
+    W32g=$(world); cp "$W32/data/turn-log.tsv" "$W32g/data/"
+    web32 "$W32g" "$T32" in web-1a2b3c4d "$UUID"
+    web32 "$W32g" $(( T32 + 10 )) in web-1a2b3c4d "$UUID2"
+    web32 "$W32g" $(( T32 + 30 )) out web-1a2b3c4d "$UUID2"
+    report "10 20" "$(attended32 "$W32g" "$UUID") $(attended32 "$W32g" "$UUID2")" \
+        "case 32 [switch]: a client's in for another session ends its time on the first and starts it on the second"
+
+    # A page that vanished without its out: attention stops at the idle tail
+    W32c=$(world); cp "$W32/data/turn-log.tsv" "$W32c/data/"
+    web32 "$W32c" "$T32" in web-1a2b3c4d "$UUID"
+    report 600 "$(attended32 "$W32c" "$UUID")" "case 32 [no out]: an in with nothing after it attends the idle tail, not the day"
+    report 30 "$(attended32 "$W32c" "$UUID" SESSION_ATTEND_TAIL=30)" \
+        "case 32 [no out]: ... which is SESSION_ATTEND_TAIL"
+
+    # Arguments that are not a client, an event or a session id write nothing.
+    W32d=$(world)
+    bad32() {  # LABEL ARGS... (after `web`)
+        local label=$1; shift
+        out=$( (sess "$W32d" -- --focus-mark web "$@" >/dev/null) 2>&1 ); rc=$?
+        report "2 0 yes" "$rc $(grep -c . "$W32d/data/focus-log.tsv" || true) $(printf '%s' "$out" | grep -q 'usage: session --focus-mark web' && echo yes || echo no)" \
+            "case 32 [usage]: $label exits 2 with the usage line and writes nothing"
+    }
+    : > "$W32d/data/focus-log.tsv"
+    bad32 "an unknown event" sideways web-1 "$UUID"
+    bad32 "an empty client" in "" "$UUID"
+    bad32 "a client with a space" in "web 1" "$UUID"
+    bad32 "a client with a slash" in web/1 "$UUID"
+    bad32 "a client with a tab" in "web$(printf '\t')1" "$UUID"
+    bad32 "a 33-character client" in "$(printf 'a%.0s' $(seq 33))" "$UUID"
+    bad32 "a client that looks like a tmux pane id" in %14 "$UUID"
+    bad32 "a session id that is no uuid" in web-1 not-a-session
+    bad32 "an upper-case session id" in web-1 A0000000-0000-0000-0000-00000000000B
+    bad32 "a session id one character short" in web-1 a0000000-0000-0000-0000-00000000000
+    bad32 "a session id one character long" in web-1 a0000000-0000-0000-0000-00000000000b0
+    bad32 "no session id" in web-1
+    bad32 "nothing after web"
+    bad32 "a stray extra argument" in web-1 "$UUID" extra
+    web32 "$W32d" "$T32" in "$(printf 'a%.0s' $(seq 32))" "$UUID"; rc=$?
+    report "0 1" "$rc $(grep -c . "$W32d/data/focus-log.tsv")" "case 32 [usage]: a 32-character client is the longest accepted"
+    web32 "$W32d" "$T32" in web-1 a0000000-0000-0000-0000-00000000000b; rc=$?
+    report "0 a0000000-0000-0000-0000-00000000000b" "$rc $(awk -F'\t' 'END{print $6}' "$W32d/data/focus-log.tsv")" \
+        "case 32 [usage]: a session id with hex letters is accepted"
+
+    # The verb is no tmux hook: a host without tmux still gets the row.
+    W32e=$(world)
+    sess "$W32e" PATH="$(minipath tmux)" SESSION_NOW="$T32" -- --focus-mark web in web-1 "$UUID" >/dev/null 2>&1; rc=$?
+    report "0 1" "$rc $(grep -c . "$W32e/data/focus-log.tsv")" "case 32: without tmux, the row is still written"
+
+    # A row that cannot be stamped or written is the caller's error to hear
+    # about: the exit says so, since nobody reads this verb's stderr.
+    sess "$W32e" SESSION_DATA_DIR="$TMP/no-such-data-root-32" SESSION_NOW="$T32" -- --focus-mark web in web-1 "$UUID" >/dev/null 2>&1; rc=$?
+    report 1 "$rc" "case 32: a data root that is not there exits 1"
+    : > "$W32e/data/focus-log.tsv"
+    sess "$W32e" PATH="$(minipath perl)" -- --focus-mark web in web-1 "$UUID" >/dev/null 2>&1; rc=$?
+    report "1 0" "$rc $(grep -c . "$W32e/data/focus-log.tsv" || true)" "case 32: without perl to stamp the row, exit 1 and no row"
+fi
+
 echo
 echo "$pass passed, $fail failed, $skipped skipped"
 [ "$fail" -eq 0 ]
